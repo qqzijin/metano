@@ -635,47 +635,6 @@ async def api_knowledge_delete(doc_id: str, _admin=Depends(require_role("admin")
         logger.exception()
         return _error_response('Internal error')
 
-@app.post('/api/knowledge/semantic-search')
-async def api_knowledge_semantic_search(body: dict):
-    """Semantic code search via CocoIndex."""
-    try:
-        from .knowledge import knowledge_semantic_search
-        return knowledge_semantic_search(body.get('query', ''), project=body.get('project', ''), limit=body.get('limit', 5))
-    except Exception as e:
-        logger.exception()
-        return _error_response('Internal error', extra={'results': []})
-
-@app.post('/api/knowledge/explore')
-async def api_knowledge_explore(body: dict, _admin=Depends(require_role("admin"))):
-    """Active knowledge exploration using web search."""
-    try:
-        from .knowledge_explorer import explore_domain
-        return explore_domain(body.get('topic', ''), depth=body.get('depth', 3))
-    except Exception as e:
-        logger.exception()
-        return _error_response('Internal error', extra={'status': 'error'})
-
-@app.get('/api/knowledge/gaps')
-async def api_knowledge_gaps():
-    """Detect knowledge gaps from action failure patterns."""
-    try:
-        from .knowledge_explorer import discover_knowledge_gaps
-        return {'gaps': discover_knowledge_gaps()}
-    except Exception as e:
-        logger.exception()
-        return _error_response('Internal error', extra={'gaps': []})
-
-@app.post('/api/knowledge/synthesize')
-async def api_knowledge_synthesize(_admin=Depends(require_role("admin"))):
-    """Extract reusable patterns from successful action sequences."""
-    try:
-        from .knowledge_explorer import synthesize_from_experience
-        patterns = synthesize_from_experience()
-        return {'patterns': patterns}
-    except Exception as e:
-        logger.exception()
-        return _error_response('Internal error', extra={'patterns': []})
-
 @app.post('/api/evolution/pause')
 async def api_evolution_pause(_admin=Depends(require_role("admin"))):
     try:
