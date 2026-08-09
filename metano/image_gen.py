@@ -7,6 +7,24 @@ from typing import Optional
 from metano.log import logger
 IMAGE_DIR = Path.home() / '.claude' / 'metano' / 'images'
 
+
+def _openai_config() -> tuple[str, str] | None:
+    """Return (api_key, base_url) for the OpenAI-compatible image API.
+
+    Only reads OPENAI_* env vars. Never falls back to Anthropic config —
+    an OpenAI-format endpoint cannot be served by the Anthropic endpoint.
+    Returns None when unconfigured (caller should return a clear error).
+    """
+    import os
+    api_key = os.environ.get('OPENAI_API_KEY', '')
+    if not api_key:
+        return None
+    base_url = os.environ.get('OPENAI_BASE_URL', 'https://api.openai.com')
+    if base_url.endswith('/v1'):
+        base_url = base_url[:-3]
+    return api_key, base_url
+
+
 def image_generate(prompt: str, size: str='1024x1024', style: str='vivid', model: str='', n: int=1) -> dict:
     """Generate an image from a text prompt using DALL-E compatible API.
 
@@ -16,10 +34,10 @@ def image_generate(prompt: str, size: str='1024x1024', style: str='vivid', model
     """
     import requests
     import os
-    api_key = os.environ.get('OPENAI_API_KEY', os.environ.get('ANTHROPIC_API_KEY', ''))
-    base_url = os.environ.get('OPENAI_BASE_URL', os.environ.get('ANTHROPIC_BASE_URL', 'https://api.openai.com'))
-    if base_url.endswith('/v1'):
-        base_url = base_url[:-3]
+    cfg = _openai_config()
+    if not cfg:
+        return {'error': 'OPENAI_API_KEY not set. Image generation requires an OpenAI-compatible API key (env: OPENAI_API_KEY, OPENAI_BASE_URL).'}
+    api_key, base_url = cfg
     url = f'{base_url}/v1/images/generations'
     headers = {'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'}
     payload = {'model': model or 'dall-e-3', 'prompt': prompt, 'n': n, 'size': size, 'style': style, 'response_format': 'b64_json'}
@@ -51,19 +69,19 @@ def image_describe(image_path: str, prompt: str='Describe this image in detail.'
     """Describe an image using vision API."""
     import requests
     import os
-    api_key = os.environ.get('OPENAI_API_KEY', os.environ.get('ANTHROPIC_API_KEY', ''))
-    base_url = os.environ.get('OPENAI_BASE_URL', os.environ.get('ANTHROPIC_BASE_URL', 'https://api.openai.com'))
-    if base_url.endswith('/v1'):
-        base_url = base_url[:-3]
     path = Path(image_path)
     if not path.exists():
         return {'error': f'Image not found: {image_path}'}
+    cfg = _openai_config()
+    if not cfg:
+        return {'error': 'OPENAI_API_KEY not set. Image description requires an OpenAI-compatible API key (env: OPENAI_API_KEY, OPENAI_BASE_URL).'}
+    api_key, base_url = cfg
     b64 = base64.b64encode(path.read_bytes()).decode()
     ext = path.suffix.lstrip('.')
     mime = f"image/{(ext if ext in ('png', 'jpeg', 'jpg', 'gif', 'webp') else 'png')}"
     url = f'{base_url}/v1/chat/completions'
     headers = {'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'}
-    payload = {'model': os.environ.get('ANTHROPIC_MODEL', 'gpt-4o'), 'messages': [{'role': 'user', 'content': [{'type': 'text', 'text': prompt}, {'type': 'image_url', 'image_url': {'url': f'data:{mime};base64,{b64}'}}]}], 'max_tokens': 1000}
+    payload = {'model': os.environ.get('OPENAI_MODEL', 'gpt-4o'), 'messages': [{'role': 'user', 'content': [{'type': 'text', 'text': prompt}, {'type': 'image_url', 'image_url': {'url': f'data:{mime};base64,{b64}'}}]}], 'max_tokens': 1000}
     try:
         resp = requests.post(url, headers=headers, json=payload, timeout=60)
         resp.raise_for_status()

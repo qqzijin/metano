@@ -13,7 +13,6 @@ from .x_search import search_x
 from .honcho.models import init_honcho_db, get_honcho_db, create_user, get_user, get_profile, add_observation, get_observations, get_beliefs, delete_belief
 from .honcho.dialectic import dialectic_reason, extract_observations, compress_beliefs
 from .voice.tts import speak as tts_speak, list_voices
-from .voice.stt import listen as stt_listen, transcribe
 from .evolution import evolution_status as _evolution_status, evolution_run as _evolution_run, evolution_revert as _evolution_revert, evolution_pause as _evolution_pause, evolution_resume as _evolution_resume
 from .adapter import load_suggestions, approve_suggestion, reject_suggestion
 from .strategy import record_action, record_outcome
@@ -45,7 +44,7 @@ from .sub_agent import delegator as _agent_delegator
 from .image_gen import image_generate as _image_gen_func, image_describe as _image_desc_func
 from .model_router import model_router as _model_router
 from .knowledge import knowledge_ingest, knowledge_search, knowledge_list, knowledge_delete
-from .voice import voice_speak as _voice_speak, voice_transcribe as _voice_transcribe, voice_list_voices
+from .voice import voice_speak as _voice_speak, voice_list_voices
 from .security import security as _security
 from .kanban import kanban_create_board, kanban_add_task, kanban_move_task, kanban_list, kanban_delete_task
 from .home_assistant import home_control, home_status, home_automate
@@ -292,28 +291,6 @@ def voice_speak(text: str, voice: str='xiaoxiao') -> str:
         return json.dumps({'status': 'playing', 'voice': voice, 'path': path, 'text_length': len(text)})
     except ImportError:
         return json.dumps({'error': 'edge-tts not installed. Run: pip install edge-tts'})
-    except Exception as e:
-        logger.exception()
-        return json.dumps({'error': str(e)})
-
-@mcp.tool()
-def voice_listen(duration: int=5, language: str='zh') -> str:
-    """Record audio from microphone and transcribe to text. Uses faster-whisper locally. Duration in seconds (1-30)."""
-    try:
-        result = stt_listen(duration=duration, language=language)
-        return json.dumps(result, ensure_ascii=False, indent=2)
-    except ImportError:
-        return json.dumps({'error': 'faster-whisper not installed. Run: pip install faster-whisper'})
-    except Exception as e:
-        logger.exception()
-        return json.dumps({'error': str(e)})
-
-@mcp.tool()
-def voice_transcribe(audio_path: str, language: str='zh') -> str:
-    """Transcribe an audio file to text. Supports WAV, MP3, etc."""
-    try:
-        result = transcribe(audio_path, language=language)
-        return json.dumps(result, ensure_ascii=False, indent=2)
     except Exception as e:
         logger.exception()
         return json.dumps({'error': str(e)})

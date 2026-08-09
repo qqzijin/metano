@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Mic, Volume2 } from "lucide-react";
+import { Volume2 } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -30,12 +30,11 @@ export default function VoicePage() {
 
   return (
     <>
-      <PageHeader title="语音" description="TTS 与 STT 工具" />
+      <PageHeader title="语音" description="TTS 工具" />
 
       <Tabs defaultValue="tts" className="space-y-4">
         <TabsList>
           <TabsTrigger value="tts">文字转语音</TabsTrigger>
-          <TabsTrigger value="stt">语音转文字</TabsTrigger>
         </TabsList>
 
         <TabsContent value="tts">
@@ -78,18 +77,6 @@ export default function VoicePage() {
           </Card>
         </TabsContent>
 
-        <TabsContent value="stt">
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="text-base flex items-center gap-2">
-                <Mic className="size-4" /> 语音转文字
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-sm text-muted-foreground">上传音频文件进行转录。此功能需要 faster-whisper 服务运行中。</p>
-            </CardContent>
-          </Card>
-        </TabsContent>
       </Tabs>
     </>
   );

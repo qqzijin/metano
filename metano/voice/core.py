@@ -1,4 +1,4 @@
-"""Voice/audio: TTS via edge-tts, STT via faster-whisper."""
+"""Voice/audio: TTS via edge-tts."""
 import asyncio
 import json
 import time
@@ -30,28 +30,6 @@ def voice_speak(text: str, voice: str='zh-CN-YunxiNeural', rate: str='+0%', pitc
         except RuntimeError:
             asyncio.run(_speak())
         return {'status': 'generated', 'path': str(output_path), 'voice': voice, 'text_length': len(text), 'size': output_path.stat().st_size}
-    except Exception as e:
-        logger.exception()
-        return {'error': str(e)}
-
-def voice_transcribe(audio_path: str, language: str='', model_size: str='base') -> dict:
-    """Transcribe audio to text using faster-whisper."""
-    try:
-        from faster_whisper import WhisperModel
-    except ImportError:
-        return {'error': 'faster-whisper not installed. Run: pip install faster-whisper'}
-    path = Path(audio_path)
-    if not path.exists():
-        return {'error': f'Audio file not found: {audio_path}'}
-    try:
-        wm = WhisperModel(model_size, device='cpu', compute_type='int8')
-        kwargs = {}
-        if language:
-            kwargs['language'] = language
-        segments, info = wm.transcribe(str(path), **kwargs)
-        text_parts = [segment.text for segment in segments]
-        full_text = ' '.join(text_parts).strip()
-        return {'status': 'transcribed', 'text': full_text, 'language': info.language, 'language_probability': info.language_probability, 'duration': info.duration, 'segments_count': len(text_parts)}
     except Exception as e:
         logger.exception()
         return {'error': str(e)}

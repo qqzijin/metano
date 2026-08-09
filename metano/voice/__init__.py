@@ -1,3 +1,3 @@
-"""Voice/audio: TTS via edge-tts, STT via faster-whisper."""
+"""Voice/audio: TTS via edge-tts."""
 
-from .core import voice_speak, voice_transcribe, voice_list_voices
+from .core import voice_speak, voice_list_voices

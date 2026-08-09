@@ -703,15 +703,6 @@ export function useServices() {
   });
 }
 
-/* ---- voice STT ---- */
-
-export function useVoiceSTT() {
-  return useMutation<{ text: string; language?: string }, Error, { file_path?: string; audio_data?: string }>({
-    mutationFn: (data) =>
-      fetchAPI("/voice/stt", { method: "POST", body: JSON.stringify(data) }),
-  });
-}
-
 /* ---- voice voices list ---- */
 
 export function useVoices(lang?: string) {

@@ -236,7 +236,7 @@ def status():
         except Exception:
             logger.exception()
             services['gateway'] = 'inactive'
-        for svc, mod in [('evolution', 'metano.evolution'), ('rag', 'metano.knowledge'), ('tts', 'metano.voice.tts'), ('stt', 'metano.voice.stt'), ('browser', 'metano.browser'), ('home', 'metano.home_assistant')]:
+        for svc, mod in [('evolution', 'metano.evolution'), ('rag', 'metano.knowledge'), ('tts', 'metano.voice.tts'), ('browser', 'metano.browser'), ('home', 'metano.home_assistant')]:
             try:
                 __import__(mod)
                 services[svc] = 'active'
@@ -482,7 +482,7 @@ async def api_services():
         logger.exception()
         services['gateway'] = 'inactive'
     import importlib
-    for svc, mod in [('evolution', 'metano.evolution'), ('rag', 'metano.knowledge'), ('tts', 'metano.voice.tts'), ('stt', 'metano.voice.stt'), ('browser', 'metano.browser'), ('home', 'metano.home_assistant')]:
+    for svc, mod in [('evolution', 'metano.evolution'), ('rag', 'metano.knowledge'), ('tts', 'metano.voice.tts'), ('browser', 'metano.browser'), ('home', 'metano.home_assistant')]:
         try:
             importlib.import_module(mod)
             services[svc] = 'active'
@@ -736,15 +736,6 @@ async def api_voice_tts(body: dict):
     try:
         from .voice import voice_speak
         return voice_speak(body.get('text', ''), voice=body.get('voice', 'zh-CN-YunxiNeural'), rate=body.get('rate', '+0%'))
-    except Exception as e:
-        logger.exception()
-        return _error_response('Internal error')
-
-@app.post('/api/voice/stt')
-async def api_voice_stt(body: dict):
-    try:
-        from .voice import voice_transcribe
-        return voice_transcribe(body.get('audio_path', ''))
     except Exception as e:
         logger.exception()
         return _error_response('Internal error')
