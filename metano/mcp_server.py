@@ -665,25 +665,6 @@ def web_search_tavily(query: str, limit: int=10) -> str:
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 @mcp.tool()
-def hot_sources() -> str:
-    """List all available trending/hot list sources from DailyHotApi (56 sources: zhihu, weibo, bilibili, github, etc.)."""
-    from .dailyhot import list_sources
-    try:
-        sources = list_sources()
-        return json.dumps(sources, ensure_ascii=False, indent=2)
-    except Exception as e:
-        return json.dumps({'error': str(e), 'hint': 'Is DailyHotApi running on port 6688?'})
-
-@mcp.tool()
-def hot_list(source: str, limit: int=10) -> str:
-    """Fetch a trending/hot list. source: zhihu, weibo, bilibili, github, douyin, toutiao, etc. limit: max items (1-50)."""
-    from .dailyhot import format_hot
-    try:
-        return format_hot(source, limit=limit)
-    except Exception as e:
-        return json.dumps({'error': str(e), 'hint': f"Check if '{source}' is a valid source. Use hot_sources to list all."})
-
-@mcp.tool()
 def memory_timeline(days: int=7, limit: int=20) -> str:
     """加载近期观察的时间线上下文（Layer 2）。需要了解近期用户活动时使用。days: 回看天数(1-90)，limit: 最多返回条数(1-50)。"""
     from .honcho.models import init_honcho_db, get_honcho_db, get_user, create_user, get_observations

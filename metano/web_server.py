@@ -1180,26 +1180,6 @@ async def api_evolution_restructure_apply(proposal_id: int, _admin=Depends(requi
         logger.exception()
         return _error_response('Internal error')
 
-@app.get('/api/hot/sources')
-async def api_hot_sources():
-    """List all available DailyHotApi trending sources."""
-    try:
-        from .dailyhot import list_sources
-        sources = list_sources()
-        return {'sources': sources, 'count': len(sources)}
-    except Exception as e:
-        return {'error': 'Service unavailable', 'hint': 'Is DailyHotApi running on port 6688?'}
-
-@app.get('/api/hot/{source}')
-async def api_hot_source(source: str, limit: int=10):
-    """Fetch a trending/hot list from DailyHotApi."""
-    try:
-        from .dailyhot import get_hot
-        data = get_hot(source, limit=limit)
-        return data
-    except Exception as e:
-        return _error_response('Internal error')
-
 @app.get('/api/evolution/cost-circuit')
 async def api_evolution_cost_circuit():
     """Get cost circuit breaker status."""

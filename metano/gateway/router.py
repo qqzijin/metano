@@ -189,7 +189,6 @@ class MessageRouter:
         'mcp__metano__browser_screenshot',
         'mcp__metano__browser_click',
         'mcp__metano__browser_type',
-        'mcp__metano__hot_list',
         'mcp__metano__memory_search',
         'mcp__metano__memory_add',
         'mcp__metano__knowledge_search',
@@ -202,7 +201,7 @@ class MessageRouter:
         permission prompts and pre-approve a tool allowlist.
         """
         import shutil
-        claude_bin = shutil.which('claude') or '/usr/local/bin/claude'
+        claude_bin = shutil.which('claude') or '/home/dk/local/node/bin/claude'
         system_ctx = self._build_system_context()
         context_layers = []
         if skill_prefix:

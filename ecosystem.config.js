@@ -10,15 +10,6 @@ module.exports = {
       restart_delay: 5000,
     },
     {
-      name: 'metano-honcho',
-      script: 'python3',
-      args: '-c "from metano.honcho.serve import main; main()"',
-      cwd: __dirname,
-      env: { HOME: process.env.HOME },
-      max_restarts: 10,
-      restart_delay: 5000,
-    },
-    {
       name: 'metano-gateway',
       script: 'python3',
       args: '-m metano.gateway.launcher',

@@ -8,6 +8,29 @@ from metano.log import logger
 ANTHROPIC_API_KEY = os.environ.get('ANTHROPIC_API_KEY', '')
 ANTHROPIC_BASE_URL = os.environ.get('ANTHROPIC_BASE_URL', 'https://api.anthropic.com/v1')
 ANTHROPIC_MODEL = os.environ.get('HONCHO_MODEL', 'claude-sonnet-4-6')
+# Some proxies sit behind Cloudflare bot protection that blocks the default
+# Python-urllib User-Agent with HTTP 1010. A browser UA keeps requests through.
+BROWSER_USER_AGENT = ('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 '
+                      '(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36')
+
+
+def _resolve_provider() -> tuple[str, str, str]:
+    """Resolve (base_url, api_key, model) for the evolution LLM channel.
+
+    Prefers the provider configured in gateway_config.yaml (via ModelRouter) so
+    the evolution system uses the same model/endpoint as user-facing chat.
+    Falls back to environment variables when no provider is configured.
+    """
+    try:
+        from .model_router import model_router
+        p = model_router.get_provider()
+        if p:
+            return (p.base_url or ANTHROPIC_BASE_URL,
+                    p.api_key or ANTHROPIC_API_KEY,
+                    p.model or ANTHROPIC_MODEL)
+    except Exception:
+        logger.exception("llm_call: provider resolution failed, using env")
+    return ANTHROPIC_BASE_URL, ANTHROPIC_API_KEY, ANTHROPIC_MODEL
 
 # Cost per million tokens (USD) — update as pricing changes
 _COST_PER_MILLION = {
@@ -35,23 +58,28 @@ def call_llm(system_prompt: str, user_prompt: str, max_tokens: int = 3000,
     All evolution system LLM calls should go through this function
     so costs are consistently tracked.
     """
-    if not ANTHROPIC_API_KEY:
+    base_url, api_key, model = _resolve_provider()
+    if not api_key:
         return '[]', 0.0
     payload = {
-        'model': ANTHROPIC_MODEL,
+        'model': model,
         'max_tokens': max_tokens,
         'system': system_prompt,
         'messages': [{'role': 'user', 'content': user_prompt}],
     }
     headers = {
         'Content-Type': 'application/json',
-        'x-api-key': ANTHROPIC_API_KEY,
+        'x-api-key': api_key,
         'anthropic-version': '2023-06-01',
+        'User-Agent': BROWSER_USER_AGENT,
     }
     cost = 0.0
     try:
+        # Anthropic SDK always posts to /v1/messages. base_url may or may not
+        # already end in /v1 (e.g. api.anthropic.com/v1 vs a custom proxy root).
+        endpoint = f'{base_url}/messages' if base_url.rstrip('/').endswith('/v1') else f'{base_url}/v1/messages'
         req = urllib.request.Request(
-            f'{ANTHROPIC_BASE_URL}/messages',
+            endpoint,
             data=json.dumps(payload).encode(),
             headers=headers,
         )
@@ -61,15 +89,15 @@ def call_llm(system_prompt: str, user_prompt: str, max_tokens: int = 3000,
             usage = result.get('usage', {})
             input_tokens = usage.get('input_tokens', 0)
             output_tokens = usage.get('output_tokens', 0)
-            cost = _estimate_cost(ANTHROPIC_MODEL, input_tokens, output_tokens)
+            cost = _estimate_cost(model, input_tokens, output_tokens)
             # Record cost in audit log
             try:
                 from .evo_models import add_audit
                 add_audit('llm', 'api_call', json.dumps({
-                    'model': ANTHROPIC_MODEL,
+                    'model': model,
                     'input_tokens': input_tokens,
                     'output_tokens': output_tokens,
-                }, ensure_ascii=False), cost=cost, model=ANTHROPIC_MODEL)
+                }, ensure_ascii=False), cost=cost, model=model)
             except Exception:
                 pass
             if content and content[0].get('type') == 'text':
@@ -82,8 +110,9 @@ def call_llm(system_prompt: str, user_prompt: str, max_tokens: int = 3000,
 
 def get_llm_config() -> dict:
     """Return current LLM configuration."""
+    base_url, api_key, model = _resolve_provider()
     return {
-        'model': ANTHROPIC_MODEL,
-        'base_url': ANTHROPIC_BASE_URL,
-        'has_api_key': bool(ANTHROPIC_API_KEY),
+        'model': model,
+        'base_url': base_url,
+        'has_api_key': bool(api_key),
     }
