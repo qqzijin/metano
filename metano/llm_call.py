@@ -39,6 +39,10 @@ _COST_PER_MILLION = {
     'claude-opus-4-8': (15.0, 75.0),
     'claude-opus-4-7': (15.0, 75.0),
     'claude-opus-4-6': (15.0, 75.0),
+    # DeepSeek V4 Flash off-peak rates (peak weekday hours are ~2x; cache-hit
+    # input is cheaper). Announced a significant price hike effective soon —
+    # revisit these when the new rates land.
+    'deepseek-v4-flash': (0.14, 0.28),
 }
 
 # Fallback pricing for unknown models
