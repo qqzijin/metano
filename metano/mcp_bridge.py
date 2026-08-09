@@ -7,38 +7,6 @@ from pathlib import Path
 from typing import Any
 from metano.log import logger
 
-# Proxy fallback chain for outbound API calls. First reachable entry wins.
-# Set HTTPS_PROXY/HTTP_PROXY env to override, or add your own proxies here.
-_PROXY_CANDIDATES = [
-    'http://127.0.0.1:7897',  # local proxy (default dev setup)
-]
-
-
-def _proxy_urls() -> list[str]:
-    """Resolve ordered proxy candidates: explicit env first, then defaults."""
-    env_proxy = (os.environ.get('HTTPS_PROXY')
-                 or os.environ.get('HTTP_PROXY')
-                 or os.environ.get('METANO_HTTP_PROXY', ''))
-    if env_proxy:
-        return [env_proxy] + _PROXY_CANDIDATES
-    return list(_PROXY_CANDIDATES)
-
-
-def _open_with_proxy(req, timeout: int = 15):
-    """Open a request through the first reachable proxy in the chain.
-
-    Raises the last error if every candidate fails.
-    """
-    last_err = None
-    for proxy in _proxy_urls():
-        try:
-            proxies = {'https': proxy, 'http': proxy}
-            opener = urllib.request.build_opener(urllib.request.ProxyHandler(proxies))
-            return opener.open(req, timeout=timeout)
-        except Exception as e:  # noqa: BLE001 - try next proxy
-            last_err = e
-    raise last_err if last_err else RuntimeError('no proxy candidates')
-
 def _get_tavily_key() -> str:
     if os.environ.get('TAVILY_API_KEY'):
         return os.environ['TAVILY_API_KEY']
@@ -59,7 +27,8 @@ async def tavily_search(query: str, limit: int=10) -> dict:
     payload = json.dumps({'api_key': api_key, 'query': query, 'max_results': limit, 'include_answer': True}).encode()
     req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json'})
     try:
-        with _open_with_proxy(req, timeout=15) as resp:
+        # urllib.request uses the system proxy (HTTPS_PROXY/HTTP_PROXY env) by default.
+        with urllib.request.urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read())
         results = [{'title': r.get('title', ''), 'url': r.get('url', ''), 'snippet': r.get('content', '')[:300], 'score': r.get('score', 0)} for r in data.get('results', [])]
         return {'query': query, 'answer': data.get('answer', ''), 'results': results}

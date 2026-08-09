@@ -24,10 +24,11 @@ def semantic_search(query: str, project: str='') -> dict:
     Falls back to keyword search if ccc is unavailable.
     """
     try:
+        # ccc searches the project indexed in a directory; it has no --project
+        # flag, so run in the target project dir when one is given.
         cmd = ['ccc', 'search', query]
-        if project:
-            cmd.extend(['--project', project])
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15, env={**os.environ, 'HTTPS_PROXY': os.environ.get('HTTPS_PROXY', ''), 'HTTP_PROXY': os.environ.get('HTTP_PROXY', '')})
+        run_cwd = project if project and os.path.isdir(project) else None
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15, cwd=run_cwd)
         if result.returncode != 0:
             return {'results': [], 'source': 'ccc_error', 'error': result.stderr[:200]}
         results = []

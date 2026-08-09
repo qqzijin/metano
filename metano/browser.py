@@ -154,30 +154,19 @@ def web_browse(url: str, wait_for: str='load') -> dict:
 
 
 def web_search(query: str) -> dict:
-    """Web search via DuckDuckGo (bing backend). Requires a reachable proxy."""
+    """Web search via DuckDuckGo (bing backend). Uses system proxy (HTTPS_PROXY env)."""
     try:
         from duckduckgo_search import DDGS
-        from .mcp_bridge import _proxy_urls
         results = []
-        last_err = None
-        for proxy in _proxy_urls():
-            try:
-                with DDGS(proxy=proxy, timeout=10) as ddgs:
-                    for r in ddgs.text(query, max_results=5):
-                        results.append({
-                            "title": r.get("title", ""),
-                            "url": r.get("href", ""),
-                            "snippet": r.get("body", ""),
-                        })
-                if results:
-                    return {"results": results}
-            except Exception as e:
-                last_err = e
-        if results:
-            return {"results": results}
-        return {"results": [],
-                "error": (f"web_search: no results via configured proxies. Last error: {str(last_err)[:100]}"
-                          if last_err else "web_search: no results")}
+        # DDGS uses env/system proxies by default (no hardcoded proxy config).
+        with DDGS(timeout=10) as ddgs:
+            for r in ddgs.text(query, max_results=5):
+                results.append({
+                    "title": r.get("title", ""),
+                    "url": r.get("href", ""),
+                    "snippet": r.get("body", ""),
+                })
+        return {"results": results}
     except Exception as e:
         logger.exception("web_search failed")
         return {"results": [], "error": str(e)}
