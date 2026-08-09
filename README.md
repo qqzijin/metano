@@ -79,6 +79,8 @@ Maintain (维护)     信念衰减、合并、归档、时间趋势抽象、成�
 
 ## 🚀 快速开始
 
+> 📖 **完整部署指南见 [`DEPLOYMENT.md`](DEPLOYMENT.md)**（含精确命令、验证清单、故障排查，AI 可直接执行）
+
 ```bash
 # 1. Python 依赖
 pip install -r requirements.txt
@@ -89,17 +91,21 @@ cp .env.example .env && vim .env
 # 3. 配置（可选，网关/认证等）
 cp gateway_config.example.yaml gateway_config.yaml
 
-# 4. 前端（Web 面板源码，可选构建）
+# 4. 前端（Web 面板 UI，必需：dist 不在仓库，API 可用但面板需此步）
 cd web && npm install && npm run build && cd ..
 
-# 5. 启动 Web 面板（端口 9122）
-python3 -c "import uvicorn; from metano.web_server import app; uvicorn.run(app, host='0.0.0.0', port=9122)"
+# 5. 启动服务
+python3 -m metano.serve              # Web 面板 + API（:9120，首启自动建 admin）
+python3 -m metano.honcho.serve       # Honcho 用户建模（:9121）
+python3 -m metano.cron_daemon start  # 定时任务（首启自动播种进化调度）
 
-# 6. 启动定时任务守护进程（进化系统核心）
-python3 -m metano.cron_daemon start
+# 6. Claude Code 集成（进化引擎依赖，详见 DEPLOYMENT.md 第 6 节）
+#    配置 hooks.example.json 到 ~/.claude/settings.local.json
 ```
 
-> 部署参考：`ecosystem.config.js` 为 PM2 进程管理配置（web/honcho/gateway/cron 四服务）。
+> 生产部署：`ecosystem.config.js` 为 PM2 进程管理配置（metano-web/honcho/gateway/cron 四服务）。
+
+> 💡 首次启动会自动创建 admin 账号：设了 `HERMES_DEFAULT_PASSWORD` 用它，否则生成随机密码（见启动日志）。部署后请立即改密码。
 
 ## ⚙️ 环境变量
 

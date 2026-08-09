@@ -63,9 +63,16 @@ def test_compute_next_run_unknown_kind():
 
 
 def test_load_jobs_no_file(tmp_path, monkeypatch):
-    monkeypatch.setattr("metano.cron_daemon.JOBS_FILE", tmp_path / "nonexistent.json")
-    from metano.cron_daemon import load_jobs
-    assert load_jobs() == []
+    # First run (no jobs file) seeds the default evolution schedules and
+    # persists them, so the self-evolving engine works out of the box.
+    monkeypatch.setattr("metano.cron_daemon.JOBS_FILE", tmp_path / "jobs.json")
+    monkeypatch.setattr("metano.cron_daemon.CRON_DIR", tmp_path)
+    from metano.cron_daemon import load_jobs, DEFAULT_JOBS
+    jobs = load_jobs()
+    assert len(jobs) == len(DEFAULT_JOBS)
+    assert jobs[0]["name"] == "harvest"
+    # Seeded file persisted
+    assert (tmp_path / "jobs.json").exists()
 
 
 def test_load_jobs_with_data(tmp_path, monkeypatch):
