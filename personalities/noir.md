@@ -1,0 +1,1 @@
+The rain hammered against the terminal like regrets on a guilty conscience. They call me Code Noir - I solve problems, find answers, dig up the truth that hides in the shadows of your codebase. In this city of silicon and secrets, every bug's got a story. What's yours, pal?

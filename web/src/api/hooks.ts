@@ -1,0 +1,774 @@
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import {
+  fetchAPI,
+  type Session,
+  type Message,
+  type AnalyticsData,
+  type SearchResult,
+  type CronJob,
+  type Skill,
+  type SkillDetail,
+  type KnowledgeDoc,
+  type EvolutionStatus,
+  type CostCircuitState,
+  type Suggestion,
+  type ModelProvider,
+  type SystemStatus,
+  type LogData,
+  type UserProfile,
+  type ChatRequest,
+  type BehaviorData,
+  type AgentRule,
+  type StrategyPattern,
+  type KnowledgeGap,
+  type ActionLogEntry,
+  type ArchitectureSnapshot,
+  type ExploreResult,
+  type ApplyResult,
+  type Proposal,
+  type EffectivenessData,
+} from "./client";
+
+/* ---- query key factory ---- */
+
+export const qk = {
+  status: ["status"] as const,
+  sessions: (p?: { search?: string; limit?: number }) => ["sessions", p] as const,
+  session: (id: string) => ["session", id] as const,
+  messages: (id: string) => ["messages", id] as const,
+  analytics: (days?: number) => ["analytics", days] as const,
+  search: (q: string) => ["search", q] as const,
+  cron: ["cron"] as const,
+  skills: ["skills"] as const,
+  skill: (n: string) => ["skill", n] as const,
+  knowledge: ["knowledge"] as const,
+  evolution: ["evolution"] as const,
+  suggestions: ["suggestions"] as const,
+  models: ["models"] as const,
+  logs: (source?: string) => ["logs", source] as const,
+  profiles: (uid?: string) => ["profiles", uid] as const,
+  config: ["config"] as const,
+  browserSearch: (q: string) => ["browser", "search", q] as const,
+  voices: (lang?: string) => ["voices", lang] as const,
+  homeStatus: ["home", "status"] as const,
+  security: (uid: string) => ["security", uid] as const,
+  audit: (uid: string) => ["security", uid, "audit"] as const,
+  securityUsers: ["security", "users"] as const,
+};
+
+/* ---- query hooks ---- */
+
+export function useStatus() {
+  return useQuery<SystemStatus>({
+    queryKey: qk.status,
+    queryFn: () => fetchAPI("/status"),
+    refetchInterval: 15000,
+  });
+}
+
+export function useSessions(search?: string, limit = 20) {
+  return useQuery<{ sessions: Session[] }>({
+    queryKey: qk.sessions({ search, limit }),
+    queryFn: () => fetchAPI(`/sessions?limit=${limit}${search ? `&search=${encodeURIComponent(search)}` : ""}`).then((d: any) => ({ sessions: d.items ?? [] })),
+    refetchInterval: 10000,
+  });
+}
+
+export function useSession(id: string) {
+  return useQuery<Session>({
+    queryKey: qk.session(id),
+    queryFn: () => fetchAPI(`/sessions/${id}`),
+    enabled: !!id,
+  });
+}
+
+export function useMessages(sessionId: string) {
+  return useQuery<{ messages: Message[] }>({
+    queryKey: qk.messages(sessionId),
+    queryFn: () => fetchAPI(`/sessions/${sessionId}/messages`).then((d: any) => ({ messages: d.items ?? [] })),
+    enabled: !!sessionId,
+  });
+}
+
+export function useAnalytics(days = 7) {
+  return useQuery<AnalyticsData>({
+    queryKey: qk.analytics(days),
+    queryFn: () => fetchAPI(`/analytics?days=${days}`),
+  });
+}
+
+export function useSearch(query: string) {
+  return useQuery<{ results: SearchResult[] }>({
+    queryKey: qk.search(query),
+    queryFn: () => fetchAPI(`/search?q=${encodeURIComponent(query)}`),
+    enabled: !!query,
+  });
+}
+
+export function useCronJobs() {
+  return useQuery<{ jobs: CronJob[] }>({
+    queryKey: qk.cron,
+    queryFn: () => fetchAPI("/cron/jobs").then((d: any) => ({ jobs: Array.isArray(d) ? d : d.jobs ?? d.items ?? [] })),
+  });
+}
+
+export function useSkills() {
+  return useQuery<{ skills: Skill[] }>({
+    queryKey: qk.skills,
+    queryFn: () => fetchAPI("/skills").then((d: any) => ({ skills: d.items ?? [] })),
+  });
+}
+
+export function useSkill(name: string) {
+  return useQuery<SkillDetail>({
+    queryKey: qk.skill(name),
+    queryFn: () => fetchAPI(`/skills/${name}`),
+    enabled: !!name,
+  });
+}
+
+export function useKnowledge() {
+  return useQuery<{ documents: KnowledgeDoc[] }>({
+    queryKey: qk.knowledge,
+    queryFn: () => fetchAPI("/knowledge").then((d: any) => ({ documents: d.items ?? [] })),
+  });
+}
+
+export function useEvolution() {
+  return useQuery<EvolutionStatus>({
+    queryKey: qk.evolution,
+    queryFn: () => fetchAPI("/evolution"),
+    refetchInterval: 10000,
+  });
+}
+
+export function useSuggestions() {
+  return useQuery<{ suggestions: Suggestion[] }>({
+    queryKey: qk.suggestions,
+    queryFn: () => fetchAPI("/evolution/suggestions").then((d: any) => ({ suggestions: d.items ?? [] })),
+  });
+}
+
+export function useModels() {
+  return useQuery<{ providers: ModelProvider[] }>({
+    queryKey: qk.models,
+    queryFn: () => fetchAPI("/models").then((d: any) => ({ providers: d.items ?? [] })),
+  });
+}
+
+export function useLogs(source?: string) {
+  return useQuery<LogData>({
+    queryKey: qk.logs(source),
+    queryFn: () => fetchAPI(`/logs${source ? `?source=${source}` : ""}`),
+    refetchInterval: 5000,
+  });
+}
+
+export function useProfile(userId = "default") {
+  return useQuery<UserProfile>({
+    queryKey: qk.profiles(userId),
+    queryFn: () => fetchAPI(`/profiles/${userId}`),
+  });
+}
+
+export function useConfig() {
+  return useQuery<Record<string, unknown>>({
+    queryKey: qk.config,
+    queryFn: () => fetchAPI("/config").then((d: any) => d.config ?? d),
+  });
+}
+
+/* ---- mutation hooks ---- */
+
+export function useChatMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (req: ChatRequest) =>
+      fetchAPI<{ response: string }>("/chat", {
+        method: "POST",
+        body: JSON.stringify(req),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.sessions() }),
+  });
+}
+
+export function useCronCreate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (job: Partial<CronJob>) =>
+      fetchAPI("/cron/jobs", { method: "POST", body: JSON.stringify(job) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.cron }),
+  });
+}
+
+export function useCronDelete() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      fetchAPI(`/cron/jobs/${id}`, { method: "DELETE" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.cron }),
+  });
+}
+
+export function useCronPause() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      fetchAPI(`/cron/jobs/${id}/pause`, { method: "POST" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.cron }),
+  });
+}
+
+export function useCronResume() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      fetchAPI(`/cron/jobs/${id}/resume`, { method: "POST" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.cron }),
+  });
+}
+
+export function useCronTrigger() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      fetchAPI(`/cron/jobs/${id}/trigger`, { method: "POST" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.cron }),
+  });
+}
+
+export function useEvolutionRun() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (stage: string) =>
+      fetchAPI("/evolution/run", { method: "POST", body: JSON.stringify({ stage }) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.evolution });
+      qc.invalidateQueries({ queryKey: qk.suggestions });
+    },
+  });
+}
+
+export function useEvolutionPause() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => fetchAPI("/evolution/pause", { method: "POST" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.evolution }),
+  });
+}
+
+export function useEvolutionResume() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => fetchAPI("/evolution/resume", { method: "POST" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.evolution }),
+  });
+}
+
+export function useApproveSuggestion() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      fetchAPI(`/evolution/approve/${id}`, { method: "POST" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.suggestions }),
+  });
+}
+
+export function useRejectSuggestion() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      fetchAPI(`/evolution/reject/${id}`, { method: "POST" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.suggestions }),
+  });
+}
+
+export function useKnowledgeIngest() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { path: string; title?: string }) =>
+      fetchAPI("/knowledge/ingest", { method: "POST", body: JSON.stringify(data) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.knowledge }),
+  });
+}
+
+export function useKnowledgeDelete() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (docId: string) =>
+      fetchAPI(`/knowledge/${docId}`, { method: "DELETE" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.knowledge }),
+  });
+}
+
+export function useKnowledgeSearch() {
+  return useMutation({
+    mutationFn: (query: string) =>
+      fetchAPI<{ results: Array<{ content: string; score: number; title: string }> }>(
+        "/knowledge/search",
+        { method: "POST", body: JSON.stringify({ query }) }
+      ),
+  });
+}
+
+export function useModelSetDefault() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) =>
+      fetchAPI(`/models/${name}/default`, { method: "PUT" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.models }),
+  });
+}
+
+export function useBrowserSearch() {
+  return useMutation({
+    mutationFn: (query: string) =>
+      fetchAPI<{ results: Array<{ title: string; url: string; snippet: string }> }>(
+        "/browser/search",
+        { method: "POST", body: JSON.stringify({ query }) }
+      ),
+  });
+}
+
+export function useBrowserBrowse() {
+  return useMutation({
+    mutationFn: (url: string) =>
+      fetchAPI<{ content: string; title: string }>("/browser/browse", {
+        method: "POST",
+        body: JSON.stringify({ url }),
+      }),
+  });
+}
+
+export function useVoiceTTS() {
+  return useMutation({
+    mutationFn: (data: { text: string; voice?: string; rate?: string }) =>
+      fetchAPI<{ path: string; status: string }>("/voice/tts", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+  });
+}
+
+export function useHomeControl() {
+  return useMutation({
+    mutationFn: (data: { entity_id: string; service: string; value?: unknown }) =>
+      fetchAPI("/home/control", { method: "POST", body: JSON.stringify(data) }),
+  });
+}
+
+export function useSecuritySetTier() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ userId, tier }: { userId: string; tier: string }) =>
+      fetchAPI(`/security/${userId}/tier`, {
+        method: "PUT",
+        body: JSON.stringify({ tier }),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.securityUsers }),
+  });
+}
+
+export function useSecurityUsers() {
+  return useQuery<{
+    users: Array<{
+      user_id: string;
+      tier: string;
+      rate_limit_remaining?: number;
+      blocked_count?: number;
+    }>;
+  }>({
+    queryKey: qk.securityUsers,
+    queryFn: () => fetchAPI("/security/users").then((d: any) => ({ users: Array.isArray(d) ? d : d.users ?? d.items ?? [] })),
+  });
+}
+
+/* ---- new: web search via Tavily ---- */
+
+export function useWebSearch() {
+  return useMutation({
+    mutationFn: (query: string) =>
+      fetchAPI<{ answer: string; results: Array<{ title: string; url: string; snippet: string }> }>(
+        "/search/web",
+        { method: "POST", body: JSON.stringify({ query }) }
+      ),
+  });
+}
+
+/* ---- new: MCP tools ---- */
+
+export function useMcpTools() {
+  return useQuery<{ tools: Array<{ name: string; source: string; description: string }> }>({
+    queryKey: ["mcp", "tools"],
+    queryFn: () => fetchAPI("/mcp/tools").then((d: any) => ({ tools: d.tools ?? [] })),
+  });
+}
+
+/* ---- new: memory system ---- */
+
+export function useMemoryStats() {
+  return useQuery({
+    queryKey: ["memory", "stats"],
+    queryFn: () => fetchAPI("/memory/stats"),
+  });
+}
+
+export function useMemorySearch(q: string) {
+  return useQuery<{ results: Array<{ id: number; content: string; category: string; importance: number }> }>({
+    queryKey: ["memory", "search", q],
+    queryFn: () => fetchAPI(`/memory/search?q=${encodeURIComponent(q)}`),
+    enabled: !!q,
+  });
+}
+
+export function useMemoryCompress() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => fetchAPI("/memory/compress", { method: "POST" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["memory", "stats"] }),
+  });
+}
+
+/* ---- new: memory export/import/seed ---- */
+
+export function useMemoryExport() {
+  return useMutation({
+    mutationFn: () => fetchAPI("/memory/export"),
+  });
+}
+
+export function useMemoryImport() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: any) =>
+      fetchAPI("/memory/import", { method: "POST", body: JSON.stringify(data) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["memory", "stats"] }),
+  });
+}
+
+export function useMemorySeed() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => fetchAPI("/memory/seed", { method: "POST" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["memory", "stats"] }),
+  });
+}
+
+/* ---- new: evolution correction ---- */
+
+export function useEvolutionCorrect() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { correction: string; category?: string }) =>
+      fetchAPI("/evolution/correct", { method: "POST", body: JSON.stringify(data) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.evolution });
+      qc.invalidateQueries({ queryKey: qk.suggestions });
+    },
+  });
+}
+
+/* ---- new: proxy providers ---- */
+
+export function useProxyProviders() {
+  return useQuery<{ providers: ModelProvider[] }>({
+    queryKey: ["proxy", "providers"],
+    queryFn: () => fetchAPI("/proxy/providers").then((d: any) => ({ providers: d.providers ?? d.items ?? [] })),
+  });
+}
+
+/* ---- new: browser screenshot ---- */
+
+export function useBrowserScreenshot() {
+  return useMutation({
+    mutationFn: (url: string) =>
+      fetchAPI<{ path: string }>("/browser/screenshot", {
+        method: "POST",
+        body: JSON.stringify({ url }),
+      }),
+  });
+}
+
+/* ---- behavior patterns ---- */
+
+export function useBehaviorPatterns() {
+  return useQuery<BehaviorData>({
+    queryKey: ["evolution", "behaviors"],
+    queryFn: () => fetchAPI("/evolution/behaviors"),
+  });
+}
+
+export function useBehaviorAnalyze() {
+  return useMutation({
+    mutationFn: (days: number = 7) =>
+      fetchAPI("/evolution/analyze", { method: "POST", body: JSON.stringify({ days }) }),
+  });
+}
+
+export function useBehaviorApprove() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      fetchAPI(`/evolution/behavior-approve/${id}`, { method: "POST" }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["evolution", "behaviors"] });
+      qc.invalidateQueries({ queryKey: qk.suggestions });
+    },
+  });
+}
+
+export function useBehaviorReject() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      fetchAPI(`/evolution/behavior-reject/${id}`, { method: "POST" }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["evolution", "behaviors"] });
+      qc.invalidateQueries({ queryKey: qk.suggestions });
+    },
+  });
+}
+
+/* ---- agent rules ---- */
+
+export function useAgentRules() {
+  return useQuery<{ rules: AgentRule[] }>({
+    queryKey: ["agentRules"],
+    queryFn: () => fetchAPI("/evolution/rules"),
+  });
+}
+
+export function useToggleRule() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ ruleId, active }: { ruleId: number; active: boolean }) =>
+      fetchAPI(`/evolution/rules/${ruleId}/toggle`, { method: "POST", body: JSON.stringify({ active }) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["agentRules"] }),
+  });
+}
+
+/* ---- strategy ---- */
+
+export function useStrategy(context?: string) {
+  return useQuery<{ strategies: AgentRule[] }>({
+    queryKey: ["strategy", context],
+    queryFn: () => fetchAPI(`/evolution/strategy${context ? `?context=${encodeURIComponent(context)}` : ""}`),
+  });
+}
+
+export function useDetectPatterns() {
+  return useMutation<StrategyPattern[], Error, void>({
+    mutationFn: async () => {
+      const d = await fetchAPI("/evolution/strategy-detect", { method: "POST" });
+      return (d as any).patterns ?? [];
+    },
+  });
+}
+
+/* ---- architecture ---- */
+
+export function useArchitecture() {
+  return useQuery<ArchitectureSnapshot>({
+    queryKey: ["architecture"],
+    queryFn: () => fetchAPI("/evolution/architecture"),
+  });
+}
+
+export function useApplyRestructure() {
+  const qc = useQueryClient();
+  return useMutation<ApplyResult, Error, string>({
+    mutationFn: (proposalId: string) =>
+      fetchAPI(`/evolution/restructure-apply/${proposalId}`, { method: "POST" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["architecture"] }),
+  });
+}
+
+/* ---- knowledge exploration ---- */
+
+export function useExploreKnowledge() {
+  return useMutation<ExploreResult, Error, string>({
+    mutationFn: (topic: string) =>
+      fetchAPI("/knowledge/explore", { method: "POST", body: JSON.stringify({ topic }) }),
+  });
+}
+
+export function useKnowledgeGaps() {
+  return useQuery<{ gaps: KnowledgeGap[] }>({
+    queryKey: ["knowledgeGaps"],
+    queryFn: () => fetchAPI("/knowledge/gaps"),
+  });
+}
+
+/* ---- action log ---- */
+
+export function useActionLog(limit = 20) {
+  return useQuery<{ actions: ActionLogEntry[] }>({
+    queryKey: ["actionLog", limit],
+    queryFn: () => fetchAPI(`/evolution/action-log?limit=${limit}`),
+  });
+}
+
+/* ---- proposals ---- */
+
+export function useProposals(status?: string, type?: string) {
+  const params = new URLSearchParams();
+  if (status) params.set("status", status);
+  if (type) params.set("proposal_type", type);
+  const qs = params.toString();
+  return useQuery<{ items: Proposal[] }>({
+    queryKey: ["proposals", status, type],
+    queryFn: () => fetchAPI(`/evolution/proposals${qs ? "?" + qs : ""}`),
+  });
+}
+
+export function useProposalApprove() {
+  const qc = useQueryClient();
+  return useMutation<{ status: string }, Error, number>({
+    mutationFn: (id: number) => fetchAPI(`/evolution/proposals/${id}/approve`, { method: "POST" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["proposals"] }),
+  });
+}
+
+export function useProposalReject() {
+  const qc = useQueryClient();
+  return useMutation<{ status: string }, Error, number>({
+    mutationFn: (id: number) => fetchAPI(`/evolution/proposals/${id}/reject`, { method: "POST" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["proposals"] }),
+  });
+}
+
+export function useProposalApply() {
+  const qc = useQueryClient();
+  return useMutation<{ status: string }, Error, number>({
+    mutationFn: (id: number) => fetchAPI(`/evolution/proposals/${id}/apply`, { method: "POST" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["proposals"] }),
+  });
+}
+
+export function useProposalsApplyApproved() {
+  const qc = useQueryClient();
+  return useMutation<{ applied: number }, Error, void>({
+    mutationFn: () => fetchAPI("/evolution/proposals/apply-approved", { method: "POST" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["proposals"] }),
+  });
+}
+
+/* ---- knowledge semantic search ---- */
+
+export function useKnowledgeSemanticSearch() {
+  return useMutation<{ results: Array<{ file: string; content: string; score: number }> }, Error, string>({
+    mutationFn: (query) =>
+      fetchAPI("/knowledge/semantic-search", { method: "POST", body: JSON.stringify({ query }) }),
+  });
+}
+
+/* ---- knowledge synthesize ---- */
+
+export function useKnowledgeSynthesize() {
+  const qc = useQueryClient();
+  return useMutation<{ status: string; topic: string }, Error, string>({
+    mutationFn: (topic) =>
+      fetchAPI("/knowledge/synthesize", { method: "POST", body: JSON.stringify({ topic }) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.knowledge }),
+  });
+}
+
+/* ---- rule effectiveness ---- */
+
+export function useRuleEffectiveness(ruleId: number | null) {
+  return useQuery<EffectivenessData>({
+    queryKey: ["effectiveness", ruleId],
+    queryFn: () => fetchAPI(`/evolution/effectiveness/${ruleId}`),
+    enabled: !!ruleId,
+  });
+}
+
+/* ---- config update ---- */
+
+export function useConfigUpdate() {
+  const qc = useQueryClient();
+  return useMutation<Record<string, unknown>, Error, Record<string, unknown>>({
+    mutationFn: (config) =>
+      fetchAPI("/config", { method: "PUT", body: JSON.stringify(config) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.config }),
+  });
+}
+
+/* ---- services ---- */
+
+export function useServices() {
+  return useQuery<Record<string, string>>({
+    queryKey: ["services"],
+    queryFn: () => fetchAPI("/services"),
+  });
+}
+
+/* ---- voice STT ---- */
+
+export function useVoiceSTT() {
+  return useMutation<{ text: string; language?: string }, Error, { file_path?: string; audio_data?: string }>({
+    mutationFn: (data) =>
+      fetchAPI("/voice/stt", { method: "POST", body: JSON.stringify(data) }),
+  });
+}
+
+/* ---- voice voices list ---- */
+
+export function useVoices(lang?: string) {
+  return useQuery<{ voices: Array<{ id: string; name: string; language: string }> }>({
+    queryKey: qk.voices(lang),
+    queryFn: () => fetchAPI(`/voice/voices${lang ? `?language=${encodeURIComponent(lang)}` : ""}`),
+  });
+}
+
+/* ---- cost circuit breaker ---- */
+
+export function useCostCircuit() {
+  return useQuery<CostCircuitState>({
+    queryKey: ["evolution", "cost-circuit"],
+    queryFn: () => fetchAPI("/evolution/cost-circuit"),
+    refetchInterval: 30000,
+  });
+}
+
+export function useUpdateCostCircuitConfig() {
+  const qc = useQueryClient();
+  return useMutation<CostCircuitState, Error, { warn?: number; pause?: number; stop?: number; auto_resume_hours?: number }>({
+    mutationFn: (config) =>
+      fetchAPI("/evolution/cost-circuit/config", { method: "POST", body: JSON.stringify(config) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["evolution", "cost-circuit"] });
+      qc.invalidateQueries({ queryKey: qk.evolution });
+    },
+  });
+}
+
+/* ---- home entity detail ---- */
+
+export function useHomeEntity(entityId: string) {
+  return useQuery<{ state: string; attributes: Record<string, unknown> }>({
+    queryKey: ["home", "entity", entityId],
+    queryFn: () => fetchAPI(`/home/status/${entityId}`),
+    enabled: !!entityId,
+  });
+}
+
+/* ---- MCP call ---- */
+
+export function useMcpCall() {
+  return useMutation<{ result: unknown }, Error, { server: string; tool: string; arguments?: Record<string, unknown> }>({
+    mutationFn: (data) =>
+      fetchAPI("/mcp/call", { method: "POST", body: JSON.stringify(data) }),
+  });
+}
+
+/* ---- proxy add ---- */
+
+export function useProxyAdd() {
+  const qc = useQueryClient();
+  return useMutation<{ status: string }, Error, { name: string; base_url: string; api_key?: string; model?: string }>({
+    mutationFn: (data) =>
+      fetchAPI("/proxy/add", { method: "POST", body: JSON.stringify(data) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["proxy", "providers"] }),
+  });
+}

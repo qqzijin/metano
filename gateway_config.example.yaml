@@ -1,0 +1,65 @@
+# ============================================================
+# metano 配置示例
+# 复制为 gateway_config.yaml 并填入你的真实密钥。
+# ⚠️ 切勿提交真实密钥到 Git！
+# ============================================================
+
+# 模型提供商
+models:
+  default:
+    base_url: "https://api.anthropic.com"
+    model: "claude-sonnet-4-6"
+    max_tokens: 4096
+    default: true
+
+# Web 面板认证（自定义 JWT 密钥与管理员账号）
+auth:
+  jwt_secret: "CHANGE_ME_RANDOM_STRING"
+  users:
+    - username: admin
+      password: "CHANGE_ME_BCRYPT_HASH"   # bcrypt 哈希，用 bcrypt.hashpw 生成
+      role: admin
+
+# 多平台消息网关（按需启用）
+discord:
+  enabled: false
+  bot_token: ""
+  guild_id: null
+  allowed_channels: []
+
+telegram:
+  enabled: false
+  bot_token: ""
+  allowed_users: []
+
+feishu:
+  enabled: true
+  app_id: "cli_xxxxxxxxxxxxxx"
+  app_secret: "YOUR_APP_SECRET"
+  encryption_key: ""
+  verification_token: ""
+  allowed_users: []
+
+qq:
+  enabled: false
+  ws_url: "ws://127.0.0.1:3001"
+  allowed_groups: []
+
+wechat:
+  enabled: false
+  method: wcferry
+
+# 会话管理
+session:
+  max_history_messages: 50
+  max_idle_minutes: 30
+
+# 智能家居（可选）
+home_assistant:
+  url: "http://homeassistant.local:8123"
+  token: ""
+
+# 语音（可选）
+voice:
+  tts_engine: "edge-tts"
+  stt_engine: "faster-whisper"

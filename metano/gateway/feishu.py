@@ -1,0 +1,429 @@
+"""Feishu/Lark bot adapter for metano gateway.
+
+Uses lark-oapi SDK with WebSocket (Long Connection) mode.
+Supports: private chat, group @mention, markdown responses.
+"""
+
+import asyncio
+import json
+import logging
+import os
+import re
+import time
+from typing import Optional
+
+import lark_oapi as lark
+from lark_oapi.api.im.v1 import (
+    CreateMessageRequest,
+    CreateMessageRequestBody,
+    PatchMessageRequest,
+    PatchMessageRequestBody,
+    P2ImMessageReceiveV1,
+)
+
+from .router import MessageRouter
+
+logger = logging.getLogger(__name__)
+
+# Feishu message content size limit (per message)
+MAX_MESSAGE_LENGTH = 4000
+
+
+def _split_message(text: str, max_len: int = MAX_MESSAGE_LENGTH) -> list[str]:
+    """Split long text into chunks at paragraph boundaries."""
+    if len(text) <= max_len:
+        return [text]
+    chunks = []
+    while text:
+        if len(text) <= max_len:
+            chunks.append(text)
+            break
+        # Try to split at paragraph or sentence boundary
+        split_at = text.rfind("\n\n", 0, max_len)
+        if split_at < max_len // 2:
+            split_at = text.rfind("\n", 0, max_len)
+        if split_at < max_len // 2:
+            split_at = text.rfind("。", 0, max_len)
+        if split_at < max_len // 2:
+            split_at = text.rfind(" ", 0, max_len)
+        if split_at < max_len // 2:
+            split_at = max_len
+        chunks.append(text[:split_at + 1])
+        text = text[split_at + 1:]
+    return chunks
+
+
+def _text_to_feishu_md(text: str) -> str:
+    """Convert plain text / markdown to Feishu-compatible markdown.
+
+    Feishu supports a subset of markdown. Strip unsupported syntax.
+    """
+    # Feishu doesn't support ``` with language hints, keep simple code blocks
+    text = re.sub(r"```\w+\n", "```\n", text)
+    # Strip HTML-style tags that Feishu doesn't render
+    text = re.sub(r"</?(div|span|br|p)[^>]*>", "", text)
+    return text
+
+
+class FeishuBot:
+    """Feishu/Lark bot using lark-oapi SDK with WebSocket mode."""
+
+    def __init__(self, config: dict, router: MessageRouter):
+        self.app_id = os.environ.get("FEISHU_APP_ID") or config.get("app_id", "")
+        self.app_secret = os.environ.get("FEISHU_APP_SECRET") or config.get("app_secret", "")
+        self.encryption_key = os.environ.get("FEISHU_ENCRYPTION_KEY") or config.get("encryption_key", "")
+        self.verification_token = os.environ.get("FEISHU_VERIFICATION_TOKEN") or config.get("verification_token", "")
+        self.allowed_users = config.get("allowed_users", [])
+        self.router = router
+        self.client: Optional[lark.Client] = None
+        self._processed = set()  # message dedup
+        self._typing_backoff_until = 0.0  # timestamp: suppress typing reactions after rate limit
+
+    def start(self):
+        """Start the Feishu bot with WebSocket (Long Connection) mode."""
+        if not self.app_id or not self.app_secret:
+            logger.error("Feishu bot requires app_id and app_secret in gateway_config.yaml")
+            return
+
+        # Create lark client (SDK default timeout is 30s, too short for API calls)
+        self.client = lark.Client.builder() \
+            .app_id(self.app_id) \
+            .app_secret(self.app_secret) \
+            .timeout(120) \
+            .log_level(lark.LogLevel.DEBUG) \
+            .build()
+
+        # Build event handler
+        handler = lark.EventDispatcherHandler.builder(
+            encrypt_key=self.encryption_key,
+            verification_token=self.verification_token,
+        ) \
+            .register_p2_im_message_receive_v1(self._on_message) \
+            .build()
+
+        # Start WebSocket client
+        ws_client = lark.ws.Client(
+            self.app_id,
+            self.app_secret,
+            event_handler=handler,
+            log_level=lark.LogLevel.DEBUG,
+        )
+
+        logger.info("Feishu bot starting (WebSocket mode)...")
+        try:
+            ws_client.start()
+        except Exception as e:
+            logger.error(f"Feishu bot error: {e}")
+
+    def _on_message(self, data: P2ImMessageReceiveV1) -> None:
+        """Handle incoming Feishu message event (schedules async processing)."""
+        try:
+            event = data.event
+            msg = event.message
+            sender = event.sender
+
+            # Dedup by message_id
+            msg_id = msg.message_id
+            if msg_id in self._processed:
+                return
+            self._processed.add(msg_id)
+            # Keep dedup set bounded
+            if len(self._processed) > 1000:
+                self._processed = set(list(self._processed)[-500:])
+
+            # Auth check
+            sender_id = sender.sender_id.open_id if sender.sender_id else ""
+            if self.allowed_users and sender_id not in self.allowed_users:
+                logger.info(f"Ignoring message from unauthorized user: {sender_id}")
+                return
+
+            chat_type = msg.chat_type  # "p2p" or "group"
+            chat_id = msg.chat_id
+
+            # Extract text content
+            content = msg.content
+            msg_type = msg.message_type
+
+            user_text = self._extract_text(content, msg_type)
+
+            # For group messages, only respond to @bot mentions
+            if chat_type == "group":
+                # Check if bot is mentioned
+                mentions = msg.mentions
+                if not mentions:
+                    return
+                # Strip @bot prefix from text
+                for mention in mentions:
+                    if mention.name:
+                        user_text = re.sub(rf"@{re.escape(mention.name)}\s*", "", user_text).strip()
+                if not user_text:
+                    return
+
+            if not user_text:
+                return
+
+            logger.info(f"Feishu message from {sender_id} in {chat_type}: {user_text[:80]}")
+
+            # Check if this is an evolution proposal approval/rejection reply
+            if chat_type == "p2p":
+                try:
+                    from ..evolution_notify import process_approval_reply
+                    approval_result = process_approval_reply(user_text)
+                    if approval_result:
+                        action = approval_result['action']
+                        pid = approval_result['proposal_id']
+                        self._send_text_message(chat_id, f"Proposal #{pid} {action}", "")
+                        return
+                except Exception:
+                    pass  # Not an approval reply, continue normal processing
+
+            # Mark message as read (emoji reaction)
+            self._add_read_indicator(msg_id)
+
+            # Add typing indicator (emoji reaction)
+            self._add_typing_indicator(msg_id)
+
+            # Schedule async processing so we don't block the WS event loop
+            import concurrent.futures
+            if not hasattr(self, '_executor'):
+                self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+            self._executor.submit(
+                self._process_and_reply_sync, chat_id, msg_id, sender_id, chat_type, user_text
+            )
+
+        except Exception as e:
+            logger.error(f"Error handling Feishu message: {e}", exc_info=True)
+
+    def _process_and_reply_sync(self, chat_id: str, msg_id: str, sender_id: str, chat_type: str, user_text: str):
+        """Sync wrapper: runs async route_message in a new event loop within the thread pool."""
+        try:
+            platform_user = f"feishu:{sender_id}"
+            response = asyncio.run(
+                self.router.route_message(
+                    platform="feishu",
+                    user_id=platform_user,
+                    message=user_text,
+                )
+            )
+            self._remove_typing_indicator(msg_id)
+            self._remove_read_indicator(msg_id)
+            self._send_reply(chat_id, response, msg_id)
+        except Exception as e:
+            logger.error(f"Error in async message processing: {e}", exc_info=True)
+            self._remove_typing_indicator(msg_id)
+            self._remove_read_indicator(msg_id)
+
+    def _extract_text(self, content: str, msg_type: str) -> str:
+        """Extract plain text from Feishu message content."""
+        if msg_type == "text":
+            try:
+                data = json.loads(content)
+                return data.get("text", "")
+            except json.JSONDecodeError:
+                return content
+        elif msg_type == "post":
+            # Rich text: extract all text from content blocks
+            try:
+                data = json.loads(content)
+                texts = []
+                for line in data.get("content", []):
+                    for elem in line:
+                        if isinstance(elem, dict) and elem.get("tag") == "text":
+                            texts.append(elem.get("text", ""))
+                        elif isinstance(elem, dict) and elem.get("tag") == "at":
+                            texts.append(elem.get("user_name", ""))
+                return " ".join(texts)
+            except (json.JSONDecodeError, KeyError):
+                return content
+        return content
+
+    def _send_reply(self, chat_id: str, text: str, reply_to: str = ""):
+        """Send a reply message to a Feishu chat."""
+        if not self.client:
+            return
+
+        md_text = _text_to_feishu_md(text)
+        chunks = _split_message(md_text)
+
+        for i, chunk in enumerate(chunks):
+            body = CreateMessageRequestBody.builder() \
+                .msg_type("text" if not _has_markdown(chunk) else "interactive") \
+                .content(self._build_content(chunk)) \
+                .receive_id(chat_id) \
+                .build()
+
+            # For text messages, use simpler API
+            try:
+                self._send_text_message(chat_id, chunk, reply_to if i == 0 else "")
+            except Exception as e:
+                logger.error(f"Failed to send Feishu message: {e}")
+
+    def _send_text_message(self, chat_id: str, text: str, reply_to: str = ""):
+        """Send a text message to Feishu chat with retry."""
+        content = json.dumps({"text": text}, ensure_ascii=False)
+
+        request = CreateMessageRequest.builder() \
+            .receive_id_type("chat_id") \
+            .request_body(
+                CreateMessageRequestBody.builder()
+                .receive_id(chat_id)
+                .msg_type("text")
+                .content(content)
+                .build()
+            ) \
+            .build()
+
+        if reply_to:
+            from lark_oapi.api.im.v1 import ReplyMessageRequest, ReplyMessageRequestBody
+            reply_req = ReplyMessageRequest.builder() \
+                .message_id(reply_to) \
+                .request_body(
+                    ReplyMessageRequestBody.builder()
+                    .msg_type("text")
+                    .content(content)
+                    .build()
+                ) \
+                .build()
+            for attempt in range(3):
+                try:
+                    resp = self.client.im.v1.message.reply(reply_req)
+                    if resp.success():
+                        return
+                    logger.error(f"Feishu reply failed: code={resp.code}, msg={resp.msg}")
+                    if resp.code in (99991400, 99991401):
+                        time.sleep(2 ** attempt)
+                        continue
+                    return
+                except Exception as e:
+                    logger.error(f"Feishu reply attempt {attempt+1} error: {e}")
+                    if attempt < 2:
+                        time.sleep(2 ** attempt)
+                    else:
+                        raise
+            return
+
+        for attempt in range(3):
+            try:
+                resp = self.client.im.v1.message.create(request)
+                if resp.success():
+                    return
+                logger.error(f"Feishu send failed: code={resp.code}, msg={resp.msg}")
+                if resp.code in (99991400, 99991401):
+                    # Rate limited — back off
+                    time.sleep(2 ** attempt)
+                    continue
+                return  # Non-retryable error
+            except Exception as e:
+                logger.error(f"Feishu send attempt {attempt+1} error: {e}")
+                if attempt < 2:
+                    time.sleep(2 ** attempt)
+                else:
+                    raise
+
+    def _build_content(self, text: str) -> str:
+        """Build message content JSON."""
+        return json.dumps({"text": text}, ensure_ascii=False)
+
+    # Valid Feishu emoji_type values (tested against API)
+    EMOJI_READ = "THUMBSUP"     # 👍 marks message as read/acknowledged
+    EMOJI_TYPING = "SWEAT"      # 😅 indicates bot is thinking/processing
+
+    def _add_typing_indicator(self, message_id: str):
+        """Add an emoji reaction to show the bot is processing."""
+        if not self.client:
+            return
+        if time.time() < self._typing_backoff_until:
+            logger.debug("Skipping typing indicator due to rate-limit backoff")
+            return
+        try:
+            from lark_oapi.api.im.v1 import CreateMessageReactionRequest, CreateMessageReactionRequestBody
+            from lark_oapi.api.im.v1.model.emoji import Emoji
+            emoji = Emoji.builder().emoji_type(self.EMOJI_TYPING).build()
+            request = CreateMessageReactionRequest.builder() \
+                .message_id(message_id) \
+                .request_body(
+                    CreateMessageReactionRequestBody.builder()
+                    .reaction_type(emoji)
+                    .build()
+                ) \
+                .build()
+            resp = self.client.im.v1.message_reaction.create(request)
+            if not resp.success():
+                logger.debug(f"Add typing indicator failed: code={resp.code}, msg={resp.msg}")
+                if resp.code in (99991400, 99991401, 99991402, 99991403):
+                    self._typing_backoff_until = time.time() + 300
+                    logger.warning(f"Typing indicator rate-limited (code={resp.code}), backing off 5min")
+        except Exception as e:
+            logger.debug(f"Add typing indicator failed (non-critical): {e}")
+
+    def _remove_typing_indicator(self, message_id: str):
+        """Remove the typing emoji reaction after response is sent."""
+        if not self.client:
+            return
+        try:
+            self._remove_reaction_by_type(message_id, self.EMOJI_TYPING)
+        except Exception as e:
+            logger.debug(f"Remove typing indicator failed (non-critical): {e}")
+
+    def _add_read_indicator(self, message_id: str):
+        """Add a thumbs-up emoji reaction to mark message as read."""
+        if not self.client:
+            return
+        if time.time() < self._typing_backoff_until:
+            return
+        try:
+            from lark_oapi.api.im.v1 import CreateMessageReactionRequest, CreateMessageReactionRequestBody
+            from lark_oapi.api.im.v1.model.emoji import Emoji
+            emoji = Emoji.builder().emoji_type(self.EMOJI_READ).build()
+            request = CreateMessageReactionRequest.builder() \
+                .message_id(message_id) \
+                .request_body(
+                    CreateMessageReactionRequestBody.builder()
+                    .reaction_type(emoji)
+                    .build()
+                ) \
+                .build()
+            resp = self.client.im.v1.message_reaction.create(request)
+            if not resp.success():
+                logger.debug(f"Add read indicator failed: code={resp.code}, msg={resp.msg}")
+                if resp.code in (99991400, 99991401, 99991402, 99991403):
+                    self._typing_backoff_until = time.time() + 300
+                    logger.warning(f"Read indicator rate-limited (code={resp.code}), backing off 5min")
+        except Exception as e:
+            logger.debug(f"Add read indicator failed (non-critical): {e}")
+
+    def _remove_read_indicator(self, message_id: str):
+        """Remove the read emoji reaction after response is sent."""
+        if not self.client:
+            return
+        try:
+            self._remove_reaction_by_type(message_id, self.EMOJI_READ)
+        except Exception as e:
+            logger.debug(f"Remove read indicator failed (non-critical): {e}")
+
+    def _remove_reaction_by_type(self, message_id: str, emoji_type: str):
+        """Find and remove a specific emoji reaction from a message."""
+        from lark_oapi.api.im.v1 import ListMessageReactionRequest, DeleteMessageReactionRequest
+        list_req = ListMessageReactionRequest.builder() \
+            .message_id(message_id) \
+            .page_size(50) \
+            .build()
+        list_resp = self.client.im.v1.message_reaction.list(list_req)
+        if not list_resp.success():
+            return
+        items = list_resp.data.items if list_resp.data and list_resp.data.items else []
+        for item in items:
+            rt = getattr(item, 'reaction_type', None)
+            et = rt.emoji_type if rt and hasattr(rt, 'emoji_type') else None
+            if et == emoji_type:
+                del_req = DeleteMessageReactionRequest.builder() \
+                    .message_id(message_id) \
+                    .reaction_id(item.reaction_id) \
+                    .build()
+                self.client.im.v1.message_reaction.delete(del_req)
+                break
+
+
+def _has_markdown(text: str) -> bool:
+    """Check if text contains markdown syntax."""
+    return bool(re.search(r"[*_`#\[\]|]", text))

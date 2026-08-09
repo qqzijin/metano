@@ -1,0 +1,40 @@
+module.exports = {
+  apps: [
+    {
+      name: 'metano-web',
+      script: 'python3',
+      args: '-c "from metano.serve import main; main()"',
+      cwd: __dirname,
+      env: { HOME: process.env.HOME },
+      max_restarts: 10,
+      restart_delay: 5000,
+    },
+    {
+      name: 'metano-honcho',
+      script: 'python3',
+      args: '-c "from metano.honcho.serve import main; main()"',
+      cwd: __dirname,
+      env: { HOME: process.env.HOME },
+      max_restarts: 10,
+      restart_delay: 5000,
+    },
+    {
+      name: 'metano-gateway',
+      script: 'python3',
+      args: '-m metano.gateway.launcher',
+      cwd: __dirname,
+      env: { HOME: process.env.HOME },
+      max_restarts: 10,
+      restart_delay: 5000,
+    },
+    {
+      name: 'metano-cron',
+      script: 'python3',
+      args: '-c "from metano.cron_daemon import run_daemon; run_daemon()"',
+      cwd: __dirname,
+      env: { HOME: process.env.HOME },
+      max_restarts: 10,
+      restart_delay: 5000,
+    },
+  ],
+};
