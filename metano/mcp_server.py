@@ -88,20 +88,27 @@ def session_get(session_id: str, limit: int=100) -> str:
 
 @mcp.tool()
 def analytics_summary(days: int=7) -> str:
-    """Aggregate token usage and cost estimates over the last N days."""
+    """Aggregate token usage and cost estimates over the last N days.
+
+    Separate per-conversation (``sessions``) from daily totals: ``daily`` is
+    message-level (by actual message date), ``sessions`` lists each conversation's
+    input/output/cache tokens, ``by_project`` splits usage by channel/project.
+    """
     conn = _get_conn()
     cutoff = time.time() - days * 86400
     total = conn.execute('SELECT COUNT(*) as session_count, SUM(message_count) as message_count, SUM(tool_call_count) as tool_call_count, SUM(input_tokens) as input_tokens, SUM(output_tokens) as output_tokens, SUM(cache_read_tokens) as cache_read_tokens, SUM(estimated_cost_usd) as estimated_cost_usd FROM sessions WHERE last_active >= ?', (cutoff,)).fetchone()
-    by_model = conn.execute('SELECT model, COUNT(*) as session_count, SUM(input_tokens) as input_tokens, SUM(output_tokens) as output_tokens, SUM(estimated_cost_usd) as estimated_cost_usd FROM sessions WHERE last_active >= ? GROUP BY model', (cutoff,)).fetchall()
-    result = {'period_days': days, 'total': dict(total) if total else {}, 'by_model': [dict(r) for r in by_model]}
+    by_model = conn.execute('SELECT model, COUNT(*) as session_count, SUM(input_tokens) as input_tokens, SUM(output_tokens) as output_tokens, SUM(cache_read_tokens) as cache_read_tokens, SUM(estimated_cost_usd) as estimated_cost_usd FROM sessions WHERE last_active >= ? GROUP BY model', (cutoff,)).fetchall()
+    by_project = conn.execute('SELECT project, COUNT(*) as session_count, SUM(input_tokens) as input_tokens, SUM(output_tokens) as output_tokens, SUM(cache_read_tokens) as cache_read_tokens, SUM(estimated_cost_usd) as estimated_cost_usd FROM sessions WHERE last_active >= ? GROUP BY project ORDER BY SUM(input_tokens) DESC', (cutoff,)).fetchall()
+    sessions = conn.execute('SELECT id, title, project, model, message_count, input_tokens, output_tokens, cache_read_tokens, estimated_cost_usd, started_at, last_active FROM sessions WHERE last_active >= ? ORDER BY (input_tokens + output_tokens + cache_read_tokens) DESC LIMIT 20', (cutoff,)).fetchall()
+    result = {'period_days': days, 'total': dict(total) if total else {}, 'by_model': [dict(r) for r in by_model], 'by_project': [dict(r) for r in by_project], 'sessions': [dict(r) for r in sessions]}
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 @mcp.tool()
 def analytics_daily(days: int=30) -> str:
-    """Daily token/cost time series for the last N days."""
+    """Daily token/cost time series (message-level, by actual consumption day)."""
     conn = _get_conn()
     cutoff = time.time() - days * 86400
-    rows = conn.execute("SELECT date(last_active, 'unixepoch', 'localtime') as day, COUNT(*) as session_count, SUM(input_tokens) as input_tokens, SUM(output_tokens) as output_tokens, SUM(estimated_cost_usd) as estimated_cost_usd FROM sessions WHERE last_active >= ? GROUP BY day ORDER BY day", (cutoff,)).fetchall()
+    rows = conn.execute("SELECT date(m.timestamp, 'unixepoch', 'localtime') as day, COUNT(DISTINCT m.session_id) as session_count, COALESCE(SUM(m.input_tokens),0) as input_tokens, COALESCE(SUM(m.output_tokens),0) as output_tokens FROM messages m WHERE m.timestamp >= ? GROUP BY day ORDER BY day", (cutoff,)).fetchall()
     return json.dumps([dict(r) for r in rows], ensure_ascii=False, indent=2)
 
 def _load_cron_jobs() -> list[dict]:

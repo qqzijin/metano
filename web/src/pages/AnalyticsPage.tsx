@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
   AreaChart, Area, PieChart, Pie, Cell,
@@ -9,8 +10,8 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAnalytics } from "@/api/hooks";
-import { fmtTokens, fmtCost } from "@/api/client";
-import { Activity, DollarSign, MessageSquare, Zap, Cpu } from "lucide-react";
+import { fmtTokens, fmtCost, fmtTime } from "@/api/client";
+import { Activity, DollarSign, MessageSquare, Zap, Cpu, History, Layers } from "lucide-react";
 
 const DAYS = [7, 30, 90] as const;
 // Brand palette — kept intentionally: these hues read well in both themes.
@@ -59,6 +60,7 @@ function MiniStat({ icon, label, value, sub, accent }: MiniStatProps) {
 
 export default function AnalyticsPage() {
   const [days, setDays] = useState<number>(7);
+  const navigate = useNavigate();
   const { data, isLoading, isError } = useAnalytics(days);
 
   if (isError) return <div className="text-sm text-destructive">加载失败，请检查服务或刷新重试</div>;
@@ -82,6 +84,24 @@ export default function AnalyticsPage() {
       name: m.model ?? "unknown",
       total_tokens: (m.input_tokens ?? 0) + (m.output_tokens ?? 0),
     }));
+
+  // 单次对话 token 排行：每条会话（跨渠道，含本地 Claude Code 会话）
+  const topSessions = (data?.sessions ?? []).slice(0, 10).map((s) => ({
+    ...s,
+    input_tokens: s.input_tokens ?? 0,
+    output_tokens: s.output_tokens ?? 0,
+    cache_read_tokens: s.cache_read_tokens ?? 0,
+    total_tokens: (s.input_tokens ?? 0) + (s.output_tokens ?? 0) + (s.cache_read_tokens ?? 0),
+  }));
+
+  // 渠道/项目分布：区分网关渠道（feishu/web/wechat 等）与本地 Claude Code 会话
+  const GATEWAY_PROJECTS = new Set(["feishu", "web", "wechat_ilink", "wechat", "qq", "telegram", "discord"]);
+  const isGateway = (p: string) => GATEWAY_PROJECTS.has(p) || p.includes("metano");
+  const byProject = (data?.by_project ?? []).map((p) => ({
+    ...p,
+    total_tokens: (p.input_tokens ?? 0) + (p.output_tokens ?? 0) + (p.cache_read_tokens ?? 0),
+    gateway: isGateway(p.project ?? ""),
+  }));
 
   // Compute averages for trend
   const avgCost = daily.length > 0 ? (total.estimated_cost_usd ?? 0) / daily.length : 0;
@@ -179,7 +199,7 @@ export default function AnalyticsPage() {
         <CardHeader className="pb-2">
           <CardTitle className="text-sm flex items-center gap-2">
             <Cpu className="size-4 text-chart-3" />
-            每日令牌用量
+            每日总用量 · 令牌
           </CardTitle>
         </CardHeader>
         <CardContent className="pt-0">

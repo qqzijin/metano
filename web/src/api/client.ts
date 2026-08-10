@@ -58,13 +58,39 @@ export interface AnalyticsData {
     tool_call_count?: number;
     estimated_cost_usd?: number;
   };
+  /** 每日总用量：按消息实际发生日聚合（跨日会话 token 拆到各自发生日） */
   daily: { day: string; session_count: number; input_tokens: number; output_tokens: number; estimated_cost_usd: number }[];
   by_model: {
     model: string;
     session_count: number;
     input_tokens: number;
     output_tokens: number;
+    cache_read_tokens?: number;
     estimated_cost_usd: number;
+  }[];
+  /** 渠道/项目分布：区分网关渠道与本地 Claude Code 会话 */
+  by_project: {
+    project: string;
+    session_count: number;
+    input_tokens: number;
+    output_tokens: number;
+    cache_read_tokens?: number;
+    estimated_cost_usd: number;
+  }[];
+  /** 单次对话 token 排行：每条会话的输入/输出/缓存 token 与费用 */
+  sessions: {
+    id: string;
+    title?: string;
+    project?: string;
+    model?: string;
+    message_count?: number;
+    tool_call_count?: number;
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_read_tokens?: number;
+    estimated_cost_usd?: number;
+    started_at?: string | number;
+    last_active?: string | number;
   }[];
 }
 
