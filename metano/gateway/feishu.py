@@ -19,11 +19,8 @@ from lark_oapi.api.im.v1 import (
     PatchMessageRequest,
     PatchMessageRequestBody,
     P2ImMessageReceiveV1,
-    GetImageRequest,
-    GetFileRequest,
 )
 
-from ..paths import UPLOADS_DIR
 from .router import MessageRouter
 
 logger = logging.getLogger(__name__)
@@ -147,12 +144,7 @@ class FeishuBot:
             content = msg.content
             msg_type = msg.message_type
 
-            # For image/file messages, download the attachment and mark its path;
-            # _extract_text would otherwise return the raw JSON content string.
-            if msg_type in ('image', 'file'):
-                user_text = self._download_attachment(content, msg_type)
-            else:
-                user_text = self._extract_text(content, msg_type)
+            user_text = self._extract_text(content, msg_type)
 
             # For group messages, only respond to @bot mentions
             if chat_type == "group":
@@ -196,7 +188,7 @@ class FeishuBot:
             if not hasattr(self, '_executor'):
                 self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
             self._executor.submit(
-                self._process_and_reply_sync, chat_id, msg_id, sender_id, chat_type, user_text
+                self._process_and_reply_stream, chat_id, msg_id, sender_id, chat_type, user_text
             )
 
         except Exception as e:
@@ -218,6 +210,41 @@ class FeishuBot:
             self._send_reply(chat_id, response, msg_id)
         except Exception as e:
             logger.error(f"Error in async message processing: {e}", exc_info=True)
+            self._remove_typing_indicator(msg_id)
+            self._remove_read_indicator(msg_id)
+
+    def _process_and_reply_stream(self, chat_id: str, msg_id: str, sender_id: str,
+                                  chat_type: str, user_text: str):
+        """Streaming reply: send an interactive card, patch it as the AI generates.
+
+        Falls back to the non-streaming path when card creation fails.
+        """
+        platform_user = f"feishu:{sender_id}"
+        card_msg_id = self._send_card(chat_id, "🤔 思考中...")
+        if not card_msg_id:
+            return self._process_and_reply_sync(chat_id, msg_id, sender_id, chat_type, user_text)
+
+        accumulated: list[str] = []
+        last_patch_len = [0]
+
+        def on_text(text: str):
+            accumulated.append(text)
+            cur = len(''.join(accumulated))
+            if cur - last_patch_len[0] >= 30:   # throttle patches (~30 chars)
+                self._patch_card(card_msg_id, ''.join(accumulated))
+                last_patch_len[0] = cur
+
+        try:
+            response = asyncio.run(self.router.route_message(
+                "feishu", platform_user, user_text, on_text=on_text))
+            self._patch_card(card_msg_id, response or '（空回复）')
+        except Exception as e:
+            logger.error(f"Error in streaming message processing: {e}", exc_info=True)
+            try:
+                self._patch_card(card_msg_id, f"抱歉，处理出错：{e}")
+            except Exception:
+                pass
+        finally:
             self._remove_typing_indicator(msg_id)
             self._remove_read_indicator(msg_id)
 
@@ -245,69 +272,55 @@ class FeishuBot:
                 return content
         return content
 
-    @staticmethod
-    def _read_response_bytes(resp) -> Optional[bytes]:
-        """Extract raw bytes from a Feishu image/file get response.
+    def _card_content(self, text: str) -> str:
+        """Build an interactive card JSON with a markdown body (for streaming updates)."""
+        card = {
+            "config": {"wide_screen_mode": True},
+            "header": {"template": "blue",
+                       "title": {"tag": "plain_text", "content": "🤖 AI"}},
+            "elements": [{"tag": "markdown", "content": text or " "}],
+        }
+        return json.dumps(card, ensure_ascii=False)
 
-        lark-oapi SDK (verified on the installed version): GetImageResponse /
-        GetFileResponse expose ``file`` (IO[Any] / bytes) directly on the
-        response object, plus ``file_name``. Fall back to ``data.file`` /
-        ``data.image`` in case another SDK version nests it under ``data``.
-        """
-        if resp is None:
-            return None
-        data = getattr(resp, 'file', None)
-        if data is None and getattr(resp, 'data', None) is not None:
-            data = getattr(resp.data, 'file', None) or getattr(resp.data, 'image', None)
-        if data is None:
-            return None
-        if isinstance(data, (bytes, bytearray)):
-            return bytes(data)
+    def _send_card(self, chat_id: str, text: str) -> str:
+        """Send an interactive card, return its message_id ('' on failure)."""
+        if not self.client:
+            return ''
+        content = self._card_content(text)
         try:
-            return data.read()
-        except Exception:
-            return None
-
-    def _download_attachment(self, content: str, msg_type: str) -> str:
-        """Download a Feishu image/file message to UPLOADS_DIR.
-
-        Returns a string like ``[附件: /abs/path]`` on success (with any caption
-        text if present), or ``''`` on failure so the message is not routed with
-        the raw JSON content and the handler is not blocked.
-        """
-        try:
-            data = json.loads(content)
-            UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
-            if msg_type == "image":
-                key = data.get("image_key", "")
-                if not key:
-                    return ""
-                req = GetImageRequest.builder().image_key(key).build()
-                resp = self.client.im.v1.image.get(req)
-                raw = self._read_response_bytes(resp)
-                if resp.success() and raw:
-                    dest = UPLOADS_DIR / f'img_{key[-10:]}.png'
-                    dest.write_bytes(raw)
-                    return f"[附件: {dest}]"
-                logger.error(f"Feishu image download failed: code={resp.code}, msg={resp.msg}")
-                return ""
-            if msg_type == "file":
-                key = data.get("file_key", "")
-                if not key:
-                    return ""
-                req = GetFileRequest.builder().file_key(key).build()
-                resp = self.client.im.v1.file.get(req)
-                raw = self._read_response_bytes(resp)
-                if resp.success() and raw:
-                    dest = UPLOADS_DIR / f'file_{key[-10:]}.bin'
-                    dest.write_bytes(raw)
-                    return f"[附件: {dest}]"
-                logger.error(f"Feishu file download failed: code={resp.code}, msg={resp.msg}")
-                return ""
+            request = CreateMessageRequest.builder() \
+                .receive_id_type("chat_id") \
+                .request_body(CreateMessageRequestBody.builder()
+                              .receive_id(chat_id)
+                              .msg_type("interactive")
+                              .content(content)
+                              .build()) \
+                .build()
+            resp = self.client.im.v1.message.create(request)
+            if resp.code == 0 and resp.data and resp.data.message_id:
+                return resp.data.message_id
+            logger.error(f"Feishu card create failed: code={resp.code} msg={resp.msg}")
         except Exception as e:
-            logger.error(f"Feishu attachment download failed: {e}", exc_info=True)
-            return ""
-        return ""
+            logger.error(f"Feishu card create error: {e}")
+        return ''
+
+    def _patch_card(self, message_id: str, text: str):
+        """Patch an interactive card's content (streaming update)."""
+        if not self.client:
+            return
+        content = self._card_content(text)
+        try:
+            request = PatchMessageRequest.builder() \
+                .message_id(message_id) \
+                .request_body(PatchMessageRequestBody.builder()
+                              .content(content)
+                              .build()) \
+                .build()
+            resp = self.client.im.v1.message.patch(request)
+            if resp.code != 0:
+                logger.warning(f"Feishu card patch failed: code={resp.code} msg={resp.msg}")
+        except Exception as e:
+            logger.warning(f"Feishu card patch error: {e}")
 
     def _send_reply(self, chat_id: str, text: str, reply_to: str = ""):
         """Send a reply message to a Feishu chat."""
