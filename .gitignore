@@ -49,3 +49,4 @@ agents/
 .DS_Store
 Thumbs.db
 *.pid
+web/dist.old*/
