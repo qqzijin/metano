@@ -20,7 +20,6 @@ AUDIT_LOG = Path.home() / '.claude' / 'metano' / 'security' / 'audit.jsonl'
 SENSITIVE_KEYS = {'api_key', 'bot_token', 'app_secret', 'encryption_key', 'verification_token', 'token', 'secret', 'password', 'ha_token'}
 # gateway_config.yaml 中所有 SENSITIVE_KEYS 字段在 GET /api/config 返回时自动脱敏（***）
 # 文件受 ~/.claude/metano/ 目录文件系统权限保护
-_model_router_instance = None
 app = FastAPI(title='metano')
 app.add_middleware(CORSMiddleware, allow_origins=['http://localhost:5173', 'http://localhost:9120'], allow_credentials=True, allow_methods=['*'], allow_headers=['*'])
 
@@ -842,11 +841,29 @@ async def api_voice_voices(language: str=''):
 @app.get('/api/home/status')
 async def api_home_status():
     try:
-        from .home_assistant import get_all_entities
-        return {'entities': get_all_entities()}
+        from .home_assistant import home_status_full
+        return home_status_full()
     except Exception as e:
         logger.exception()
-        return _error_response('Internal error', extra={'entities': []})
+        return _error_response('Internal error', extra={'entities': [], 'configured': False})
+
+@app.get('/api/home/config')
+async def api_home_config_get():
+    try:
+        from .home_assistant import ha_get_config
+        return ha_get_config()
+    except Exception as e:
+        logger.exception()
+        return _error_response('Internal error', extra={})
+
+@app.post('/api/home/config')
+async def api_home_config_set(body: dict):
+    try:
+        from .home_assistant import ha_set_config
+        return ha_set_config((body.get('url') or '').strip(), (body.get('token') or '').strip())
+    except Exception as e:
+        logger.exception()
+        return _error_response('Internal error', extra={})
 
 @app.get('/api/home/status/{entity_id}')
 async def api_home_entity(entity_id: str):
@@ -955,9 +972,11 @@ async def api_proxy_add(body: dict, _admin=Depends(require_role("admin"))):
         models[name] = {'base_url': body.get('base_url', ''), 'api_key': body.get('api_key', ''), 'model': body.get('model', ''), 'max_tokens': body.get('max_tokens', 4096), 'supports_vision': body.get('supports_vision', False), 'supports_tools': body.get('supports_tools', True), 'enabled': True}
         existing['models'] = models
         CONFIG_PATH.write_text(yaml.dump(existing, allow_unicode=True, default_flow_style=False))
-        from .model_router import ModelRouter
-        global _model_router_instance
-        _model_router_instance = ModelRouter()
+        # Refresh the shared module-level ModelRouter singleton so the newly
+        # added provider becomes visible to /api/models, chat and evolution
+        # immediately (previously a throwaway instance was created and never used).
+        from .model_router import model_router
+        model_router.refresh()
         return {'status': 'added', 'provider': name}
     except Exception as e:
         logger.exception()

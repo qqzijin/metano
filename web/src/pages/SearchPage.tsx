@@ -1,5 +1,6 @@
 import { useState } from "react";
 import DOMPurify from "dompurify";
+import { useNavigate } from "react-router-dom";
 import { Search, FileText } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { EmptyState } from "@/components/shared/EmptyState";
@@ -12,6 +13,7 @@ import { useSearch } from "@/api/hooks";
 import { fmtTime } from "@/api/client";
 
 export default function SearchPage() {
+  const navigate = useNavigate();
   const [query, setQuery] = useState("");
   const [searched, setSearched] = useState("");
   const { data, isLoading, isError } = useSearch(searched);
@@ -49,7 +51,14 @@ export default function SearchPage() {
       ) : (
         <div className="grid gap-3">
           {results.map((r, i) => (
-            <Card key={i} className="p-4">
+            <Card
+              key={i}
+              role="link"
+              tabIndex={0}
+              className="p-4 cursor-pointer transition-shadow hover:shadow-sm"
+              onClick={() => navigate(`/sessions?session=${encodeURIComponent(r.session_id)}`)}
+              onKeyDown={(e) => { if (e.key === "Enter") navigate(`/sessions?session=${encodeURIComponent(r.session_id)}`); }}
+            >
               <div className="flex items-center gap-2 mb-2">
                 <Badge variant="outline" className="text-[10px] font-mono">{r.session_id.slice(0, 12)}</Badge>
                 {r.title && <span className="text-sm font-medium truncate">{r.title}</span>}

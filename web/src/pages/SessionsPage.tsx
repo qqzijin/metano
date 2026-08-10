@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { ArrowLeft, MessageSquare, Cpu, Coins, Clock } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { SearchInput } from "@/components/shared/SearchInput";
@@ -11,8 +12,9 @@ import { useSessions, useMessages } from "@/api/hooks";
 import { fmtTokens, fmtCost, fmtTime } from "@/api/client";
 
 export default function SessionsPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [search, setSearch] = useState("");
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(searchParams.get("session"));
   const { data, isLoading, isError } = useSessions(search);
   const { data: msgData, isLoading: msgLoading, isError: msgError } = useMessages(selected ?? "");
 
@@ -24,7 +26,14 @@ export default function SessionsPage() {
     return (
       <>
         <div className="flex items-center gap-3 mb-6">
-          <Button variant="ghost" size="icon" onClick={() => setSelected(null)}>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => {
+              setSelected(null);
+              setSearchParams({}, { replace: true });
+            }}
+          >
             <ArrowLeft className="size-4" />
           </Button>
           <div>
@@ -77,7 +86,14 @@ export default function SessionsPage() {
       ) : (
         <div className="grid gap-3">
           {sessions.map((s) => (
-            <Card key={s.id} className="p-4 hover:shadow-sm transition-shadow cursor-pointer" onClick={() => setSelected(s.id)}>
+            <Card
+              key={s.id}
+              className="p-4 hover:shadow-sm transition-shadow cursor-pointer"
+              onClick={() => {
+                setSelected(s.id);
+                setSearchParams({ session: s.id }, { replace: true });
+              }}
+            >
               <div className="flex items-center gap-3">
                 <MessageSquare className="size-4 text-muted-foreground shrink-0" />
                 <div className="min-w-0 flex-1">

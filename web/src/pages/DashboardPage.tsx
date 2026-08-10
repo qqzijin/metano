@@ -1,9 +1,21 @@
 import { Bot, Cpu, DollarSign, MessageSquare, Zap, Activity, Eye, Brain } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import { cn } from "@/lib/utils";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { useStatus, useEvolution, useAnalytics } from "@/api/hooks";
 import { fmtCost, fmtTokens } from "@/api/client";
+
+/** 服务名 -> 对应功能页面（点击“服务状态”列表项跳转） */
+const SERVICE_PAGE: Record<string, string> = {
+  gateway: "/logs",
+  evolution: "/evolution",
+  rag: "/knowledge",
+  tts: "/voice",
+  browser: "/browser",
+  home: "/home",
+};
 
 interface MiniStatProps {
   icon: React.ReactNode;
@@ -33,6 +45,7 @@ function MiniStat({ icon, label, value, sub, accent }: MiniStatProps) {
 }
 
 export default function DashboardPage() {
+  const navigate = useNavigate();
   const { data: status, isError: statusError } = useStatus();
   const { data: evo } = useEvolution();
   const { data: analytics } = useAnalytics(7);
@@ -89,13 +102,26 @@ export default function DashboardPage() {
               <p className="text-sm text-muted-foreground py-4 text-center">暂无服务</p>
             ) : (
               <div className="space-y-2">
-                {serviceEntries.map(([name, state]) => (
-                  <div key={name} className="flex items-center gap-2 text-sm py-1.5 px-2 rounded-md hover:bg-muted/50">
-                    <span className={`size-2 rounded-full shrink-0 ${state === "active" ? "bg-emerald-500" : "bg-destructive"}`} />
-                    <span className="capitalize flex-1">{name.replace("metano-", "")}</span>
-                    <Badge variant={state === "active" ? "default" : "destructive"} className="text-[10px]">{state === "active" ? "运行" : "停止"}</Badge>
-                  </div>
-                ))}
+                {serviceEntries.map(([name, state]) => {
+                  const target = SERVICE_PAGE[name];
+                  return (
+                    <div
+                      key={name}
+                      role={target ? "link" : undefined}
+                      tabIndex={target ? 0 : undefined}
+                      onClick={target ? () => navigate(target) : undefined}
+                      onKeyDown={target ? (e) => { if (e.key === "Enter") navigate(target); } : undefined}
+                      className={cn(
+                        "flex items-center gap-2 text-sm py-1.5 px-2 rounded-md hover:bg-muted/50",
+                        target && "cursor-pointer"
+                      )}
+                    >
+                      <span className={`size-2 rounded-full shrink-0 ${state === "active" ? "bg-emerald-500" : "bg-destructive"}`} />
+                      <span className="capitalize flex-1">{name.replace("metano-", "")}</span>
+                      <Badge variant={state === "active" ? "default" : "destructive"} className="text-[10px]">{state === "active" ? "运行" : "停止"}</Badge>
+                    </div>
+                  );
+                })}
               </div>
             )}
           </CardContent>
@@ -132,7 +158,13 @@ export default function DashboardPage() {
                   ))}
                 </div>
               )}
-              <div className="flex items-center justify-between text-sm pt-1">
+              <div
+                role="link"
+                tabIndex={0}
+                onClick={() => navigate("/evolution")}
+                onKeyDown={(e) => { if (e.key === "Enter") navigate("/evolution"); }}
+                className="flex items-center justify-between text-sm pt-1 cursor-pointer rounded-md px-1 -mx-1 hover:bg-muted/50"
+              >
                 <span className="text-muted-foreground">待审批</span>
                 <Badge variant={evo?.pending_suggestions ? "default" : "secondary"}>{evo?.pending_suggestions ?? 0}</Badge>
               </div>
@@ -152,7 +184,14 @@ export default function DashboardPage() {
             {daily.length > 0 ? (
               <div className="space-y-2">
                 {daily.slice().reverse().slice(0, 7).map((d) => (
-                  <div key={d.day ?? ""} className="flex items-center gap-2 text-sm py-1.5 px-2 rounded-md hover:bg-muted/50">
+                  <div
+                    key={d.day ?? ""}
+                    role="link"
+                    tabIndex={0}
+                    onClick={() => navigate("/analytics")}
+                    onKeyDown={(e) => { if (e.key === "Enter") navigate("/analytics"); }}
+                    className="flex items-center gap-2 text-sm py-1.5 px-2 rounded-md cursor-pointer hover:bg-muted/50"
+                  >
                     <span className="text-xs font-mono text-muted-foreground shrink-0 w-8">{(d.day ?? "").slice(-5)}</span>
                     <div className="flex-1 flex items-center gap-3">
                       <Badge variant="secondary" className="text-[10px]">{d.session_count ?? 0} 会话</Badge>

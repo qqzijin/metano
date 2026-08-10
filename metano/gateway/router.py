@@ -216,7 +216,12 @@ class MessageRouter:
 
         Gateway sessions are non-interactive (no TTY), so we bypass
         permission prompts and pre-approve a tool allowlist.
+
+        The subprocess inherits os.environ but is overridden with the
+        ModelRouter default provider so chat honours the model selected in
+        the Models page (falls back to process env when no provider set).
         """
+        import os
         import shutil
         claude_bin = shutil.which('claude') or '/home/dk/local/node/bin/claude'
         system_ctx = self._build_system_context()
@@ -233,8 +238,21 @@ class MessageRouter:
             '--dangerously-skip-permissions',
             '--allowedTools', ','.join(self._GATEWAY_ALLOWED_TOOLS),
         ]
+        env = os.environ.copy()
         try:
-            proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            from ..model_router import model_router
+            provider = model_router.get_provider()
+            if provider:
+                if provider.base_url:
+                    env['ANTHROPIC_BASE_URL'] = provider.base_url
+                if provider.api_key:
+                    env['ANTHROPIC_API_KEY'] = provider.api_key
+                if provider.model:
+                    env['ANTHROPIC_MODEL'] = provider.model
+        except Exception:
+            logger.exception("router: provider env injection failed")
+        try:
+            proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env)
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=600)
             response = stdout.decode().strip()
             if not response and stderr:

@@ -51,11 +51,44 @@ class ModelRouter:
         return self._providers.get(self._default, self._providers['default'])
 
     def set_default(self, name: str):
-        """Set a provider as the default."""
+        """Set a provider as the default (persisted to config, best-effort)."""
         if name in self._providers:
             self._default = name
+            self._persist_default(name)
         else:
             raise ValueError(f'Provider not found: {name}')
+
+    def refresh(self):
+        """Reload providers from gateway_config.yaml, preserving the current default if it still exists."""
+        prev_default = self._default
+        self._providers = {}
+        self._default = 'default'
+        self._load_config()
+        if prev_default in self._providers:
+            self._default = prev_default
+        return self
+
+    def _persist_default(self, name: str):
+        """Best-effort: write the default flag into gateway_config.yaml so it survives restart."""
+        try:
+            import yaml
+            config_path = Path.home() / '.claude' / 'metano' / 'gateway_config.yaml'
+            if not config_path.exists():
+                return
+            with open(config_path) as f:
+                config = yaml.safe_load(f) or {}
+            models = config.get('models', {})
+            changed = False
+            for mname, mcfg in models.items():
+                is_def = (mname == name)
+                if mcfg.get('default', False) != is_def:
+                    mcfg['default'] = is_def
+                    changed = True
+            if changed:
+                with open(config_path, 'w') as f:
+                    yaml.dump(config, f, allow_unicode=True, default_flow_style=False)
+        except Exception:
+            logger.exception('failed to persist default model')
 
     def list_providers(self) -> list[dict]:
         """List all configured model providers."""
@@ -68,7 +101,7 @@ class ModelRouter:
 
     def call_claude(self, prompt: str, provider_name: str='', session_id: str='', timeout: int=120) -> str:
         """Call Claude Code CLI with a specific model provider."""
-        claude_bin = shutil.which('claude') or '/usr/local/bin/claude'
+        claude_bin = shutil.which('claude') or '/home/dk/local/node/bin/claude'
         provider = self.get_provider(provider_name)
         cmd = [claude_bin, '-p', prompt]
         if session_id:
