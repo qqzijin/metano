@@ -10,6 +10,37 @@ import type { LogEntry } from "@/api/client";
 
 type LogSource = "evolution" | "audit" | "gateway";
 
+/**
+ * 将日志条目的 detail/details 字段格式化为可读 JSON 文本。
+ * - 值为对象 → 直接 JSON.stringify(detail, null, 2)
+ * - 值为字符串 → 尝试 JSON.parse，成功且为对象则格式化；否则原样返回字符串
+ * - 值为空/undefined → 返回 null（不渲染详情区）
+ */
+function parseDetailText(value: unknown): string | null {
+  if (value == null) return null;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed && typeof parsed === "object") {
+        return JSON.stringify(parsed, null, 2);
+      }
+      return trimmed;
+    } catch {
+      return trimmed;
+    }
+  }
+  if (typeof value === "object") {
+    try {
+      return JSON.stringify(value, null, 2);
+    } catch {
+      return String(value);
+    }
+  }
+  return String(value);
+}
+
 export default function LogsPage() {
   const [source, setSource] = useState<LogSource>("evolution");
   const { data, isLoading, isError } = useLogs(source);
@@ -46,6 +77,8 @@ export default function LogsPage() {
               {entries.slice().reverse().map((entry: LogEntry, i: number) => {
                 const level = entry.error ? "error" : entry.action === "observe" ? "observe" : "info";
                 const content = entry.error || entry.content || entry.action || JSON.stringify(entry).slice(0, 120);
+                // evolution 源用 detail（JSON 字符串），audit/gateway 源用 details（JSON 对象）
+                const detailText = parseDetailText(entry.details ?? entry.detail);
                 return (
                   <div key={i} className="flex items-start gap-3 px-4 py-2.5">
                     <Badge variant={level === "error" ? "destructive" : "secondary"} className="text-[10px] shrink-0 mt-0.5">
@@ -57,6 +90,16 @@ export default function LogsPage() {
                         {entry.stage && <span className="ml-2">[{entry.stage}]</span>}
                       </div>
                       <div className="break-words">{String(content)}</div>
+                      {detailText && (
+                        <details className="mt-1.5">
+                          <summary className="text-xs text-muted-foreground/80 cursor-pointer select-none hover:text-muted-foreground">
+                            详情
+                          </summary>
+                          <pre className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground bg-muted/50 rounded p-2 whitespace-pre-wrap break-words">
+                            {detailText}
+                          </pre>
+                        </details>
+                      )}
                     </div>
                   </div>
                 );

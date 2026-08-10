@@ -40,7 +40,15 @@ export default function DashboardPage() {
   const services = status?.services ?? {};
   const serviceEntries = Object.entries(services);
   const daily = analytics?.daily ?? [];
-  const todayCost = daily.length > 0 ? daily[daily.length - 1]?.estimated_cost_usd ?? 0 : 0;
+  // daily 的 day 字段是 YYYY-MM-DD（按 last_active 分组），用实际今天日期匹配，
+  // 不能取最后一项（最后一项是"最近活跃的一天"，今天没会话时会误显示昨天的费用）。
+  const todayKey = (() => {
+    const d = new Date();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${d.getFullYear()}-${m}-${day}`;
+  })();
+  const todayCost = daily.find((d) => d.day === todayKey)?.estimated_cost_usd ?? 0;
   const totalCost7d = analytics?.total?.estimated_cost_usd ?? 0;
 
   if (statusError) {
@@ -59,7 +67,7 @@ export default function DashboardPage() {
       {/* Primary metrics */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
         <MiniStat icon={<Bot className="size-4" />} label="总会话" value={status?.sessions ?? 0} />
-        <MiniStat icon={<MessageSquare className="size-4" />} label="总消息" value={fmtTokens(status?.messages ?? 0)} />
+        <MiniStat icon={<MessageSquare className="size-4" />} label="总消息" value={(status?.messages ?? 0).toLocaleString()} />
         <MiniStat icon={<Zap className="size-4" />} label="技能数" value={status?.skills_count ?? 0} />
         <MiniStat icon={<Brain className="size-4" />} label="信念数" value={evo?.profile_beliefs ?? 0} />
         <MiniStat icon={<Cpu className="size-4" />} label="行为规则" value={evo?.behavior_rules ?? 0} />

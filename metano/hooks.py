@@ -13,19 +13,6 @@ from pathlib import Path
 _STATE_DIR = Path.home() / '.claude' / 'metano' / 'evolution'
 _STATE_FILE = _STATE_DIR / 'hook_state.json'
 
-# Paths to skip for action memory logging (temporary/experimental files)
-_ACTION_SKIP_PATHS = {'/tmp/', '.claude/plans/', '.claude/shell-snapshots/'}
-
-
-def _should_log_action(file_path: str) -> bool:
-    """Filter out temporary and low-value file operations."""
-    path_lower = file_path.lower()
-    for skip in _ACTION_SKIP_PATHS:
-        if skip in path_lower:
-            return False
-    return True
-
-
 def _load_state() -> dict:
     """Load cross-event hook state (last tool, session_id, edit sequence)."""
     try:
@@ -69,12 +56,10 @@ def handle_post_tool_use():
     tool_input = data.get('tool_input', {})
     file_path = tool_input.get('file_path', '')
 
-    # Log file modifications to memory
-    if tool_name in ('Edit', 'Write') and file_path and _should_log_action(file_path):
-        from .memory import add_memory
-        add_memory(f'[action] {tool_name}: {file_path}', category='action', importance=0.2)
-
-    # Evaluate rule effectiveness across all tool types (updates state)
+    # Note: raw Edit/Write operations are intentionally NOT logged to memory —
+    # they accumulated as low-value '[action]' noise (the majority of the memory
+    # store) that the evolution system never consumes. Rule-effectiveness
+    # tracking below (agent_rules in evo.db) is the meaningful signal.
     _evaluate_rule_effectiveness(data)
 
 

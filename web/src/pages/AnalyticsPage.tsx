@@ -87,8 +87,8 @@ export default function AnalyticsPage() {
       {/* Top stats row */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
         <MiniStat icon={<Activity className="size-4" />} label="会话数" value={total.session_count ?? 0} sub={`日均 ${avgSessions.toFixed(1)}`} />
-        <MiniStat icon={<MessageSquare className="size-4" />} label="消息数" value={fmtTokens(total.message_count ?? 0)} />
-        <MiniStat icon={<Zap className="size-4" />} label="工具调用" value={fmtTokens(total.tool_call_count ?? 0)} />
+        <MiniStat icon={<MessageSquare className="size-4" />} label="消息数" value={(total.message_count ?? 0).toLocaleString()} />
+        <MiniStat icon={<Zap className="size-4" />} label="工具调用" value={(total.tool_call_count ?? 0).toLocaleString()} />
         <MiniStat icon={<Cpu className="size-4" />} label="输入令牌" value={fmtTokens(total.input_tokens ?? 0)} />
         <MiniStat icon={<Cpu className="size-4" />} label="输出令牌" value={fmtTokens(total.output_tokens ?? 0)} />
         <MiniStat icon={<DollarSign className="size-4" />} label="总费用" value={fmtCost(total.estimated_cost_usd ?? 0)} sub={`日均 ${fmtCost(avgCost)}`} accent />

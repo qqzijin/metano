@@ -589,9 +589,11 @@ async def api_profile(user_id: str='default'):
 
 @app.post('/api/chat')
 async def api_chat(body: dict):
+    msg = body.get('message', '')
+    if not isinstance(msg, str) or not msg.strip():
+        raise HTTPException(status_code=400, detail='message 不能为空')
     try:
         from .gateway.router import router
-        msg = body.get('message', '')
         user_id = body.get('user_id', 'web_user')
         platform = body.get('platform', 'web')
         session_id = body.get('session_id', '')
@@ -601,10 +603,56 @@ async def api_chat(body: dict):
         elif context and isinstance(context, list):
             router.inject_history(platform, user_id, context)
         response = await router.route_message(platform, user_id, msg)
-        return {'response': response}
+        session_id = _persist_chat(session_id, user_id, platform, msg, response)
+        return {'response': response, 'session_id': session_id}
     except Exception as e:
         logger.exception()
         return _error_response('Internal error')
+
+
+def _persist_chat(session_id: str, user_id: str, platform: str, msg: str, response: str) -> str:
+    """Persist one web chat exchange (user message + assistant reply) into bridge.db.
+
+    Best-effort: any failure is logged and must never break the chat response path.
+    When no session_id is given, a new session is created. Returns the session_id
+    used (existing or newly created) so the caller can return it to the frontend.
+    """
+    try:
+        import uuid
+        from .model_router import model_router
+        conn = get_db()
+        now = time.time()
+        model = None
+        try:
+            model = model_router.get_provider().model or None
+        except Exception:
+            logger.exception('model lookup failed')
+        if not session_id:
+            session_id = uuid.uuid4().hex[:12]
+            conn.execute(
+                'INSERT INTO sessions (id, project, title, model, started_at, last_active, message_count, tool_call_count, input_tokens, output_tokens, cache_read_tokens, estimated_cost_usd) '
+                'VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, 0, 0, 0)',
+                (session_id, 'web', (msg or '')[:30], model, now, now)
+            )
+        ts = now
+        conn.execute(
+            'INSERT INTO messages (session_id, role, content, tool_name, tool_calls, timestamp, input_tokens, output_tokens, duration_ms) '
+            'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            (session_id, 'user', msg, None, None, ts, len(msg or '') // 4, 0, None)
+        )
+        conn.execute(
+            'INSERT INTO messages (session_id, role, content, tool_name, tool_calls, timestamp, input_tokens, output_tokens, duration_ms) '
+            'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            (session_id, 'assistant', response, None, None, ts + 0.0001, 0, len(response or '') // 4, None)
+        )
+        conn.execute(
+            'UPDATE sessions SET message_count = message_count + 2, last_active = ?, input_tokens = input_tokens + ?, output_tokens = output_tokens + ?, model = COALESCE(?, model) WHERE id = ?',
+            (now, len(msg or '') // 4, len(response or '') // 4, model, session_id)
+        )
+        conn.commit()
+    except Exception:
+        logger.exception('chat persistence failed')
+    return session_id
 
 
 def _inject_session_context(router, platform: str, user_id: str, session_id: str):
