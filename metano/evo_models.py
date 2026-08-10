@@ -4,10 +4,9 @@ import json
 import re
 import sqlite3
 import time
-from pathlib import Path
 from typing import Optional
 
-EVO_DB_PATH = Path.home() / ".claude" / "metano" / "evo.db"
+from .paths import EVO_DB_PATH
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS agent_rules (

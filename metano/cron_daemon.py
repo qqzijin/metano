@@ -13,8 +13,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from metano.log import logger
+from .paths import CRON_DIR
 
-CRON_DIR = Path.home() / '.claude' / 'metano' / 'cron'
 JOBS_FILE = CRON_DIR / 'jobs.json'
 LOCK_FILE = CRON_DIR / '.tick.lock'
 PID_FILE = CRON_DIR / 'daemon.pid'

@@ -3,18 +3,16 @@
 import asyncio
 import logging
 import yaml
-from pathlib import Path
 
 from .telegram import TelegramBot
 from .discord_bot import DiscordBot
 from .qq import QQBot
 from .wechat import WeChatBot
 from .feishu import FeishuBot
+from ..paths import CONFIG_PATH
 
 log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
-
-CONFIG_PATH = Path.home() / ".claude" / "metano" / "gateway_config.yaml"
 
 DEFAULT_CONFIG = {
     "telegram": {"enabled": False, "bot_token": "", "allowed_users": []},

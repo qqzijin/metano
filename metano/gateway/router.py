@@ -3,12 +3,9 @@ import asyncio
 import json
 import time
 import hashlib
-from pathlib import Path
 from dataclasses import dataclass, field
 from metano.log import logger
-GATEWAY_CONFIG = Path.home() / '.claude' / 'metano' / 'gateway_config.yaml'
-SESSIONS_DIR = Path.home() / '.claude' / 'metano' / 'gateway_sessions'
-GATEWAY_LOG = Path.home() / '.claude' / 'metano' / 'gateway' / 'gateway_log.jsonl'
+from ..paths import CONFIG_PATH as GATEWAY_CONFIG, GATEWAY_SESSIONS_DIR as SESSIONS_DIR, GATEWAY_LOG
 
 
 def _log_gateway_event(**fields) -> None:

@@ -2,10 +2,11 @@
 
 from string import Template
 from pathlib import Path
+from ..paths import home_dir
 
 DEFAULT_VARIABLES = {
     "HOME": str(Path.home()),
-    "BRIDGE_DIR": str(Path.home() / ".claude" / "metano"),
+    "BRIDGE_DIR": str(home_dir()),
 }
 
 

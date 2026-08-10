@@ -4,10 +4,9 @@ import json
 import subprocess
 import time
 import uuid
-from pathlib import Path
 from dataclasses import dataclass, field
 from metano.log import logger
-AGENT_DIR = Path.home() / '.claude' / 'metano' / 'agents'
+from .paths import AGENT_DIR
 
 @dataclass
 class AgentTask:
@@ -32,7 +31,7 @@ class AgentDelegator:
     def spawn(self, task: str, model: str='', timeout: int=120) -> dict:
         """Spawn a sub-agent to handle a task."""
         import shutil
-        claude_bin = shutil.which('claude') or '/usr/local/bin/claude'
+        claude_bin = shutil.which('claude') or '/home/dk/local/node/bin/claude'
         task_id = uuid.uuid4().hex[:12]
         agent_task = AgentTask(id=task_id, task=task, model=model, status='running', started_at=time.time())
         self._tasks[task_id] = agent_task
@@ -62,7 +61,7 @@ class AgentDelegator:
     async def spawn_async(self, task: str, model: str='', timeout: int=120) -> dict:
         """Spawn a sub-agent asynchronously."""
         import shutil
-        claude_bin = shutil.which('claude') or '/usr/local/bin/claude'
+        claude_bin = shutil.which('claude') or '/home/dk/local/node/bin/claude'
         task_id = uuid.uuid4().hex[:12]
         agent_task = AgentTask(id=task_id, task=task, model=model, status='running', started_at=time.time())
         self._tasks[task_id] = agent_task

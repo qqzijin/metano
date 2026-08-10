@@ -3,10 +3,10 @@ import json
 import os
 import shutil
 import subprocess
-from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional
 from metano.log import logger
+from metano.paths import CONFIG_PATH
 
 @dataclass
 class ModelProvider:
@@ -29,7 +29,7 @@ class ModelRouter:
         """Load model providers from gateway_config.yaml."""
         try:
             import yaml
-            config_path = Path.home() / '.claude' / 'metano' / 'gateway_config.yaml'
+            config_path = CONFIG_PATH
             if config_path.exists():
                 with open(config_path) as f:
                     config = yaml.safe_load(f) or {}
@@ -72,7 +72,7 @@ class ModelRouter:
         """Best-effort: write the default flag into gateway_config.yaml so it survives restart."""
         try:
             import yaml
-            config_path = Path.home() / '.claude' / 'metano' / 'gateway_config.yaml'
+            config_path = CONFIG_PATH
             if not config_path.exists():
                 return
             with open(config_path) as f:

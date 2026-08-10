@@ -11,7 +11,7 @@
 # =============================================================================
 set -euo pipefail
 
-METANO_DIR="${METANO_DIR:-$HOME/.claude/metano}"
+METANO_DIR="${METANO_HOME:-${METANO_DIR:-$HOME/.claude/metano}}"
 BACKUP_ROOT="$METANO_DIR/backups"
 RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-7}"
 LOG_FILE="$BACKUP_ROOT/backup.log"

@@ -4,9 +4,8 @@ import sqlite3
 import uuid
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
 
-HONCHO_DB = Path.home() / ".claude" / "metano" / "honcho_data" / "honcho.db"
+from ..paths import HONCHO_DB
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (

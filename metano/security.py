@@ -3,11 +3,10 @@
 import json
 import re
 import time
-from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional
 
-AUDIT_LOG = Path.home() / ".claude" / "metano" / "security" / "audit.jsonl"
+from .paths import AUDIT_LOG
 
 # Permission tiers
 TIER_ADMIN = "admin"

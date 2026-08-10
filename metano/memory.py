@@ -10,11 +10,11 @@ import re
 import sqlite3
 import hashlib
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import Optional
 from metano.log import logger
+from .paths import home_dir
 
-DB_PATH = os.environ.get('MEMORY_DB', str(Path(__file__).resolve().parent.parent / 'memory.db'))
+DB_PATH = os.environ.get('MEMORY_DB', str(home_dir() / 'memory.db'))
 
 _SCHEMA_SQL = """
     CREATE TABLE IF NOT EXISTS memories (

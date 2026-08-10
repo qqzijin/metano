@@ -4,6 +4,7 @@ import asyncio
 import subprocess
 import tempfile
 from pathlib import Path
+from ..paths import VOICE_CACHE_DIR
 
 # Chinese voices
 ZH_VOICES = {
@@ -43,7 +44,7 @@ async def synthesize(text: str, voice: str = "xiaoxiao", output_path: str | None
 
     voice_id = ALL_VOICES.get(voice, voice)
     if output_path is None:
-        voice_cache = Path.home() / ".claude" / "metano" / "voice_cache"
+        voice_cache = VOICE_CACHE_DIR
         voice_cache.mkdir(parents=True, exist_ok=True)
         output_path = str(voice_cache / f"tts_{hash(text[:100])}.mp3")
 

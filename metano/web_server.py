@@ -11,15 +11,11 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from .auth import authenticate_user, check_login_rate, record_login_attempt, set_auth_cookies, clear_auth_cookies, get_current_user_from_request, try_refresh_from_request, decode_token, change_password, AUTH_WHITELIST, ACCESS_TOKEN_EXPIRE_MINUTES, _audit, require_role
 from .db import get_db, init_db, DB_PATH
 from .indexer import index_all
-CRON_DIR = Path.home() / '.claude' / 'metano' / 'cron'
-CRON_JOBS_FILE = CRON_DIR / 'jobs.json'
+from .paths import CRON_DIR, CRON_JOBS_FILE, CONFIG_PATH, EVO_LOG, AUDIT_LOG, EVO_DB_PATH, HONCHO_DB, KB_DB, MEMORY_DB
 WEB_DIR = Path(__file__).parent.parent / 'web' / 'dist'
-CONFIG_PATH = Path.home() / '.claude' / 'metano' / 'gateway_config.yaml'
-EVO_LOG = Path.home() / '.claude' / 'metano' / 'evolution' / 'evolution_log.jsonl'
-AUDIT_LOG = Path.home() / '.claude' / 'metano' / 'security' / 'audit.jsonl'
 SENSITIVE_KEYS = {'api_key', 'bot_token', 'app_secret', 'encryption_key', 'verification_token', 'token', 'secret', 'password', 'ha_token'}
 # gateway_config.yaml 中所有 SENSITIVE_KEYS 字段在 GET /api/config 返回时自动脱敏（***）
-# 文件受 ~/.claude/metano/ 目录文件系统权限保护
+# 文件受 METANO_HOME 目录文件系统权限保护
 app = FastAPI(title='metano')
 app.add_middleware(CORSMiddleware, allow_origins=['http://localhost:5173', 'http://localhost:9120'], allow_credentials=True, allow_methods=['*'], allow_headers=['*'])
 
@@ -181,10 +177,10 @@ def health_check():
     checks = {}
     db_specs = [
         ('bridge', DB_PATH, ['sessions', 'messages']),
-        ('evo', Path.home() / '.claude' / 'metano' / 'evo.db', ['agent_rules', 'action_log', 'evolution_meta', 'architecture_snapshots']),
-        ('honcho', Path.home() / '.claude' / 'metano' / 'honcho_data' / 'honcho.db', ['users', 'beliefs', 'observations']),
-        ('knowledge', Path.home() / '.claude' / 'metano' / 'knowledge' / 'knowledge.db', ['documents', 'chunks']),
-        ('memory', Path.home() / '.claude' / 'metano' / 'memory.db', ['memories']),
+        ('evo', EVO_DB_PATH, ['agent_rules', 'action_log', 'evolution_meta', 'architecture_snapshots']),
+        ('honcho', HONCHO_DB, ['users', 'beliefs', 'observations']),
+        ('knowledge', KB_DB, ['documents', 'chunks']),
+        ('memory', MEMORY_DB, ['memories']),
     ]
     all_ok = True
     for name, path, expected_tables in db_specs:

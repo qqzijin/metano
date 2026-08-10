@@ -1,0 +1,16 @@
+# =============================================================================
+# metano 可选依赖：本地向量嵌入（知识库语义检索）
+# -----------------------------------------------------------------------------
+# 体积大（含 torch + 模型），按需安装：
+#   pip install -r requirements-embedding.txt
+#
+# 推荐替代方案：metano 通过 METANO_EMBED_PYTHON 将嵌入请求转发给一个
+# 已装有 sentence-transformers + torch 的解释器（例如 cocoindex 的 pipx
+# venv，或本文件安装出的任意 venv）。这样 metano 主 venv 无需承担 torch。
+#
+# 用法：设置环境变量后重启服务
+#   export METANO_EMBED_PYTHON=/path/to/python-with-torch
+#   export METANO_EMBED_MODEL=Snowflake/snowflake-arctic-embed-xs
+# =============================================================================
+sentence-transformers>=2.7   # 本地 embedding 模型推理（metano/_embed_helper.py）
+torch>=2.1                   # sentence-transformers 的推理后端（CPU 亦可）

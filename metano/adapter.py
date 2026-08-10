@@ -5,12 +5,11 @@ from pathlib import Path
 from .honcho.models import get_honcho_db, get_beliefs, belief_stage
 from .evo_models import get_rules as get_agent_rules, rule_count, add_proposal, get_proposals, update_proposal_status
 from metano.log import logger
+from .paths import EVOLUTION_DIR, SUGGESTIONS_FILE, LOG_FILE, CONFIG_PATH as CONFIG_FILE
+
 CLAUDE_MD = Path.home() / 'CLAUDE.md'
 MEMORY_DIR = Path.home() / '.claude' / 'projects' / '-home-dk' / 'memory'
 MEMORY_INDEX = MEMORY_DIR / 'MEMORY.md'
-EVOLUTION_DIR = Path.home() / '.claude' / 'metano' / 'evolution'
-SUGGESTIONS_FILE = EVOLUTION_DIR / 'pending_suggestions.json'
-LOG_FILE = EVOLUTION_DIR / 'evolution_log.jsonl'
 MARKER_START = '<!-- LEARNED-PREFS-START -->'
 MARKER_END = '<!-- LEARNED-PREFS-END -->'
 
@@ -326,9 +325,6 @@ def _classify_strategy(pattern: dict) -> str:
 
 
 # ── Proposal execution engine ──
-
-CONFIG_DIR = Path.home() / '.claude' / 'metano'
-CONFIG_FILE = CONFIG_DIR / 'gateway_config.yaml'
 
 
 def apply_proposal(proposal_id: int) -> dict:

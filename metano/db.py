@@ -3,11 +3,9 @@
 import sqlite3
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Optional
 
-DB_DIR = Path.home() / ".claude" / "metano"
-DB_PATH = DB_DIR / "bridge.db"
+from .paths import DB_DIR, DB_PATH
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS sessions (

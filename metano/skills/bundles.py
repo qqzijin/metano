@@ -1,10 +1,8 @@
 """Skill bundles: multi-skill aliases for common workflows."""
 
 import yaml
-from pathlib import Path
 from .loader import SkillLoader
-
-BUNDLES_FILE = Path.home() / ".claude" / "metano" / "bundles.yaml"
+from ..paths import BUNDLES_FILE
 
 
 class BundleLoader:

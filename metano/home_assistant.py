@@ -2,16 +2,16 @@
 import json
 import os
 import time
-from pathlib import Path
 from typing import Optional
 import requests
 from metano.log import logger
+from .paths import CONFIG_PATH
 
 def _get_ha_config() -> dict:
     """Load Home Assistant config from gateway_config.yaml."""
     try:
         import yaml
-        config_path = Path.home() / '.claude' / 'metano' / 'gateway_config.yaml'
+        config_path = CONFIG_PATH
         if config_path.exists():
             with open(config_path) as f:
                 config = yaml.safe_load(f) or {}
@@ -155,7 +155,7 @@ def ha_set_config(url: str, token: str) -> dict:
     """
     import tempfile
     import yaml
-    path = Path.home() / '.claude' / 'metano' / 'gateway_config.yaml'
+    path = CONFIG_PATH
     existing = {}
     if path.exists():
         with open(path) as f:

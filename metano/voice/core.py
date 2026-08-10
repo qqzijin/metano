@@ -2,10 +2,9 @@
 import asyncio
 import json
 import time
-from pathlib import Path
 from typing import Optional
 from metano.log import logger
-AUDIO_DIR = Path.home() / '.claude' / 'metano' / 'audio'
+from ..paths import AUDIO_DIR
 
 def voice_speak(text: str, voice: str='zh-CN-YunxiNeural', rate: str='+0%', pitch: str='+0Hz', output_format: str='mp3') -> dict:
     """Convert text to speech using edge-tts."""

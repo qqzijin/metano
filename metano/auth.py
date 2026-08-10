@@ -5,16 +5,13 @@ import os
 import secrets
 import time
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Optional
 
 import jwt
 from fastapi import HTTPException, Request, Response
 
 from metano.log import logger
-
-CONFIG_PATH = Path.home() / ".claude" / "metano" / "gateway_config.yaml"
-AUDIT_LOG = Path.home() / ".claude" / "metano" / "security" / "audit.jsonl"
+from .paths import CONFIG_PATH, AUDIT_LOG
 
 JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 15

@@ -8,9 +8,9 @@ import json
 import os
 import sys
 import time
-from pathlib import Path
 
-_STATE_DIR = Path.home() / '.claude' / 'metano' / 'evolution'
+from .paths import EVOLUTION_DIR as _STATE_DIR
+
 _STATE_FILE = _STATE_DIR / 'hook_state.json'
 
 def _load_state() -> dict:

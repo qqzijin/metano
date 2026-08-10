@@ -12,7 +12,7 @@ stdin (optional; ignored), never blocks (wraps everything in try/except so a
 memory DB hiccup cannot break session startup).
 
 Usage (manual test):
-    echo '{}' | PYTHONPATH=/home/dk/.claude/metano python3 /home/dk/.claude/metano/hook_inject_memory.py
+    echo '{}' | PYTHONPATH="${METANO_HOME:-$HOME/.claude/metano}" python3 "${METANO_HOME:-$HOME/.claude/metano}/hook_inject_memory.py"
 """
 import json
 import os

@@ -3,9 +3,8 @@
 import json
 import sqlite3
 import time
-from pathlib import Path
 
-KANBAN_DIR = Path.home() / ".claude" / "metano" / "kanban"
+from .paths import KANBAN_DIR
 KANBAN_DB = KANBAN_DIR / "kanban.db"
 
 # Default columns

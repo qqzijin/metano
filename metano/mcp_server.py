@@ -51,12 +51,10 @@ from .home_assistant import home_control, home_status, home_automate
 from .memory import add_memory, search_memories, get_memory_stats, compress_memories
 from .mcp_bridge import tavily_search
 from metano.log import logger
+from .paths import CRON_DIR, CRON_JOBS_FILE, PERSONALITIES_DIR, EVO_LOG
 _skill_loader = SkillLoader()
 _skill_manager = SkillManager()
 _bundle_loader = BundleLoader()
-CRON_DIR = Path.home() / '.claude' / 'metano' / 'cron'
-CRON_JOBS_FILE = CRON_DIR / 'jobs.json'
-PERSONALITIES_DIR = Path.home() / '.claude' / 'metano' / 'personalities'
 CLAUDE_MD = Path.home() / 'CLAUDE.md'
 mcp = FastMCP('metano')
 
@@ -334,7 +332,7 @@ def evolution_reject(suggestion_id: str) -> str:
 @mcp.tool()
 def evolution_log(limit: int=20) -> str:
     """Show recent evolution operations from the audit log."""
-    log_path = Path.home() / '.claude' / 'metano' / 'evolution' / 'evolution_log.jsonl'
+    log_path = EVO_LOG
     if not log_path.exists():
         return json.dumps([])
     entries = []

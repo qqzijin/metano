@@ -13,9 +13,9 @@ import time
 from pathlib import Path
 from typing import Optional
 
-KB_DIR = Path.home() / ".claude" / "metano" / "knowledge"
-KB_DB = KB_DIR / "knowledge.db"
-PROJECT_ROOT = Path.home() / ".claude" / "metano"
+from .paths import KB_DIR, KB_DB, home_dir
+
+PROJECT_ROOT = home_dir()
 ALLOWED_INGEST_PREFIXES = [PROJECT_ROOT, Path.home() / "scrapling-project", Path.home() / "DailyHotApi"]
 
 CHUNK_SIZE = 1000

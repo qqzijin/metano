@@ -5,7 +5,8 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from .validator import validate_frontmatter, validate_content
 from metano.log import logger
-SKILLS_DIR = Path.home() / '.claude' / 'metano' / 'skills'
+from ..paths import SKILLS_DIR
+
 BUNDLED_SKILLS_DIR = Path(__file__).parent.parent / 'skills_data'
 
 @dataclass

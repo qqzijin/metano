@@ -23,7 +23,7 @@ ANTHROPIC_MODEL = os.environ.get('HONCHO_MODEL', 'claude-sonnet-4-6')
 # Exploration markdown is written under the project root so knowledge_ingest's
 # path validator (which only allows PROJECT_ROOT + a few sibling dirs) accepts
 # it — /tmp would be silently rejected.
-EXPLORATION_DIR = Path.home() / '.claude' / 'metano' / 'knowledge' / 'explorations'
+from .paths import EXPLORATION_DIR
 
 # Fallback topics explored when action_log shows no failures. Keeps the KB
 # actively accumulating exploration docs. Each topic costs 1 web search + 1 LLM

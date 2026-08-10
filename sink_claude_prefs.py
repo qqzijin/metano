@@ -6,7 +6,7 @@ metano memory DB, tagged by scenario so a SessionStart hook can re-inject them
 only when relevant.
 
 Usage:
-    PYTHONPATH=/home/dk/.claude/metano python3 /home/dk/.claude/metano/sink_claude_prefs.py
+    PYTHONPATH="${METANO_HOME:-$HOME/.claude/metano}" python3 "${METANO_HOME:-$HOME/.claude/metano}/sink_claude_prefs.py"
 """
 import sys
 import os
@@ -87,7 +87,7 @@ RULES = [
      'reference', 0.5, ['reference', 'cocoindex']),
 
     # --- Reference: metano CORS / DB path ---
-    ("metano 前端 CORS 允许：https://nn.250823.xyz、http://localhost:5173、http://localhost:9120；数据库根目录 ~/.claude/metano/；前端 dev :5173 代理 /api -> :9120",
+    ("metano 前端 CORS 允许：https://nn.250823.xyz、http://localhost:5173、http://localhost:9120；数据库根目录由 METANO_HOME 指定；前端 dev :5173 代理 /api -> :9120",
      'reference', 0.5, ['reference', 'metano']),
 ]
 

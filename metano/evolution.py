@@ -11,10 +11,7 @@ from .honcho.dialectic import compress_beliefs
 from .db import init_db
 from .evo_models import init_db as init_evo_db, get_rules as get_agent_rules, rule_count, get_action_stats, migrate_from_honcho, EVO_DB_PATH, add_audit, get_audit, get_daily_cost
 from metano.log import logger
-EVOLUTION_DIR = Path.home() / '.claude' / 'metano' / 'evolution'
-PAUSE_FLAG = EVOLUTION_DIR / 'paused'
-COST_CONFIG_FLAG = EVOLUTION_DIR / 'cost_circuit_config.json'
-LOG_FILE = EVOLUTION_DIR / 'evolution_log.jsonl'
+from .paths import EVOLUTION_DIR, PAUSE_FLAG, COST_CONFIG_FLAG, LOG_FILE
 
 # Cost circuit breaker thresholds (USD)
 # 基于网络探索发现：进化系统因成本过高($487.97)被暂停

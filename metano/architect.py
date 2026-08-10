@@ -19,13 +19,12 @@ from .evo_models import _get_conn, get_meta, set_meta, get_recent_actions, get_a
 from .evolution import _log
 from .llm_call import call_llm
 from metano.log import logger
+from .paths import home_dir, CRON_JOBS_FILE as CRON_FILE, CONFIG_PATH as GATEWAY_CONFIG, ARCH_SNAP_DIR
 ANTHROPIC_API_KEY = os.environ.get('ANTHROPIC_API_KEY', '')
 ANTHROPIC_MODEL = os.environ.get('HONCHO_MODEL', 'claude-sonnet-4-6')
-PROJECT_DIR = Path.home() / '.claude' / 'metano'
-CRON_FILE = PROJECT_DIR / 'cron' / 'jobs.json'
-SKILLS_DIR = PROJECT_DIR / 'metano' / 'skills_data'
-GATEWAY_CONFIG = PROJECT_DIR / 'gateway_config.yaml'
-ARCH_SNAP_DIR = PROJECT_DIR / 'architecture_snapshots'
+PROJECT_DIR = home_dir()
+SRC_DIR = Path(__file__).resolve().parent
+SKILLS_DIR = SRC_DIR / 'skills_data'
 MODIFIABLE_FILES = {'cron/jobs.json', 'skills/*/SKILL.md trigger', 'gateway_config.yaml'}
 
 def _call_llm(system_prompt: str, user_prompt: str) -> str:
@@ -35,7 +34,7 @@ def _call_llm(system_prompt: str, user_prompt: str) -> str:
 def build_architecture_model() -> dict:
     """Build a topological model of the system: components, tools, routes, cron jobs."""
     model = {'timestamp': time.time(), 'components': [], 'mcp_tools': [], 'cron_jobs': [], 'routes': [], 'rules': []}
-    src_dir = PROJECT_DIR / 'metano'
+    src_dir = SRC_DIR
     if src_dir.exists():
         for f in src_dir.glob('*.py'):
             if f.name.startswith('_'):

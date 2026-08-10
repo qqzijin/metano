@@ -2,7 +2,7 @@
 # metano: Start all services
 set -e
 
-BRIDGE_DIR="$HOME/.claude/metano"
+BRIDGE_DIR="${METANO_HOME:-$HOME/.claude/metano}"
 PID_DIR="$BRIDGE_DIR"
 
 start_backup() {
@@ -108,5 +108,15 @@ case "${1:-start}" in
     stop)   stop_all ;;
     status) status ;;
     restart) stop_all; sleep 1; start_backup; start_web; start_ccc_daemon; start_cron; start_gateway ;;
-    *) echo "Usage: $0 {start|stop|status|restart}" ;;
+    setup)
+        # 生成初始配置（gen_config.py 不存在时静默跳过），然后启动全部服务。
+        if [ -f "$BRIDGE_DIR/gen_config.py" ]; then
+            python3 "$BRIDGE_DIR/gen_config.py"
+        else
+            echo "等待 gen_config.py（尚未就绪，跳过配置生成）"
+        fi
+        echo "Running setup start..."
+        "$0" start
+        ;;
+    *) echo "Usage: $0 {start|stop|status|restart|setup}" ;;
 esac

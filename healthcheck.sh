@@ -12,7 +12,7 @@
 #   1  at least one service is DEGRADED or DOWN
 set -u
 
-BRIDGE_DIR="${METANO_DIR:-$HOME/.claude/metano}"
+BRIDGE_DIR="${METANO_HOME:-${METANO_DIR:-$HOME/.claude/metano}}"
 WEB_URL="${METANO_WEB_URL:-http://localhost:9120/health}"
 WEB_TIMEOUT="${METANO_WEB_TIMEOUT:-5}"
 

@@ -10,10 +10,11 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from .paths import CURATOR_STATE
+
 MEMORY_DIR = Path.home() / ".claude" / "projects" / "-home-dk" / "memory"
 MEMORY_INDEX = MEMORY_DIR / "MEMORY.md"
 CLAUDE_MD = Path.home() / "CLAUDE.md"
-CURATOR_STATE = Path.home() / ".claude" / "metano" / "curator_state.json"
 
 
 def load_state() -> dict:

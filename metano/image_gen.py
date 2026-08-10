@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 from typing import Optional
 from metano.log import logger
-IMAGE_DIR = Path.home() / '.claude' / 'metano' / 'images'
+from .paths import IMAGE_DIR
 
 
 def _openai_config() -> tuple[str, str] | None:
