@@ -26,7 +26,16 @@ def parse_timestamp(ts) -> float:
     return 0.0
 
 def estimate_cost(model: str, input_tokens: int, output_tokens: int, cache_read: int=0) -> float:
-    """Estimate USD cost for a model's token usage."""
+    """Estimate USD cost for a model's token usage.
+
+    Prefers the configurable price table (model_router.estimate_cost), which
+    covers deepseek-v4-flash (0.14/0.28) etc.; falls back to MODEL_PRICING.
+    """
+    try:
+        from .model_router import model_router
+        return model_router.estimate_cost(model, input_tokens, output_tokens, cache_read)
+    except Exception:
+        pass
     pricing = MODEL_PRICING.get(model, MODEL_PRICING['claude-sonnet-4-6'])
     return input_tokens / 1000000 * pricing['input'] + output_tokens / 1000000 * pricing['output'] + cache_read / 1000000 * pricing['cache_read']
 
@@ -105,8 +114,11 @@ def process_records(conn: sqlite3.Connection, session_id: str, project: str, rec
             cache_r = usage.get('cache_read_input_tokens', 0) or 0
             session_data['input_tokens'] += inp
             session_data['output_tokens'] += out
-            session_data['cache_read_tokens'] += cache_r
-            session_data['estimated_cost_usd'] += estimate_cost(model, inp, out, cache_r)
+            # cache_read_input_tokens is a cumulative per-session counter in the
+            # claude transcript (grows to the session total), NOT a per-turn value.
+            # Summing it overcounts by ~100x; take the running max as the total.
+            if cache_r > session_data['cache_read_tokens']:
+                session_data['cache_read_tokens'] = cache_r
             content = msg.get('content', '')
             text = extract_text(content)
             tool_name, tool_calls = extract_tool_info(content)
@@ -126,6 +138,9 @@ def process_records(conn: sqlite3.Connection, session_id: str, project: str, rec
     session_data['message_count'] = len(messages)
     if session_data['last_active'] > 0:
         session_data['ended_at'] = session_data['last_active']
+    session_data['estimated_cost_usd'] = estimate_cost(
+        session_data['model'] or '', session_data['input_tokens'],
+        session_data['output_tokens'], session_data['cache_read_tokens'])
     conn.execute('\n        INSERT INTO sessions (id, project, title, model, started_at, ended_at, last_active,\n                              message_count, tool_call_count, input_tokens, output_tokens,\n                              cache_read_tokens, estimated_cost_usd)\n        VALUES (:id, :project, :title, :model, :started_at, :ended_at, :last_active,\n                :message_count, :tool_call_count, :input_tokens, :output_tokens,\n                :cache_read_tokens, :estimated_cost_usd)\n        ON CONFLICT(id) DO UPDATE SET\n            title=COALESCE(excluded.title, sessions.title),\n            model=excluded.model,\n            ended_at=excluded.ended_at,\n            last_active=excluded.last_active,\n            message_count=excluded.message_count,\n            tool_call_count=excluded.tool_call_count,\n            input_tokens=excluded.input_tokens,\n            output_tokens=excluded.output_tokens,\n            cache_read_tokens=excluded.cache_read_tokens,\n            estimated_cost_usd=excluded.estimated_cost_usd\n    ', session_data)
     conn.execute('DELETE FROM messages WHERE session_id = ?', (session_id,))
     for m in messages:

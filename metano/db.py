@@ -2,9 +2,11 @@
 
 import sqlite3
 import time
+import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
+from .log import logger
 from .paths import DB_DIR, DB_PATH
 
 SCHEMA_SQL = """
@@ -13,6 +15,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     project TEXT NOT NULL,
     title TEXT,
     model TEXT,
+    user_key TEXT,
     started_at REAL NOT NULL,
     ended_at REAL,
     last_active REAL,
@@ -89,8 +92,83 @@ def init_db(db_path: Optional[Path] = None) -> sqlite3.Connection:
     conn = get_db(db_path)
     conn.executescript(SCHEMA_SQL)
     conn.executescript(FTS_TRIGGERS_SQL)
+    try:
+        conn.execute("ALTER TABLE sessions ADD COLUMN user_key TEXT")
+        conn.commit()
+    except Exception:
+        pass  # column already exists
     conn.commit()
     return conn
+
+
+def persist_exchange(session_id: str, user_key: str, platform: str, msg: str, response: str,
+                     usage: Optional[dict] = None, model: Optional[str] = None,
+                     conn: Optional[sqlite3.Connection] = None) -> str:
+    """Persist one user + assistant exchange into bridge.db.
+
+    Best-effort: any failure is logged and the caller's ``session_id`` is
+    returned unchanged. When no ``session_id`` is given, the most recent session
+    for the same ``user_key`` (last active within 30min) is reused, otherwise a
+    new session is created. Returns the session_id used (existing or new).
+
+    Real usage (input/output/cache_read tokens) drives the per-message token
+    columns and the accumulated session totals + estimated cost via
+    ``model_router.estimate_cost``.
+    """
+    own = conn is None
+    if conn is None:
+        conn = get_db()
+    try:
+        now = time.time()
+        usage = usage or {}
+        in_tok = usage.get('input_tokens', 0) or 0
+        out_tok = usage.get('output_tokens', 0) or 0
+        cache_tok = usage.get('cache_read_tokens', 0) or 0
+        if not session_id:
+            row = conn.execute(
+                'SELECT id, last_active FROM sessions WHERE user_key = ? ORDER BY last_active DESC LIMIT 1',
+                (user_key,)
+            ).fetchone()
+            if row and (row['last_active'] or 0) > now - 1800:
+                session_id = row['id']
+        if not session_id:
+            session_id = uuid.uuid4().hex[:12]
+            conn.execute(
+                'INSERT INTO sessions (id, project, title, model, started_at, last_active, message_count, tool_call_count, input_tokens, output_tokens, cache_read_tokens, estimated_cost_usd, user_key) '
+                'VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, 0, 0, 0, ?)',
+                (session_id, platform, (msg or '')[:30], model, now, now, user_key)
+            )
+        ts = now
+        conn.execute(
+            'INSERT INTO messages (session_id, role, content, tool_name, tool_calls, timestamp, input_tokens, output_tokens, duration_ms) '
+            'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            (session_id, 'user', msg, None, None, ts, in_tok, 0, None)
+        )
+        conn.execute(
+            'INSERT INTO messages (session_id, role, content, tool_name, tool_calls, timestamp, input_tokens, output_tokens, duration_ms) '
+            'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            (session_id, 'assistant', response, None, None, ts + 0.0001, 0, out_tok, None)
+        )
+        try:
+            from .model_router import model_router
+            cost = model_router.estimate_cost(model, in_tok, out_tok, cache_tok)
+        except Exception:
+            logger.exception('cost estimate failed')
+            cost = 0.0
+        conn.execute(
+            'UPDATE sessions SET message_count = message_count + 2, last_active = ?, '
+            'input_tokens = input_tokens + ?, output_tokens = output_tokens + ?, '
+            'cache_read_tokens = cache_read_tokens + ?, estimated_cost_usd = estimated_cost_usd + ?, '
+            'model = COALESCE(?, model) WHERE id = ?',
+            (now, in_tok, out_tok, cache_tok, cost, model, session_id)
+        )
+        conn.commit()
+    except Exception:
+        logger.exception('persist_exchange failed')
+    finally:
+        if own:
+            conn.close()
+    return session_id
 
 
 def live_db_stats(conn: Optional[sqlite3.Connection] = None) -> dict:

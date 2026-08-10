@@ -195,6 +195,16 @@ export function useChatMutation() {
   });
 }
 
+export function useUploadFile() {
+  return useMutation<{ path: string; name: string; size: number }, Error, File>({
+    mutationFn: (file) => {
+      const fd = new FormData();
+      fd.append("file", file);
+      return fetchAPI("/upload", { method: "POST", body: fd });
+    },
+  });
+}
+
 export function useCronCreate() {
   const qc = useQueryClient();
   return useMutation({
@@ -798,5 +808,17 @@ export function useProxyAdd() {
     mutationFn: (data) =>
       fetchAPI("/proxy/add", { method: "POST", body: JSON.stringify(data) }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["proxy", "providers"] }),
+  });
+}
+
+export function useProxyUpdate() {
+  const qc = useQueryClient();
+  return useMutation<{ status: string }, Error, { name: string; body: Record<string, unknown> }>({
+    mutationFn: ({ name, body }) =>
+      fetchAPI(`/proxy/${encodeURIComponent(name)}`, { method: "PUT", body: JSON.stringify(body) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["proxy", "providers"] });
+      qc.invalidateQueries({ queryKey: qk.models });
+    },
   });
 }

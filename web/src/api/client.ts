@@ -1,10 +1,15 @@
 const BASE = "/api";
 
 export async function fetchAPI<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers: Record<string, string> = {
+    // Let the browser set multipart Content-Type (with boundary) for FormData bodies.
+    ...(init?.body instanceof FormData ? {} : { "Content-Type": "application/json" }),
+    ...(init?.headers as Record<string, string> | undefined),
+  };
   const res = await fetch(`${BASE}${path}`, {
     ...init,
     credentials: "include",
-    headers: { "Content-Type": "application/json", ...init?.headers },
+    headers,
   });
 
   if (res.status === 401) {
@@ -263,6 +268,12 @@ export interface Suggestion {
   [key: string]: unknown;
 }
 
+export interface ModelPrice {
+  input?: number;
+  output?: number;
+  cache_read?: number;
+}
+
 export interface ModelProvider {
   name: string;
   model?: string;
@@ -270,6 +281,7 @@ export interface ModelProvider {
   max_tokens?: number;
   supports_vision?: boolean;
   is_default?: boolean;
+  price?: ModelPrice;
   [key: string]: unknown;
 }
 

@@ -109,7 +109,7 @@ def analytics_daily(days: int=30) -> str:
     """Daily token/cost time series for the last N days."""
     conn = _get_conn()
     cutoff = time.time() - days * 86400
-    rows = conn.execute("SELECT date(last_active, 'unixepoch') as day, COUNT(*) as session_count, SUM(input_tokens) as input_tokens, SUM(output_tokens) as output_tokens, SUM(estimated_cost_usd) as estimated_cost_usd FROM sessions WHERE last_active >= ? GROUP BY day ORDER BY day", (cutoff,)).fetchall()
+    rows = conn.execute("SELECT date(last_active, 'unixepoch', 'localtime') as day, COUNT(*) as session_count, SUM(input_tokens) as input_tokens, SUM(output_tokens) as output_tokens, SUM(estimated_cost_usd) as estimated_cost_usd FROM sessions WHERE last_active >= ? GROUP BY day ORDER BY day", (cutoff,)).fetchall()
     return json.dumps([dict(r) for r in rows], ensure_ascii=False, indent=2)
 
 def _load_cron_jobs() -> list[dict]:

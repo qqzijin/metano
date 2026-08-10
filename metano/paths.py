@@ -44,6 +44,7 @@ KB_DIR = KNOWLEDGE_DIR
 KB_DB = KB_DIR / 'knowledge.db'
 EXPLORATION_DIR = KNOWLEDGE_DIR / 'explorations'
 ARCH_SNAP_DIR = HOME / 'architecture_snapshots'
+UPLOADS_DIR = HOME / 'uploads'
 
 # --- Files -------------------------------------------------------------------
 CONFIG_PATH = HOME / 'gateway_config.yaml'

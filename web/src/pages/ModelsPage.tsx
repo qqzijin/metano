@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Cpu, Star, ExternalLink, Plus, Check, X } from "lucide-react";
+import { Cpu, Star, ExternalLink, Plus, Check, X, Pencil, Save } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { StatCard } from "@/components/shared/StatCard";
 import { EmptyState } from "@/components/shared/EmptyState";
@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useModels, useProxyProviders, useModelSetDefault, useProxyAdd } from "@/api/hooks";
+import { useModels, useProxyProviders, useModelSetDefault, useProxyAdd, useProxyUpdate } from "@/api/hooks";
 import { toast } from "sonner";
 
 // 这些预设依赖外部 API，启用时必须提供 API Key；ollama-local 为本地服务无需 Key。
@@ -19,8 +19,41 @@ export default function ModelsPage() {
   const { data: proxyData, isLoading: proxyLoading, isError: proxyError } = useProxyProviders();
   const setDefaultMut = useModelSetDefault();
   const addProxyMut = useProxyAdd();
+  const updateProxyMut = useProxyUpdate();
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ name: "", base_url: "", api_key: "", model: "", max_tokens: 4096 });
+  const [editingPrice, setEditingPrice] = useState<string | null>(null);
+  const [priceForm, setPriceForm] = useState({ input: "", output: "", cache_read: "" });
+
+  const fmtPrice = (v?: number) => (v == null ? "—" : `$${v}/M`);
+
+  const startEditPrice = (p: any) => {
+    const pr = p.price ?? {};
+    setPriceForm({
+      input: pr.input != null ? String(pr.input) : "",
+      output: pr.output != null ? String(pr.output) : "",
+      cache_read: pr.cache_read != null ? String(pr.cache_read) : "",
+    });
+    setEditingPrice(p.name);
+  };
+
+  const savePrice = async (name: string) => {
+    const price: Record<string, number> = {};
+    if (priceForm.input !== "") price.input = Number(priceForm.input);
+    if (priceForm.output !== "") price.output = Number(priceForm.output);
+    if (priceForm.cache_read !== "") price.cache_read = Number(priceForm.cache_read);
+    if (Object.keys(price).length === 0) {
+      toast.error("至少填写一项价格");
+      return;
+    }
+    try {
+      await updateProxyMut.mutateAsync({ name, body: { price } });
+      toast.success(`已更新价格: ${name}`);
+      setEditingPrice(null);
+    } catch (e: any) {
+      toast.error(`更新失败: ${e.message ?? "未知错误"}`);
+    }
+  };
 
   const providers = modelsData?.providers ?? [];
   const presets = proxyData?.providers ?? [];
@@ -156,12 +189,31 @@ export default function ModelsPage() {
                           {p.model && <span>模型: {p.model}</span>}
                           {p.base_url && <span className="truncate">{p.base_url}</span>}
                         </div>
+                        <div className="text-xs mt-1 text-muted-foreground">
+                          输入 {fmtPrice(p.price?.input)} · 输出 {fmtPrice(p.price?.output)} · 缓存 {fmtPrice(p.price?.cache_read)}
+                        </div>
+                        {editingPrice === p.name && (
+                          <div className="flex flex-wrap items-center gap-2 mt-2">
+                            <Input type="number" step="any" className="h-8 w-24" placeholder="输入价" value={priceForm.input} onChange={(e) => setPriceForm({ ...priceForm, input: e.target.value })} />
+                            <Input type="number" step="any" className="h-8 w-24" placeholder="输出价" value={priceForm.output} onChange={(e) => setPriceForm({ ...priceForm, output: e.target.value })} />
+                            <Input type="number" step="any" className="h-8 w-24" placeholder="缓存价" value={priceForm.cache_read} onChange={(e) => setPriceForm({ ...priceForm, cache_read: e.target.value })} />
+                            <Button size="sm" onClick={() => savePrice(p.name)} disabled={updateProxyMut.isPending}>
+                              <Save className="size-3.5 mr-1" /> 保存
+                            </Button>
+                            <Button size="sm" variant="ghost" onClick={() => setEditingPrice(null)}>取消</Button>
+                          </div>
+                        )}
                       </div>
-                      {!p.is_default && (
-                        <Button size="sm" variant="outline" onClick={() => handleSetDefault(p.name)}>
-                          <Check className="size-3.5 mr-1" /> 设为默认
+                      <div className="flex items-center gap-1 shrink-0">
+                        <Button size="sm" variant="outline" onClick={() => startEditPrice(p)}>
+                          <Pencil className="size-3.5 mr-1" /> 价格
                         </Button>
-                      )}
+                        {!p.is_default && (
+                          <Button size="sm" variant="outline" onClick={() => handleSetDefault(p.name)}>
+                            <Check className="size-3.5 mr-1" /> 设为默认
+                          </Button>
+                        )}
+                      </div>
                     </CardContent>
                   </Card>
                 ))}

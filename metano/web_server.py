@@ -2,8 +2,9 @@
 import json
 import sqlite3
 import time
+import uuid
 from pathlib import Path
-from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect, Request, Response, Depends
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect, Request, Response, Depends, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
@@ -11,7 +12,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from .auth import authenticate_user, check_login_rate, record_login_attempt, set_auth_cookies, clear_auth_cookies, get_current_user_from_request, try_refresh_from_request, decode_token, change_password, AUTH_WHITELIST, ACCESS_TOKEN_EXPIRE_MINUTES, _audit, require_role
 from .db import get_db, init_db, DB_PATH
 from .indexer import index_all
-from .paths import CRON_DIR, CRON_JOBS_FILE, CONFIG_PATH, EVO_LOG, AUDIT_LOG, EVO_DB_PATH, HONCHO_DB, KB_DB, MEMORY_DB
+from .paths import CRON_DIR, CRON_JOBS_FILE, CONFIG_PATH, EVO_LOG, AUDIT_LOG, EVO_DB_PATH, HONCHO_DB, KB_DB, MEMORY_DB, UPLOADS_DIR
 WEB_DIR = Path(__file__).parent.parent / 'web' / 'dist'
 SENSITIVE_KEYS = {'api_key', 'bot_token', 'app_secret', 'encryption_key', 'verification_token', 'token', 'secret', 'password', 'ha_token'}
 # gateway_config.yaml 中所有 SENSITIVE_KEYS 字段在 GET /api/config 返回时自动脱敏（***）
@@ -298,7 +299,7 @@ def analytics_usage(days: int=30):
     cutoff = time.time() - days * 86400
     total = conn.execute('SELECT COUNT(*) as session_count, SUM(message_count) as message_count, SUM(tool_call_count) as tool_call_count, SUM(input_tokens) as input_tokens, SUM(output_tokens) as output_tokens, SUM(cache_read_tokens) as cache_read_tokens, SUM(estimated_cost_usd) as estimated_cost_usd FROM sessions WHERE last_active >= ?', (cutoff,)).fetchone()
     by_model = conn.execute('SELECT model, COUNT(*) as session_count, SUM(input_tokens) as input_tokens, SUM(output_tokens) as output_tokens, SUM(estimated_cost_usd) as estimated_cost_usd FROM sessions WHERE last_active >= ? GROUP BY model', (cutoff,)).fetchall()
-    daily = conn.execute("SELECT date(last_active, 'unixepoch') as day, COUNT(*) as session_count, COALESCE(SUM(input_tokens),0) as input_tokens, COALESCE(SUM(output_tokens),0) as output_tokens, COALESCE(SUM(estimated_cost_usd),0) as estimated_cost_usd FROM sessions WHERE last_active >= ? GROUP BY day ORDER BY day", (cutoff,)).fetchall()
+    daily = conn.execute("SELECT date(last_active, 'unixepoch', 'localtime') as day, COUNT(*) as session_count, COALESCE(SUM(input_tokens),0) as input_tokens, COALESCE(SUM(output_tokens),0) as output_tokens, COALESCE(SUM(estimated_cost_usd),0) as estimated_cost_usd FROM sessions WHERE last_active >= ? GROUP BY day ORDER BY day", (cutoff,)).fetchall()
     return {'period_days': days, 'total': dict(total) if total else {}, 'by_model': [dict(r) for r in by_model], 'daily': [dict(r) for r in daily]}
 
 @app.get('/api/cron/jobs')
@@ -585,6 +586,23 @@ async def api_profile(user_id: str='default'):
         logger.exception()
         return _error_response('Internal error')
 
+@app.post('/api/upload')
+async def api_upload(file: UploadFile = File(...), _user=Depends(require_role("user"))):
+    """Upload a file for the AI to read in chat. Saved to UPLOADS_DIR."""
+    ALLOWED_EXT = {'.txt', '.md', '.pdf', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.csv', '.json', '.py', '.js', '.ts', '.html', '.docx'}
+    MAX_SIZE = 20 * 1024 * 1024
+    filename = file.filename or 'upload'
+    ext = Path(filename).suffix.lower()
+    if ext not in ALLOWED_EXT:
+        raise HTTPException(status_code=400, detail=f'不支持的文件类型: {ext or "(无扩展名)"}')
+    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    content = await file.read()
+    if len(content) > MAX_SIZE:
+        raise HTTPException(status_code=400, detail='文件过大（上限 20MB）')
+    dest = UPLOADS_DIR / f'{uuid.uuid4().hex[:8]}{ext}'
+    dest.write_bytes(content)
+    return {'path': str(dest), 'name': filename, 'size': len(content)}
+
 @app.post('/api/chat')
 async def api_chat(body: dict):
     msg = body.get('message', '')
@@ -601,56 +619,15 @@ async def api_chat(body: dict):
         elif context and isinstance(context, list):
             router.inject_history(platform, user_id, context)
         response = await router.route_message(platform, user_id, msg)
-        session_id = _persist_chat(session_id, user_id, platform, msg, response)
+        try:
+            sess = router.get_or_create_session(platform, user_id)
+            session_id = sess.db_session_id or session_id
+        except Exception:
+            logger.exception()
         return {'response': response, 'session_id': session_id}
     except Exception as e:
         logger.exception()
         return _error_response('Internal error')
-
-
-def _persist_chat(session_id: str, user_id: str, platform: str, msg: str, response: str) -> str:
-    """Persist one web chat exchange (user message + assistant reply) into bridge.db.
-
-    Best-effort: any failure is logged and must never break the chat response path.
-    When no session_id is given, a new session is created. Returns the session_id
-    used (existing or newly created) so the caller can return it to the frontend.
-    """
-    try:
-        import uuid
-        from .model_router import model_router
-        conn = get_db()
-        now = time.time()
-        model = None
-        try:
-            model = model_router.get_provider().model or None
-        except Exception:
-            logger.exception('model lookup failed')
-        if not session_id:
-            session_id = uuid.uuid4().hex[:12]
-            conn.execute(
-                'INSERT INTO sessions (id, project, title, model, started_at, last_active, message_count, tool_call_count, input_tokens, output_tokens, cache_read_tokens, estimated_cost_usd) '
-                'VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, 0, 0, 0)',
-                (session_id, 'web', (msg or '')[:30], model, now, now)
-            )
-        ts = now
-        conn.execute(
-            'INSERT INTO messages (session_id, role, content, tool_name, tool_calls, timestamp, input_tokens, output_tokens, duration_ms) '
-            'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            (session_id, 'user', msg, None, None, ts, len(msg or '') // 4, 0, None)
-        )
-        conn.execute(
-            'INSERT INTO messages (session_id, role, content, tool_name, tool_calls, timestamp, input_tokens, output_tokens, duration_ms) '
-            'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            (session_id, 'assistant', response, None, None, ts + 0.0001, 0, len(response or '') // 4, None)
-        )
-        conn.execute(
-            'UPDATE sessions SET message_count = message_count + 2, last_active = ?, input_tokens = input_tokens + ?, output_tokens = output_tokens + ?, model = COALESCE(?, model) WHERE id = ?',
-            (now, len(msg or '') // 4, len(response or '') // 4, model, session_id)
-        )
-        conn.commit()
-    except Exception:
-        logger.exception('chat persistence failed')
-    return session_id
 
 
 def _inject_session_context(router, platform: str, user_id: str, session_id: str):
@@ -1006,6 +983,9 @@ async def api_proxy_add(body: dict, _admin=Depends(require_role("admin"))):
                 existing = yaml.safe_load(f) or {}
         models = existing.get('models', {})
         models[name] = {'base_url': body.get('base_url', ''), 'api_key': body.get('api_key', ''), 'model': body.get('model', ''), 'max_tokens': body.get('max_tokens', 4096), 'supports_vision': body.get('supports_vision', False), 'supports_tools': body.get('supports_tools', True), 'enabled': True}
+        price = body.get('price')
+        if isinstance(price, dict):
+            models[name]['price'] = {k: price[k] for k in ('input', 'output', 'cache_read') if k in price}
         existing['models'] = models
         CONFIG_PATH.write_text(yaml.dump(existing, allow_unicode=True, default_flow_style=False))
         # Refresh the shared module-level ModelRouter singleton so the newly
@@ -1014,6 +994,49 @@ async def api_proxy_add(body: dict, _admin=Depends(require_role("admin"))):
         from .model_router import model_router
         model_router.refresh()
         return {'status': 'added', 'provider': name}
+    except Exception as e:
+        logger.exception()
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.put('/api/proxy/{name}')
+async def api_proxy_update(name: str, body: dict, _admin=Depends(require_role("admin"))):
+    """Update an existing model provider (incl. price)."""
+    try:
+        import yaml
+        existing = {}
+        if CONFIG_PATH.exists():
+            with open(CONFIG_PATH) as f:
+                existing = yaml.safe_load(f) or {}
+        models = existing.get('models', {})
+        if name not in models:
+            # Not in config (e.g. env-fallback 'default'): materialize from the live provider
+            from .model_router import model_router
+            live = model_router.get_provider(name)
+            if not live:
+                raise HTTPException(status_code=404, detail=f'provider not found: {name}')
+            m = {'base_url': live.base_url, 'api_key': live.api_key, 'model': live.model,
+                 'max_tokens': live.max_tokens, 'supports_vision': live.supports_vision,
+                 'supports_tools': live.supports_tools, 'enabled': True,
+                 'price': {'input': live.price_input, 'output': live.price_output, 'cache_read': live.price_cache_read}}
+            models[name] = m
+        else:
+            m = models[name]
+        for field in ('base_url', 'api_key', 'model', 'max_tokens', 'supports_vision', 'supports_tools', 'enabled'):
+            if field in body:
+                m[field] = body[field]
+        if 'default' in body:
+            m['default'] = bool(body['default'])
+        price = body.get('price')
+        if isinstance(price, dict):
+            p = m.setdefault('price', {})
+            for k in ('input', 'output', 'cache_read'):
+                if k in price:
+                    p[k] = price[k]
+        existing['models'] = models
+        CONFIG_PATH.write_text(yaml.dump(existing, allow_unicode=True, default_flow_style=False))
+        from .model_router import model_router
+        model_router.refresh()
+        return {'status': 'updated', 'provider': name}
     except Exception as e:
         logger.exception()
         raise HTTPException(status_code=400, detail=str(e))

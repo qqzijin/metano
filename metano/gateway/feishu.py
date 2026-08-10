@@ -19,8 +19,11 @@ from lark_oapi.api.im.v1 import (
     PatchMessageRequest,
     PatchMessageRequestBody,
     P2ImMessageReceiveV1,
+    GetImageRequest,
+    GetFileRequest,
 )
 
+from ..paths import UPLOADS_DIR
 from .router import MessageRouter
 
 logger = logging.getLogger(__name__)
@@ -144,7 +147,12 @@ class FeishuBot:
             content = msg.content
             msg_type = msg.message_type
 
-            user_text = self._extract_text(content, msg_type)
+            # For image/file messages, download the attachment and mark its path;
+            # _extract_text would otherwise return the raw JSON content string.
+            if msg_type in ('image', 'file'):
+                user_text = self._download_attachment(content, msg_type)
+            else:
+                user_text = self._extract_text(content, msg_type)
 
             # For group messages, only respond to @bot mentions
             if chat_type == "group":
@@ -236,6 +244,70 @@ class FeishuBot:
             except (json.JSONDecodeError, KeyError):
                 return content
         return content
+
+    @staticmethod
+    def _read_response_bytes(resp) -> Optional[bytes]:
+        """Extract raw bytes from a Feishu image/file get response.
+
+        lark-oapi SDK (verified on the installed version): GetImageResponse /
+        GetFileResponse expose ``file`` (IO[Any] / bytes) directly on the
+        response object, plus ``file_name``. Fall back to ``data.file`` /
+        ``data.image`` in case another SDK version nests it under ``data``.
+        """
+        if resp is None:
+            return None
+        data = getattr(resp, 'file', None)
+        if data is None and getattr(resp, 'data', None) is not None:
+            data = getattr(resp.data, 'file', None) or getattr(resp.data, 'image', None)
+        if data is None:
+            return None
+        if isinstance(data, (bytes, bytearray)):
+            return bytes(data)
+        try:
+            return data.read()
+        except Exception:
+            return None
+
+    def _download_attachment(self, content: str, msg_type: str) -> str:
+        """Download a Feishu image/file message to UPLOADS_DIR.
+
+        Returns a string like ``[附件: /abs/path]`` on success (with any caption
+        text if present), or ``''`` on failure so the message is not routed with
+        the raw JSON content and the handler is not blocked.
+        """
+        try:
+            data = json.loads(content)
+            UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+            if msg_type == "image":
+                key = data.get("image_key", "")
+                if not key:
+                    return ""
+                req = GetImageRequest.builder().image_key(key).build()
+                resp = self.client.im.v1.image.get(req)
+                raw = self._read_response_bytes(resp)
+                if resp.success() and raw:
+                    dest = UPLOADS_DIR / f'img_{key[-10:]}.png'
+                    dest.write_bytes(raw)
+                    return f"[附件: {dest}]"
+                logger.error(f"Feishu image download failed: code={resp.code}, msg={resp.msg}")
+                return ""
+            if msg_type == "file":
+                key = data.get("file_key", "")
+                if not key:
+                    return ""
+                req = GetFileRequest.builder().file_key(key).build()
+                resp = self.client.im.v1.file.get(req)
+                raw = self._read_response_bytes(resp)
+                if resp.success() and raw:
+                    dest = UPLOADS_DIR / f'file_{key[-10:]}.bin'
+                    dest.write_bytes(raw)
+                    return f"[附件: {dest}]"
+                logger.error(f"Feishu file download failed: code={resp.code}, msg={resp.msg}")
+                return ""
+        except Exception as e:
+            logger.error(f"Feishu attachment download failed: {e}", exc_info=True)
+            return ""
+        return ""
 
     def _send_reply(self, chat_id: str, text: str, reply_to: str = ""):
         """Send a reply message to a Feishu chat."""

@@ -1,12 +1,13 @@
 import { useState, useRef, useEffect } from "react";
-import { Send, Bot, User, Trash2, History, X } from "lucide-react";
+import { Send, Bot, User, Trash2, History, X, Plus, Paperclip } from "lucide-react";
+import { toast } from "sonner";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useChatMutation, useSessions, useMessages } from "@/api/hooks";
+import { useChatMutation, useSessions, useMessages, useUploadFile } from "@/api/hooks";
 import { fmtTime } from "@/api/client";
 
 interface ChatMsg {
@@ -52,7 +53,9 @@ export default function ChatPage() {
   const failedSendRef = useRef(false);
   const clearedRef = useRef(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const chatMut = useChatMutation();
+  const uploadMut = useUploadFile();
   // Only poll the session list while the picker is open; when closed, stop polling
   // (the initial fetch on mount is still performed by useQuery).
   const { data: sessionsData, isError: sessionsError } = useSessions("", 20, showSessionPicker ? 10000 : false);
@@ -152,11 +155,35 @@ export default function ChatPage() {
     localStorage.removeItem(STORAGE_KEY);
   };
 
+  const handleNewChat = () => {
+    clearedRef.current = true;
+    failedSendRef.current = false;
+    loadedSessionRef.current = null;
+    setShowSessionPicker(false);
+    setDirty(false);
+    setConnectedSession(null);
+    setMessages([]);
+    localStorage.removeItem(STORAGE_KEY);
+    toast.success("已开启新对话");
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSend();
     }
+  };
+
+  const handleFileSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // allow re-selecting the same file
+    if (!file) return;
+    uploadMut.mutate(file, {
+      onSuccess: ({ path }) => {
+        setInput((prev) => (prev ? prev + " " : "") + `[附件: ${path}]`);
+      },
+      onError: () => toast.error("上传失败"),
+    });
   };
 
   return (
@@ -210,6 +237,9 @@ export default function ChatPage() {
             )}
           </div>
           <div className="flex gap-1">
+            <Button size="sm" variant="ghost" onClick={handleNewChat}>
+              <Plus className="size-3.5 mr-1" /> 新对话
+            </Button>
             {!connectedSession && (
               <Button size="sm" variant="ghost" onClick={() => setShowSessionPicker(!showSessionPicker)}>
                 <History className="size-3.5 mr-1" /> 接入历史
@@ -276,6 +306,23 @@ export default function ChatPage() {
 
         {/* Input */}
         <div className="p-3 border-t flex gap-2">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            title="上传附件"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploadMut.isPending || chatMut.isPending}
+          >
+            {uploadMut.isPending ? <span className="text-xs">上传中</span> : <Paperclip className="size-4" />}
+          </Button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            hidden
+            accept=".txt,.md,.pdf,.png,.jpg,.jpeg,.gif,.webp,.csv,.json,.py,.js,.ts,.html,.docx"
+            onChange={handleFileSelected}
+          />
           <Input
             placeholder="输入消息..."
             value={input}

@@ -2,6 +2,9 @@
 
 import asyncio
 import logging
+import time
+from pathlib import Path
+from ..paths import UPLOADS_DIR
 from .router import router
 
 log = logging.getLogger(__name__)
@@ -26,6 +29,8 @@ class TelegramBot:
         self._app.add_handler(CommandHandler("new", self._cmd_new))
         self._app.add_handler(CommandHandler("profile", self._cmd_profile))
         self._app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message))
+        self._app.add_handler(MessageHandler(filters.PHOTO, self._handle_photo))
+        self._app.add_handler(MessageHandler(filters.DOCUMENT, self._handle_document))
 
         log.info("Telegram bot starting...")
         await self._app.initialize()
@@ -75,6 +80,63 @@ class TelegramBot:
         # Telegram message limit: 4096 chars
         for chunk in self._chunk(response, 4096):
             await update.message.reply_text(chunk)
+
+    async def _handle_photo(self, update, context):
+        user_id = str(update.effective_user.id)
+
+        # Auth check
+        if self.allowed_users and update.effective_user.id not in self.allowed_users:
+            await update.message.reply_text("Not authorized.")
+            return
+
+        try:
+            UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+            file = await update.message.photo[-1].get_file()
+            dest = UPLOADS_DIR / f'photo_{int(time.time())}.jpg'
+            await file.download_to_drive(dest)
+            caption = update.message.caption or ''
+            text = f'[附件: {dest}] {caption}'.strip()
+            await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+            response = await router.route_message("telegram", user_id, text)
+            for chunk in self._chunk(response, 4096):
+                await update.message.reply_text(chunk)
+        except Exception:
+            log.exception("Telegram photo handling failed")
+            try:
+                await update.message.reply_text("附件处理失败")
+            except Exception:
+                log.exception()
+
+    async def _handle_document(self, update, context):
+        user_id = str(update.effective_user.id)
+
+        # Auth check
+        if self.allowed_users and update.effective_user.id not in self.allowed_users:
+            await update.message.reply_text("Not authorized.")
+            return
+
+        try:
+            UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+            file = await update.message.document.get_file()
+            name = update.message.document.file_name or f'doc_{int(time.time())}'
+            # Strip any path components from the client-supplied name; add a fallback ext.
+            name = Path(name).name
+            if not Path(name).suffix:
+                name = name + '.bin'
+            dest = UPLOADS_DIR / name
+            await file.download_to_drive(dest)
+            caption = update.message.caption or ''
+            text = f'[附件: {dest}] {caption}'.strip()
+            await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+            response = await router.route_message("telegram", user_id, text)
+            for chunk in self._chunk(response, 4096):
+                await update.message.reply_text(chunk)
+        except Exception:
+            log.exception("Telegram document handling failed")
+            try:
+                await update.message.reply_text("附件处理失败")
+            except Exception:
+                log.exception()
 
     @staticmethod
     def _chunk(text: str, limit: int) -> list[str]:
