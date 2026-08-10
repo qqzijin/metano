@@ -1,6 +1,6 @@
 # metano
 
-> AI 网关桥接层 · 自我进化引擎 · 多平台消息接入 · RAG 知识库 · 技能系统
+> **版本：v3.0.0** · AI 网关桥接层 · 自我进化引擎 · 多平台消息接入 · RAG 知识库 + 知识图谱 · 记忆技能库
 
 为 Claude Code 提供多维度扩展能力的桥接层：把个人 AI 助手从"单会话对话"升级为**能记住你、能自我改进、能跨平台触达**的常驻系统。
 
@@ -12,13 +12,15 @@
 |------|------|
 | 🧬 **自我进化引擎** | `Observe → Reason → Act → Reflect → Maintain` 五阶段闭环，系统从会话中持续学习你的偏好并内化为行为规则 |
 | 💾 **用户建模 (Honcho)** | 信念生命周期：DRAFT → ESTABLISHED → CORE，置信度驱动，观察→信念方言推理 |
-| 🧠 **记忆系统** | 自动收割会话 → 提取观察 → 生成信念 → 注入 CLAUDE.md（原子回滚） |
+| 🧠 **记忆技能库** | 自动收割会话 → 提取观察 → 生成信念 → 注入 CLAUDE.md（原子回滚）；记忆带场景 tag，SessionStart 按 tag 注入上下文 |
 | 🔧 **技能系统** | 48+ 内置技能（源自 Hermes Agent 精选），支持技能发现、校验、自定义 |
-| 📚 **RAG 知识库** | 文档导入、向量检索、语义搜索 |
-| 🔌 **MCP 服务器** | 40+ 工具注册给 Claude Code（stdin/stdout 协议） |
+| 📚 **RAG 知识库 + 本地向量** | 文档导入、分块、本地向量检索（chunks embedding，离线，无需外部冷启动） |
+| 🕸️ **知识图谱** | 实体-关系图，PPR（Personalized PageRank）相关扩散检索，前端可视化页 |
+| 🔌 **MCP 服务器** | 60+ 工具注册给 Claude Code（stdin/stdout 协议） |
 | 💬 **多平台网关** | Discord / Telegram / QQ / 微信 / 飞书 / Web Chat 统一路由 |
-| 🖥️ **Web 控制面板** | React 19 + FastAPI，17 个页面，进化审批、数据分析、实时日志 |
+| 🖥️ **Web 控制面板** | React 19 + FastAPI，20+ 页面，支持移动端适配（汉堡菜单+抽屉），聊天自动回写会话历史 |
 | 🧪 **Be-ACTIVE 即时学习** | 检测到用户纠正后立即生成规则/技能提案，不等定时任务 |
+| 🛠️ **运维** | `healthcheck.sh` 健康检查 · `backup.sh` 数据库备份 · 会话保留（180天/512MB）· 每周知识主动探索 |
 
 ## 🧬 自我进化系统
 
@@ -42,11 +44,30 @@ Maintain (维护)     信念衰减、合并、归档、时间趋势抽象、成�
 
 **Be-ACTIVE 即时学习**：SessionEnd 检测到纠正信号（"不对/错了/重复/必须验证..."）→ 立即在后台分析并生成行为规则 + 技能改进提案，无需等待每日 cron。
 
+**内置定时任务**（`cron/jobs.json`）：harvest（每 30min）· introspect（每 2h）· adapt（每日 03:00）· reflect / maintain（每日 04:00）· evaluate（每 6h）· architect（周日 05:00）· **explore** 知识主动探索（周日 03:00）· **db-backup** 数据库备份（每日 02:00）· **healthcheck** 健康检查（每小时）· **session-retention** 会话保留清理（周日 06:00）。
+
 **安全机制**：
 - CLAUDE.md 注入用 `<!-- LEARNED-PREFS-START/END -->` 标记隔离，可原子回滚
 - 设置/技能变更永远走审批门，不自动应用
 - 内置/pinned 技能受保护，自主进程不可修改
 - 每日进化成本超阈值自动熔断（区分引擎成本与对话成本）
+
+## 🕸️ 知识图谱与本地向量
+
+- **本地向量检索**：知识库 chunks 自带 embedding（BLOB 存于 `knowledge.db`），搜索时本地向量 + 关键词混合召回，**离线可用，无需 CocoIndex 冷启动**。
+- **知识图谱**：基于 chunks 自动抽取实体（技术/概念/文件/人等模式匹配）与关系（chunk 内共现，置信度加权）。
+- **PPR 检索**：给定实体/关键词运行 Personalized PageRank 扩散（HippoRAG 风格），返回直接邻居 + 多跳相关实体，按 relatedness 排序。
+- **API**：`GET /api/knowledge/graph`（查询实体/关系）、`POST /api/knowledge/graph/extract`（重建图谱）、`GET /api/knowledge/graph/stats`；懒构建，首次访问自动重建。
+- **前端**：Web 面板"知识图谱"页（`/knowledge-graph`）可视化图谱浏览。
+
+## 🧠 记忆技能库
+
+跨会话语义记忆库（`memory.db`），每条记忆可带多个场景 tag（如 `backend`、`frontend`、`sync`、`workflow`、`cost`），按场景检索（多 tag 为 AND 语义）。
+
+- **SessionStart 注入**：`hook_inject_memory.py` 按配置的 `INJECT_TAGS` 把低频经验注入会话上下文（per-tag 上限 4 条，总长上限 2000 字符）
+- **下沉**：`sink_claude_prefs.py` 把 CLAUDE.md 中低频/场景化规则带 tag 写入记忆库；`backfill_memory_tags.py` 为存量记忆回填 tag
+- **检索/压缩**：FTS5 全文 + LIKE 回退 + 按 tag 浏览；自动合并 30 天以上低重要度（<0.3）记忆
+- **导入导出**：JSON 迁移，合并去重
 
 ## 🏗️ 架构
 
@@ -59,12 +80,17 @@ Maintain (维护)     信念衰减、合并、归档、时间趋势抽象、成�
                        ▼
 ┌─────────────────────────────────────────────────────────┐
 │                    metano 核心                  │
-│   技能系统 │ 安全系统 │ 模型路由 │ 知识库RAG │ 定时任务     │
-│   子代理 │ 浏览器 │ 语音TTS/STT │ 智能家居 │ 看板         │
+│   技能系统 │ 安全系统 │ 模型路由 │ 知识库RAG │ 知识图谱     │
+│   本地向量 │ 记忆系统 │ 定时任务 │ 子代理 │ 浏览器         │
+│   语音TTS │ 智能家居 │ 代码沙箱 │ 图像生成 │ 看板          │
 │  ┌─────────────────────────────────────────┐            │
 │  │        自我进化引擎                       │            │
 │  │  Observe → Reason → Act → Reflect       │            │
 │  │  收割器 → 方言推理 → 适配器 → 反思器      │            │
+│  └─────────────────────────────────────────┘            │
+│  ┌─────────────────────────────────────────┐            │
+│  │    知识主动探索 (knowledge_explorer)      │            │
+│  │  Tavily 搜索 → LLM 综合 → 知识摄入        │            │
 │  └─────────────────────────────────────────┘            │
 │  ┌─────────────────────────────────────────┐            │
 │  │        Honcho 用户建模                    │            │
@@ -74,6 +100,11 @@ Maintain (维护)     信念衰减、合并、归档、时间趋势抽象、成�
                        │
               ┌────────┴────────┐
               │   SQLite 数据库  │
+              │  bridge.db      │
+              │  evo.db         │
+              │  memory.db      │
+              │  knowledge.db   │
+              │  honcho.db      │
               └─────────────────┘
 ```
 
@@ -94,16 +125,26 @@ cp gateway_config.example.yaml gateway_config.yaml
 # 4. 前端（Web 面板 UI，必需：dist 不在仓库，API 可用但面板需此步）
 cd web && npm install && npm run build && cd ..
 
-# 5. 启动服务
-python3 -m metano.serve              # Web 面板 + API（:9120，首启自动建 admin）
-python3 -m metano.honcho.serve       # Honcho 用户建模（:9121）
-python3 -m metano.cron_daemon start  # 定时任务（首启自动播种进化调度）
+# 5. 一键启动全部服务（Web 面板 + Cron + 消息网关 + CocoIndex）
+./metano.sh start
 
-# 6. Claude Code 集成（进化引擎依赖，详见 DEPLOYMENT.md 第 6 节）
+#    按服务启动 / 状态查看
+./metano.sh start web        # Web 面板 (http://0.0.0.0:9120)
+./metano.sh start cron       # 定时任务守护进程
+./metano.sh start gateway    # 多平台消息网关
+./metano.sh start cocoindex  # CocoIndex 离线向量守护进程
+./metano.sh status           # 查看各服务状态
+./metano.sh stop / restart   # 停止 / 重启全部服务
+
+# 6. 健康检查（web/gateway/cron/cocoindex）
+bash healthcheck.sh              # 仅报告
+bash healthcheck.sh --repair     # 自动重启 DOWN 的服务
+
+# 7. Claude Code 集成（进化引擎依赖，详见 DEPLOYMENT.md 第 6 节）
 #    配置 hooks.example.json 到 ~/.claude/settings.local.json
 ```
 
-> 生产部署：`ecosystem.config.js` 为 PM2 进程管理配置（metano-web/honcho/gateway/cron 四服务）。
+> 生产部署：`ecosystem.config.js` 为 PM2 进程管理配置（metano-web/cron/gateway 等）。
 
 > 💡 首次启动会自动创建 admin 账号：设了 `HERMES_DEFAULT_PASSWORD` 用它，否则生成随机密码（见启动日志）。部署后请立即改密码。
 
@@ -120,13 +161,16 @@ python3 -m metano.cron_daemon start  # 定时任务（首启自动播种进化�
 | `FEISHU_APP_ID` / `FEISHU_APP_SECRET` / ... | 飞书网关（可选，也可放 gateway_config.yaml） |
 | `OPENAI_API_KEY` / `OPENAI_BASE_URL` | 其他模型提供商（可选） |
 | `HA_URL` / `HA_TOKEN` | 智能家居 Home Assistant（可选） |
+| `INJECT_TAGS` | SessionStart 注入记忆的场景 tag（逗号分隔，per-tag 上限 4 条） |
+| `BACKUP_RETENTION_DAYS` | 数据库备份保留天数（默认 7 天） |
 
 ## 🔌 Claude Code 集成（自我进化引擎的关键）
 
 进化系统通过 Claude Code **钩子**从会话中持续学习。部署者必须配置：
 
 1. 把 `hooks.example.json` 的内容合并进 `~/.claude/settings.local.json`（把 `__PROJECT_ROOT__` 换成项目绝对路径）
-2. MCP 服务器注册：在 `~/.claude/settings.json` 的 `mcpServers` 中加入：
+2. 记忆注入钩子：SessionStart 调用 `hook_inject_memory.py` 按 `INJECT_TAGS` 注入场景记忆
+3. MCP 服务器注册：在 `~/.claude/settings.json` 的 `mcpServers` 中加入：
 
 ```json
 {
@@ -140,41 +184,72 @@ python3 -m metano.cron_daemon start  # 定时任务（首启自动播种进化�
 }
 ```
 
-配置后每次会话开始/结束/用户输入/工具调用都会触发进化采集（30min 定时收割 + SessionEnd 纠正即时学习）。
+配置后每次会话开始/结束/用户输入/工具调用都会触发进化采集（30min 定时收割 + SessionEnd 纠正即时学习 + SessionStart 记忆注入）。
 
 ## ⚙️ 配置
 
-`gateway_config.yaml` 管理模型提供商、消息网关、智能家居、语音等。仓库只提供**脱敏示例** `gateway_config.example.yaml`，真实密钥请自行填写，且**不要提交到 Git**。
+`gateway_config.yaml` 管理模型提供商、消息网关、智能家居、语音（TTS）等。仓库只提供**脱敏示例** `gateway_config.example.yaml`，真实密钥请自行填写，且**不要提交到 Git**。
 
 ## 📁 项目结构
 
 ```
-├── metano/                    # Python 后端包
-│   ├── evolution.py           # 自我进化协调器（Observe→Reason→Act→Reflect→Maintain）
-│   ├── harvester.py           # 观察收割器
-│   ├── adapter.py             # 信念→行为 适配器 + 提案执行引擎
-│   ├── reflector.py           # 自我反思引擎
-│   ├── behavior_analyzer.py   # 行为模式分析（纠正聚类→规则）
-│   ├── skill_improvement.py   # 类级技能改进提案（Be-ACTIVE）
-│   ├── code_introspector.py   # 自扫描代码反模式 → 观察/提案
-│   ├── architect.py           # 架构自建模 + 瓶颈检测 + 重构提案
-│   ├── knowledge_explorer.py  # 知识缺口探索
-│   ├── model_router.py        # 多模型路由
-│   ├── honcho/                # 用户建模引擎（信念/观察/方言推理）
-│   ├── skills/                # 技能系统（发现/管理/校验/模板）
-│   ├── skills_data/           # 内置技能定义（48+）
-│   ├── gateway/               # 多平台消息网关
-│   ├── voice/                 # 语音 TTS/STT
-│   ├── web_server.py          # FastAPI Web 面板
-│   └── mcp_server.py          # MCP 工具服务器（40+ 工具）
-├── web/                       # React 19 前端
-├── tests/                     # pytest 测试（155+）
-└── personalities/             # 人格模板（12）
+metano/
+├── metano.sh                # 服务启动脚本（start/stop/status/restart + 按服务）
+├── healthcheck.sh           # 健康检查（web/gateway/cron/cocoindex，支持 --repair）
+├── backup.sh                # 数据库自动备份（5 DB + 配置，7 天保留）
+├── hook_inject_memory.py    # SessionStart hook：按 tag 注入记忆
+├── sink_claude_prefs.py     # 低频 CLAUDE.md 经验下沉到记忆库（带 tag）
+├── backfill_memory_tags.py  # 为存量记忆回填场景 tag
+│
+├── metano/                  # Python 后端包
+│   ├── web_server.py        #   FastAPI Web 面板 + REST API + WebSocket
+│   ├── serve.py             #   Web 服务 CLI 入口（uvicorn :9120）
+│   ├── mcp_server.py        #   MCP 工具服务器（60+ 工具）
+│   ├── auth.py              #   登录认证（JWT access/refresh + 角色）
+│   ├── evolution.py         #   自我进化协调器（Observe→Reason→Act→Reflect→Maintain）
+│   ├── harvester.py         #   观察收割器
+│   ├── adapter.py           #   信念→行为 适配器 + 提案执行引擎
+│   ├── reflector.py         #   自我反思引擎
+│   ├── behavior_analyzer.py #   行为模式分析（纠正聚类→规则）
+│   ├── skill_improvement.py #   类级技能改进提案（Be-ACTIVE）
+│   ├── code_introspector.py #   自扫描代码反模式 → 观察/提案
+│   ├── architect.py         #   架构自建模 + 瓶颈检测 + 重构提案
+│   ├── knowledge.py         #   RAG 知识库 + 知识图谱 + 本地向量检索
+│   ├── knowledge_explorer.py#   知识主动探索（Tavily + LLM + 缺口发现）
+│   ├── memory.py            #   记忆系统（tags / FTS5 / 压缩 / 导入导出）
+│   ├── model_router.py      #   多模型路由
+│   ├── db.py                #   数据库层（含会话保留策略 purge_old_sessions）
+│   ├── cron_daemon.py       #   定时任务守护进程
+│   ├── honcho/              #   用户建模引擎（信念/观察/方言推理）
+│   ├── skills/              #   技能系统（发现/管理/校验/模板）
+│   ├── skills_data/         #   内置技能定义（48+）
+│   ├── gateway/             #   多平台消息网关
+│   └── voice/               #   语音模块（仅 TTS，edge-tts）
+├── web/                     # React 19 前端（含移动端抽屉导航）
+├── tests/                   # pytest 测试（155+）
+├── backups/                 # 数据库自动备份（按日期归档，保留 7 天）
+└── personalities/           # 人格模板（12）
 ```
 
-## 🔗 MCP 工具（部分）
+## 🔗 MCP 工具（部分，60+）
 
-`evolution_status` · `evolution_run` · `evolution_approve` · `evolution_suggestions` · `honcho_observe` · `honcho_profile` · `knowledge_ingest` · `knowledge_search` · `skills_list` · `skill_view` · `cron_list` · `cron_add` · `web_browse` · `session_search` · `analytics_summary` · `agent_spawn` · `voice_speak` ...
+**进化系统**：`evolution_status` · `evolution_run` · `evolution_approve` · `evolution_suggestions` · `evolution_log`
+
+**用户建模**：`honcho_observe` · `honcho_profile` · `honcho_beliefs` · `honcho_dialectic` · `personality_list`
+
+**知识库 / 图谱**：`knowledge_ingest` · `knowledge_search` · `knowledge_list`
+
+**记忆系统**：`memory_add` · `memory_search` · `memory_stats` · `memory_compress` · `memory_timeline`
+
+**会话 / 统计**：`session_search` · `session_list` · `session_get` · `analytics_summary`
+
+**技能 / 定时任务**：`skills_list` · `skill_view` · `cron_list` · `cron_add` · `cron_remove`
+
+**浏览器 / 搜索**：`browser_navigate` · `browser_screenshot` · `web_search` · `x_search`
+
+**语音（TTS）**：`voice_speak` · `voice_list`
+
+**其他**：`agent_spawn` · `code_run` · `image_generate` · `home_control` · `kanban_board` · `security_status`
 
 ## 🧪 测试
 
@@ -186,7 +261,7 @@ python3 -m pytest tests/ -q
 
 本仓库为**纯源码导出**，不含任何运行时数据：
 
-- ❌ 不包含任何 `.db` 数据库文件（bridge.db / evo.db / honcho.db 等）
+- ❌ 不包含任何 `.db` 数据库文件（bridge.db / evo.db / memory.db / knowledge.db / honcho.db 等）
 - ❌ 不包含 `.env` / 密钥文件 / 真实配置
 - ❌ 不包含会话记录、用户建模数据、进化日志、知识库数据
 - ✅ 所有密钥以 `gateway_config.example.yaml` 脱敏模板提供
