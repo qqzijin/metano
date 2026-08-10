@@ -64,6 +64,36 @@ class MessageRouter:
         if not session.history:
             session.history = history[-self.max_history * 2:]
 
+    def _restore_history(self, session: GatewaySession, platform: str, user_id: str):
+        """Restore recent message history from DB so the AI continues the conversation.
+
+        Runs when a fresh in-memory session has no history (e.g. after a gateway
+        restart) — loads the user's most recent persisted session messages.
+        """
+        try:
+            from ..db import get_db
+            user_key = f'{platform}:{user_id}'
+            conn = get_db()
+            row = conn.execute(
+                'SELECT id FROM sessions WHERE user_key = ? ORDER BY last_active DESC LIMIT 1',
+                (user_key,)
+            ).fetchone()
+            if not row:
+                return
+            rows = conn.execute(
+                "SELECT role, content FROM messages "
+                "WHERE session_id = ? AND role IN ('user','assistant') AND content IS NOT NULL "
+                "ORDER BY timestamp DESC LIMIT ?",
+                (row['id'], self.max_history)
+            ).fetchall()
+            history = [{'role': r['role'], 'content': r['content']} for r in reversed(rows)]
+            if history:
+                session.history = history
+                session.db_session_id = row['id']
+                session.session_id = row['id']
+        except Exception:
+            logger.exception('restore session history failed')
+
     async def route_message(self, platform: str, user_id: str, message: str) -> str:
         """Route a message from a platform user to Claude Code and return the response."""
         from ..security import security
@@ -75,6 +105,8 @@ class MessageRouter:
         if cmd_response is not None:
             return cmd_response
         session = self.get_or_create_session(platform, user_id)
+        if not session.history:
+            self._restore_history(session, platform, user_id)
         skill_prefix = ''
         remaining_message = message
         if message.startswith('/'):
