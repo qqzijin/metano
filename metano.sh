@@ -5,6 +5,12 @@ set -e
 BRIDGE_DIR="$HOME/.claude/metano"
 PID_DIR="$BRIDGE_DIR"
 
+start_backup() {
+    # 启动时做一次数据库备份，防误操作丢失数据。失败不阻断启动。
+    echo "Running startup backup..."
+    bash "$BRIDGE_DIR/backup.sh" || echo "Warning: startup backup failed (continuing)"
+}
+
 start_web() {
     if [ -f "$PID_DIR/web.pid" ] && kill -0 "$(cat "$PID_DIR/web.pid")" 2>/dev/null; then
         echo "Web dashboard already running (PID $(cat "$PID_DIR/web.pid"))"
@@ -16,15 +22,15 @@ start_web() {
     echo $! > "$PID_DIR/web.pid"
 }
 
-start_honcho() {
-    if [ -f "$PID_DIR/honcho.pid" ] && kill -0 "$(cat "$PID_DIR/honcho.pid")" 2>/dev/null; then
-        echo "Honcho service already running (PID $(cat "$PID_DIR/honcho.pid"))"
+start_ccc_daemon() {
+    # Note: `ccc daemon status` auto-starts the daemon if it is not running,
+    # so guard on the actual process instead.
+    if ps aux | grep -q "[c]cc run-daemon"; then
+        echo "CocoIndex daemon already running"
         return
     fi
-    echo "Starting Honcho service on http://0.0.0.0:9121 ..."
-    cd "$BRIDGE_DIR"
-    python3 -c "from metano.honcho.serve import main; main()" &
-    echo $! > "$PID_DIR/honcho.pid"
+    echo "Starting CocoIndex daemon (offline embedding)..."
+    HF_HUB_OFFLINE=1 ccc daemon restart
 }
 
 start_cron() {
@@ -50,7 +56,7 @@ start_gateway() {
 }
 
 stop_all() {
-    for svc in web honcho cron gateway; do
+    for svc in web cron gateway; do
         if [ -f "$PID_DIR/$svc.pid" ]; then
             PID=$(cat "$PID_DIR/$svc.pid")
             if kill -0 "$PID" 2>/dev/null; then
@@ -60,30 +66,36 @@ stop_all() {
             rm -f "$PID_DIR/$svc.pid"
         fi
     done
+    ccc daemon stop 2>/dev/null || true
 }
 
 status() {
-    for svc in web honcho cron gateway; do
+    for svc in web cron gateway; do
         if [ -f "$PID_DIR/$svc.pid" ] && kill -0 "$(cat "$PID_DIR/$svc.pid")" 2>/dev/null; then
             echo "$svc: running (PID $(cat "$PID_DIR/$svc.pid"))"
         else
             echo "$svc: stopped"
         fi
     done
+    if ps aux | grep -q "[c]cc run-daemon"; then
+        echo "cocoindex: running"
+    else
+        echo "cocoindex: stopped"
+    fi
 }
 
 case "${1:-start}" in
     start)
+        start_backup
         start_web
-        start_honcho
+        start_ccc_daemon
         start_cron
         start_gateway
         echo ""
         echo "Dashboard:  http://0.0.0.0:9120"
-        echo "Honcho API: http://0.0.0.0:9121"
         ;;
     stop)   stop_all ;;
     status) status ;;
-    restart) stop_all; sleep 1; start_web; start_honcho; start_cron; start_gateway ;;
+    restart) stop_all; sleep 1; start_backup; start_web; start_ccc_daemon; start_cron; start_gateway ;;
     *) echo "Usage: $0 {start|stop|status|restart}" ;;
 esac

@@ -254,7 +254,16 @@ def knowledge_semantic_search(query: str, project: str = "", limit: int = 5) -> 
 def knowledge_search(query: str, limit: int = 5) -> dict:
     """Search the knowledge base for relevant chunks.
 
-    Uses semantic search (CocoIndex) first, falls back to keyword matching.
+    Merges CocoIndex semantic results with local TF-IDF keyword hits, then
+    ranks the combined list so genuine keyword matches outrank weak semantic
+    noise.
+
+    CocoIndex results carry no usable score through semantic_search() (the
+    returned structure only has file/content), so they are weighted by their
+    rank: best hit ~1.0, descending, always below real TF-IDF scores
+    (which are >= ~1.0). Local hits keep their actual TF-IDF score. The merged
+    list is sorted by score desc and only then truncated to `limit`, so local
+    keyword hits are no longer pushed out by 0-score semantic results.
     """
     # Try semantic search first
     semantic = knowledge_semantic_search(query, limit=limit)
@@ -262,13 +271,17 @@ def knowledge_search(query: str, limit: int = 5) -> dict:
         local = _keyword_search(query, limit=limit)
         combined = []
         seen = set()
-        for r in semantic["results"]:
+        # Rank-weighted score for semantic hits: top hit = n/(n+1) < 1.0,
+        # so it never outranks a real TF-IDF keyword match (>= ~1.0), while
+        # still preserving relative semantic order among themselves.
+        n_semantic = len(semantic["results"])
+        for i, r in enumerate(semantic["results"]):
             key = r.get("file", "")
             if key not in seen:
                 combined.append({
                     "title": r.get("file", ""),
                     "content": r.get("content", ""),
-                    "score": r.get("score", 0),
+                    "score": round((n_semantic - i) / (n_semantic + 1), 4) if n_semantic else 0.0,
                     "source": "cocoindex",
                 })
                 seen.add(key)
@@ -282,6 +295,8 @@ def knowledge_search(query: str, limit: int = 5) -> dict:
                     "source": "local_kb",
                 })
                 seen.add(key)
+        # Sort merged results by score desc, THEN truncate to limit.
+        combined.sort(key=lambda x: x["score"], reverse=True)
         return {"query": query, "results": combined[:limit], "source": "merged"}
 
     # Fallback to keyword search
@@ -548,50 +563,288 @@ def _ensure_graph_built() -> bool:
     return False
 
 
-def knowledge_graph_query(entity_name: str = "", entity_type: str = "", limit: int = 20) -> dict:
-    """Query the knowledge graph for entities and their relationships."""
+def _load_graph_adjacency(conn, beta=0.0):
+    """Build an undirected, confidence-weighted adjacency list from relationships.
+
+    Co-occurrence relationships are semantically undirected, so every row is
+    added in both directions; self-loops are dropped. Edge weight is the
+    relationship confidence (floored at 0.1) so stronger evidence flows more
+    probability.
+
+    `beta` is the degree-correction exponent: with beta=0 the random-walk
+    transition weight from i to j is w_ij / out_weight_i (plain PPR); with
+    beta>0 the target's degree is factored in as w_ij / (deg_i^beta * deg_j^beta)
+    (renormalized per node). Degree correction suppresses the hub-dominance of
+    dense co-occurrence graphs, so topically specific low-degree entities
+    (e.g. fastapi.middleware.cors, starlette) rank above generic high-degree
+    hubs (json, Python) for a "fastapi" query.
+
+    Returns {entity_id: [(neighbor_id, transition_prob), ...]}.
+    """
+    adj_weight = {}
+    for src, tgt, conf in conn.execute(
+        "SELECT source_id, target_id, confidence FROM relationships"
+    ):
+        if src == tgt:
+            continue
+        w = max(float(conf or 0.5), 0.1)
+        d = adj_weight.setdefault(src, {})
+        d[tgt] = d.get(tgt, 0.0) + w
+        d = adj_weight.setdefault(tgt, {})
+        d[src] = d.get(src, 0.0) + w
+
+    if beta:
+        deg = {node: sum(nbrs.values()) for node, nbrs in adj_weight.items()}
+        adj = {}
+        for node, nbrs in adj_weight.items():
+            raw = [(nbr, w / (deg[node] ** beta * deg[nbr] ** beta))
+                   for nbr, w in nbrs.items()]
+            total = sum(w for _, w in raw)
+            adj[node] = [(nbr, w / total) for nbr, w in raw]
+    else:
+        adj = {}
+        for node, nbrs in adj_weight.items():
+            total = sum(nbrs.values())
+            adj[node] = [(nbr, w / total) for nbr, w in nbrs.items()]
+    return adj
+
+
+def _ppr_related(seed_ids, conn, alpha=0.15, beta=0.8, max_iter=80, tol=1e-7):
+    """Personalized PageRank over the knowledge graph (HippoRAG-inspired).
+
+    Seeds start with equal probability mass; each iteration diffuses mass along
+    graph edges and teleports a fraction `alpha` (0.15) back to the seed set.
+    The result is a ranked distribution where the seed entities score highest,
+    direct neighbors next, and multi-hop (indirectly related) entities still
+    carry non-zero mass — so a query like "fastapi" surfaces starlette and
+    web_server even without a direct relationship.
+
+    `beta` (0.8) applies the degree correction described in
+    _load_graph_adjacency: it counters hub dominance and surfaces topically
+    specific low-degree entities above generic high-degree hubs.
+
+    Returns {entity_id: score} for every reachable graph node. Purely in
+    memory over the ~500-node / ~5800-edge graph: converges in a few dozen
+    iterations, well under 1s, with no external dependencies.
+    """
+    if not seed_ids:
+        return {}
+    adj = _load_graph_adjacency(conn, beta=beta)
+
+    seeds = [s for s in seed_ids if s in adj]
+    if not seeds:
+        # Seeds have no edges at all: nothing to propagate, return uniform mass.
+        return {s: 1.0 / len(seed_ids) for s in seed_ids}
+
+    nodes = list(adj.keys())
+    index = {n: i for i, n in enumerate(nodes)}
+    n = len(nodes)
+
+    p = [0.0] * n
+    seed_mass = 1.0 / len(seeds)
+    for s in seeds:
+        p[index[s]] = seed_mass
+    restart = list(p)
+
+    neighbors = [[(index[nbr], w) for nbr, w in adj[node]] for node in nodes]
+
+    one_minus_alpha = 1.0 - alpha
+    for _ in range(max_iter):
+        p_new = [alpha * restart[i] for i in range(n)]
+        for i in range(n):
+            pi = p[i]
+            if pi == 0.0:
+                continue
+            spread = one_minus_alpha * pi
+            for j, w in neighbors[i]:
+                p_new[j] += spread * w
+        diff = 0.0
+        for i in range(n):
+            diff += abs(p_new[i] - p[i])
+        p = p_new
+        if diff < tol:
+            break
+
+    return {nodes[i]: p[i] for i in range(n)}
+
+
+def _relationships_between(conn, ids, cap, both=True):
+    """Return relationship edges touching `ids`.
+
+    both=True: edges whose *both* endpoints are in `ids` (used by the PPR
+    path — relationships are the edges between the returned related entities).
+    both=False: edges where *either* endpoint is in `ids` (used by type/browse
+    listings, preserving the original wide relationship view).
+    """
+    if not ids:
+        return []
+    placeholders = ",".join("?" * len(ids))
+    if both:
+        where = f"r.source_id IN ({placeholders}) AND r.target_id IN ({placeholders})"
+    else:
+        where = f"r.source_id IN ({placeholders}) OR r.target_id IN ({placeholders})"
+    rows = conn.execute(
+        f"""
+        SELECT r.rel_id, r.source_id, r.target_id, r.rel_type, r.confidence,
+               s.name AS source_name, t.name AS target_name
+        FROM relationships r
+        JOIN entities s ON r.source_id = s.entity_id
+        JOIN entities t ON r.target_id = t.entity_id
+        WHERE {where}
+        LIMIT ?
+        """,
+        ids + ids + [cap],
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _query_graph_by_name(conn, name, limit):
+    """Entity/keyword query: exact-name seeds + Personalized PageRank diffusion.
+
+    Seeds are exact (case-insensitive) name matches, falling back to substring
+    matches for partial/fuzzy keywords. PPR then ranks the most relevant
+    entities — both direct neighbors and multi-hop related ones. Seed entities
+    are returned first (relatedness 1.0, is_seed=True), followed by the top
+    `limit` related entities with their `relatedness` score. Entities sharing
+    a relationship edge with any seed are flagged is_direct=True.
+    """
+    rows = conn.execute(
+        "SELECT entity_id, name, entity_type, confidence FROM entities"
+        " WHERE LOWER(name) = LOWER(?) ORDER BY confidence DESC LIMIT ?",
+        (name, max(limit, 10)),
+    ).fetchall()
+    if not rows:
+        rows = conn.execute(
+            "SELECT entity_id, name, entity_type, confidence FROM entities"
+            " WHERE name LIKE ? ORDER BY confidence DESC LIMIT ?",
+            (f"%{name}%", max(limit, 10)),
+        ).fetchall()
+    if not rows:
+        return {"query": name, "entities": [], "relationships": [],
+                "message": "no matching entities"}
+
+    seed_rows = rows[:10]
+    seed_ids = [r["entity_id"] for r in seed_rows]
+    ppr = _ppr_related(seed_ids, conn)
+
+    # Direct neighbors of the seeds (share at least one relationship edge) —
+    # the "直接相关" entities. The PPR tail below covers multi-hop / indirect
+    # ("PPR 相关") entities.
+    direct_ids = set()
+    if seed_ids:
+        ph = ",".join("?" * len(seed_ids))
+        for r in conn.execute(
+            f"SELECT source_id, target_id FROM relationships"
+            f" WHERE source_id IN ({ph}) OR target_id IN ({ph})",
+            seed_ids + seed_ids,
+        ):
+            if r["source_id"] != r["target_id"]:
+                direct_ids.add(r["source_id"])
+                direct_ids.add(r["target_id"])
+
+    entities = []
+    seen = set()
+    for r in seed_rows:
+        if len(entities) >= limit:
+            break
+        d = dict(r)
+        d["relatedness"] = 1.0
+        d["is_seed"] = True
+        d["is_direct"] = True
+        entities.append(d)
+        seen.add(d["entity_id"])
+
+    for eid, score in sorted(ppr.items(), key=lambda kv: kv[1], reverse=True):
+        if len(entities) >= limit:
+            break
+        if eid in seen or score <= 0:
+            continue
+        row = conn.execute(
+            "SELECT entity_id, name, entity_type, confidence FROM entities"
+            " WHERE entity_id = ?",
+            (eid,),
+        ).fetchone()
+        if row is None:
+            continue
+        d = dict(row)
+        d["relatedness"] = round(score, 6)
+        d["is_seed"] = False
+        d["is_direct"] = eid in direct_ids
+        entities.append(d)
+        seen.add(eid)
+
+    ids = [e["entity_id"] for e in entities]
+    return {
+        "query": name,
+        "entities": entities,
+        "relationships": _relationships_between(conn, ids, max(limit * 2, 200)),
+    }
+
+
+def _query_graph_by_type(conn, entity_type, limit):
+    """Type-filtered listing (no PPR): all entities of a type, with relations."""
+    rows = conn.execute(
+        "SELECT entity_id, name, entity_type, confidence FROM entities"
+        " WHERE entity_type = ? ORDER BY confidence DESC LIMIT ?",
+        (entity_type, limit),
+    ).fetchall()
+    entities = []
+    for r in rows:
+        d = dict(r)
+        d["relatedness"] = 1.0
+        d["is_seed"] = True
+        entities.append(d)
+    ids = [d["entity_id"] for d in entities]
+    return {
+        "entity_type": entity_type,
+        "entities": entities,
+        "relationships": _relationships_between(conn, ids, max(limit * 2, 200), both=False),
+    }
+
+
+def _query_graph_all(conn, limit):
+    """Browse mode (no query / no type): top entities, with their relations."""
+    rows = conn.execute(
+        "SELECT entity_id, name, entity_type, confidence FROM entities"
+        " ORDER BY confidence DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    entities = []
+    for r in rows:
+        d = dict(r)
+        d["relatedness"] = 1.0
+        d["is_seed"] = True
+        entities.append(d)
+    ids = [d["entity_id"] for d in entities]
+    return {
+        "entities": entities,
+        "relationships": _relationships_between(conn, ids, max(limit * 2, 200), both=False),
+    }
+
+
+def knowledge_graph_query(entity_name: str = "", entity_type: str = "", limit: int = 50) -> dict:
+    """Query the knowledge graph for entities and their relationships.
+
+    When an entity name / keyword is given, a Personalized PageRank (PPR)
+    diffusion (HippoRAG-style) is run over the relationship graph so that not
+    only direct neighbors but also indirectly related entities (via multi-hop
+    propagation) are returned, ranked by their `relatedness` score.
+
+    Return shape (backwards compatible with the frontend KnowledgeGraphPage):
+      entities: [{entity_id, name, entity_type, confidence, relatedness, is_seed}]
+      relationships: [{rel_id, source_id, target_id, rel_type, confidence,
+                       source_name, target_name}]
+    """
     _ensure_graph_built()
     conn = _get_kb_conn()
-
-    results = {"entities": [], "relationships": []}
-
-    # Query entities
-    if entity_name:
-        rows = conn.execute("""
-            SELECT entity_id, name, entity_type, confidence
-            FROM entities WHERE name LIKE ? LIMIT ?
-        """, (f"%{entity_name}%", limit)).fetchall()
-    elif entity_type:
-        rows = conn.execute("""
-            SELECT entity_id, name, entity_type, confidence
-            FROM entities WHERE entity_type = ? LIMIT ?
-        """, (entity_type, limit)).fetchall()
-    else:
-        rows = conn.execute("""
-            SELECT entity_id, name, entity_type, confidence
-            FROM entities LIMIT ?
-        """, (limit,)).fetchall()
-
-    results["entities"] = [dict(r) for r in rows]
-
-    # Query relationships for found entities
-    entity_ids = [r["entity_id"] for r in results["entities"]]
-    if entity_ids:
-        placeholders = ','.join('?' * len(entity_ids))
-        rel_rows = conn.execute(f"""
-            SELECT r.rel_id, r.source_id, r.target_id, r.rel_type, r.confidence,
-                   s.name as source_name, t.name as target_name
-            FROM relationships r
-            JOIN entities s ON r.source_id = s.entity_id
-            JOIN entities t ON r.target_id = t.entity_id
-            WHERE r.source_id IN ({placeholders}) OR r.target_id IN ({placeholders})
-            LIMIT ?
-        """, entity_ids + entity_ids + [limit]).fetchall()
-
-        results["relationships"] = [dict(r) for r in rel_rows]
-
-    conn.close()
-    return results
+    try:
+        if entity_name:
+            return _query_graph_by_name(conn, entity_name, max(limit, 1))
+        if entity_type:
+            return _query_graph_by_type(conn, entity_type, max(limit, 1))
+        return _query_graph_all(conn, max(limit, 1))
+    finally:
+        conn.close()
 
 
 def knowledge_graph_stats() -> dict:

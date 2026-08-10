@@ -13,7 +13,22 @@ import { fmtTokens, fmtCost } from "@/api/client";
 import { Activity, DollarSign, MessageSquare, Zap, Cpu } from "lucide-react";
 
 const DAYS = [7, 30, 90] as const;
+// Brand palette — kept intentionally: these hues read well in both themes.
 const PIE_COLORS = ["#3b82f6", "#60a5fa", "#06b6d4", "#f59e0b", "#10b981"];
+
+// Theme-aware chart styling. These resolve against the app's CSS variables
+// (defined in index.css for both light & dark themes), so charts follow the
+// active theme automatically without re-rendering.
+const AXIS_TICK = { fontSize: 11, fill: "var(--muted-foreground)" };
+const AXIS_STROKE = "var(--border)";
+const GRID_STROKE = "var(--border)";
+const TOOLTIP_STYLE = {
+  background: "var(--popover)",
+  border: "1px solid var(--border)",
+  borderRadius: 8,
+  fontSize: 12,
+  color: "var(--popover-foreground)",
+};
 
 interface MiniStatProps {
   icon: React.ReactNode;
@@ -114,13 +129,13 @@ export default function AnalyticsPage() {
                       <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
                     </linearGradient>
                   </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.5} />
-                  <XAxis dataKey="day" tick={{ fontSize: 11, fill: "#333" }} stroke="#999" />
-                  <YAxis tickFormatter={(v: number) => fmtCost(v)} tick={{ fontSize: 11, fill: "#333" }} stroke="#999" width={60} />
+                  <CartesianGrid strokeDasharray="3 3" stroke={GRID_STROKE} opacity={0.5} />
+                  <XAxis dataKey="day" tick={AXIS_TICK} stroke={AXIS_STROKE} />
+                  <YAxis tickFormatter={(v: number) => fmtCost(v)} tick={AXIS_TICK} stroke={AXIS_STROKE} width={60} />
                   <Tooltip
                     formatter={(value: unknown) => [fmtCost(Number(value)), "费用"]}
                     labelFormatter={(label: unknown) => `${String(label)}`}
-                    contentStyle={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 8, fontSize: 12, color: "#333" }}
+                    contentStyle={TOOLTIP_STYLE}
                   />
                   <Area type="monotone" dataKey="estimated_cost_usd" stroke="#3b82f6" fill="url(#costGrad)" strokeWidth={2} />
                 </AreaChart>
@@ -143,11 +158,11 @@ export default function AnalyticsPage() {
             {daily.length > 0 ? (
               <ResponsiveContainer width="100%" height={260}>
                 <BarChart data={daily}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.5} />
-                  <XAxis dataKey="day" tick={{ fontSize: 11, fill: "#333" }} stroke="#999" />
-                  <YAxis tick={{ fontSize: 11, fill: "#333" }} stroke="#999" width={40} />
+                  <CartesianGrid strokeDasharray="3 3" stroke={GRID_STROKE} opacity={0.5} />
+                  <XAxis dataKey="day" tick={AXIS_TICK} stroke={AXIS_STROKE} />
+                  <YAxis tick={AXIS_TICK} stroke={AXIS_STROKE} width={40} />
                   <Tooltip
-                    contentStyle={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 8, fontSize: 12, color: "#333" }}
+                    contentStyle={TOOLTIP_STYLE}
                   />
                   <Bar dataKey="session_count" name="会话数" fill="#3b82f6" radius={[4, 4, 0, 0]} />
                 </BarChart>
@@ -171,12 +186,12 @@ export default function AnalyticsPage() {
           {daily.length > 0 ? (
             <ResponsiveContainer width="100%" height={280}>
               <BarChart data={daily}>
-                <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.5} />
-                <XAxis dataKey="day" tick={{ fontSize: 11, fill: "#333" }} stroke="#999" />
-                <YAxis tickFormatter={(v: number) => fmtTokens(v)} tick={{ fontSize: 11, fill: "#333" }} stroke="#999" width={60} />
+                <CartesianGrid strokeDasharray="3 3" stroke={GRID_STROKE} opacity={0.5} />
+                <XAxis dataKey="day" tick={AXIS_TICK} stroke={AXIS_STROKE} />
+                <YAxis tickFormatter={(v: number) => fmtTokens(v)} tick={AXIS_TICK} stroke={AXIS_STROKE} width={60} />
                 <Tooltip
                   formatter={(value: unknown, name: unknown) => [fmtTokens(Number(value)), String(name)]}
-                  contentStyle={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 8, fontSize: 12, color: "#333" }}
+                  contentStyle={TOOLTIP_STYLE}
                 />
                 <Bar dataKey="input_tokens" name="输入" fill="#3b82f6" radius={[4, 4, 0, 0]} />
                 <Bar dataKey="output_tokens" name="输出" fill="#06b6d4" radius={[4, 4, 0, 0]} />
@@ -199,10 +214,10 @@ export default function AnalyticsPage() {
             {byModel.length > 0 ? (
               <ResponsiveContainer width="100%" height={220}>
                 <PieChart>
-                  <Pie data={byModel} dataKey="session_count" nameKey="name" cx="50%" cy="50%" outerRadius={80} innerRadius={40} paddingAngle={2} strokeWidth={2} stroke="#1a1a2e">
+                  <Pie data={byModel} dataKey="session_count" nameKey="name" cx="50%" cy="50%" outerRadius={80} innerRadius={40} paddingAngle={2} strokeWidth={2} stroke="var(--card)">
                     {byModel.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
                   </Pie>
-                  <Tooltip contentStyle={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 8, fontSize: 12, color: "#333" }} />
+                  <Tooltip contentStyle={TOOLTIP_STYLE} />
                 </PieChart>
               </ResponsiveContainer>
             ) : (
