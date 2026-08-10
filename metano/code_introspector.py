@@ -26,7 +26,7 @@ def register_pattern(name: str, severity: str):
     return decorator
 
 
-@register_pattern("silent-except", "high")
+@register_pattern("silent-except", "medium")
 def detect_silent_except(tree: ast.Module, filepath: str) -> list[dict]:
     """Find `except Exception` blocks with only `pass` or bare default returns."""
     findings = []
@@ -258,13 +258,14 @@ def introspect_and_report() -> dict:
                 existing.add(obs_text)
                 new_obs += 1
 
-            # Only surface critical/high findings as approval proposals. Medium
-            # severity (e.g. sql-concat) stays as an observation: it is a code
-            # fix, not a behavior rule, and previously flooded the queue.
-            if f['severity'] not in ('critical', 'high'):
+            # Only surface critical findings as approval proposals. Everything
+            # below critical (silent-except, sql-concat, dangerous-html-render,
+            # bare-shell-exec) is a code-quality fix, not a behavior rule — it
+            # stays as an observation and would only flood the proposal queue
+            # with the same re-detected issues on every scan.
+            if f['severity'] != 'critical':
                 continue
-            severity_map = {'critical': 'rule_add', 'high': 'behavior_improvement'}
-            proposal_type = severity_map.get(f['severity'], 'behavior_improvement')
+            proposal_type = 'rule_add'
             proposal_content = f"Fix {f['pattern']}: {f['file']}:{f['line']} — {f['detail']}"
             proposal_detail = json.dumps(f, ensure_ascii=False)
             proposal_key = (proposal_type, normalize_proposal_content(proposal_content))
