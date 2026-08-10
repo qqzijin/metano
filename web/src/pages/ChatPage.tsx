@@ -130,8 +130,11 @@ export default function ChatPage() {
 
     const patchLast = (fn: (a: ChatMsg) => void) =>
       setMessages((prev) => {
+        if (!prev.length) return prev;
         const next = [...prev];
-        if (next.length) fn(next[next.length - 1]);
+        const last = { ...next[next.length - 1] };
+        fn(last);
+        next[next.length - 1] = last;
         return next;
       });
 
