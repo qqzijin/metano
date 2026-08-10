@@ -94,7 +94,8 @@ class MessageRouter:
         except Exception:
             logger.exception('restore session history failed')
 
-    async def route_message(self, platform: str, user_id: str, message: str) -> str:
+    async def route_message(self, platform: str, user_id: str, message: str,
+                            on_event=None) -> str:
         """Route a message from a platform user to Claude Code and return the response."""
         from ..security import security
         check = security.check_message(user_id, message)
@@ -120,7 +121,7 @@ class MessageRouter:
         tools = base_tools + [t for t in auth['granted'] if t not in base_tools]
         skip = (auth['mode'] == 'free')
         response, in_tok, out_tok, cache_tok = await self._call_claude(
-            prompt, session, skill_prefix=skill_prefix, allowed_tools=tools, skip_permissions=skip)
+            prompt, session, skill_prefix=skill_prefix, allowed_tools=tools, skip_permissions=skip, on_event=on_event)
         session.last_active = time.time()
         session.message_count += 1
         session.history.append({'role': 'user', 'content': message})
@@ -581,7 +582,8 @@ class MessageRouter:
     ]
 
     async def _call_claude(self, prompt: str, session: GatewaySession, skill_prefix: str='',
-                           allowed_tools=None, skip_permissions: bool=True) -> tuple:
+                           allowed_tools=None, skip_permissions: bool=True,
+                           on_event=None) -> tuple:
         """Call Claude Code CLI with the prompt (async, non-blocking).
 
         Gateway sessions are non-interactive (no TTY), so by default we
@@ -636,6 +638,8 @@ class MessageRouter:
             logger.exception("router: provider env injection failed")
         try:
             proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env)
+            if on_event:
+                return await self._call_claude_stream_events(proc, on_event)
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=600)
             return self._parse_stream_json(stdout, stderr)
         except asyncio.TimeoutError:
@@ -645,6 +649,84 @@ class MessageRouter:
         except Exception as e:
             logger.exception()
             return f'Error: {str(e)}', 0, 0, 0
+
+    async def _call_claude_stream_events(self, proc, on_event) -> tuple:
+        """Read claude stream-json line-by-line, invoking ``on_event`` with
+        structured events: {'type': 'thinking'|'text'|'tool_use', ...}."""
+        text_parts: list[str] = []
+        usage: dict = {}
+        try:
+            while True:
+                line = await asyncio.wait_for(proc.stdout.readline(), timeout=600)
+                if not line:
+                    break
+                event, u = self._parse_stream_event(line)
+                if event:
+                    if event['type'] == 'text':
+                        text_parts.append(event['text'])
+                    try:
+                        on_event(event)
+                    except Exception:
+                        logger.exception('on_event callback failed')
+                if u:
+                    usage = u
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return 'Response timed out. Please try again.', 0, 0, 0
+        try:
+            stderr = await asyncio.wait_for(proc.stderr.read(), timeout=10)
+        except Exception:
+            stderr = b''
+        response = ''.join(text_parts).strip()
+        if not response:
+            err = (stderr or b'').decode(errors='replace').strip()
+            response = f'Error: {err[:300]}' if err else 'Error: empty response'
+        return (response,
+                usage.get('input_tokens', 0) or 0,
+                usage.get('output_tokens', 0) or 0,
+                usage.get('cache_read_input_tokens', 0) or 0)
+
+    def _parse_stream_event(self, line: bytes) -> tuple:
+        """Parse one stream-json line into a structured event + usage.
+
+        Event types: {'type':'text','text':...} / {'type':'thinking','text':...}
+        / {'type':'tool_use','name':...,'input':...}. Returns (None, usage) for
+        lines without a sendable event.
+        """
+        line = line.decode(errors='replace').strip()
+        if not line:
+            return None, {}
+        try:
+            obj = json.loads(line)
+        except Exception:
+            return None, {}
+        usage = {}
+        if obj.get('type') == 'assistant':
+            msg = obj.get('message', obj)
+            content = msg.get('content')
+            if isinstance(content, list):
+                for block in content:
+                    if not isinstance(block, dict):
+                        continue
+                    bt = block.get('type')
+                    if bt == 'text' and block.get('text'):
+                        return {'type': 'text', 'text': block['text']}, usage
+                    if bt == 'thinking' and block.get('thinking'):
+                        return {'type': 'thinking', 'text': block['thinking']}, usage
+                    if bt == 'tool_use':
+                        return {'type': 'tool_use', 'name': block.get('name', ''),
+                                'input': block.get('input', {})}, usage
+            elif isinstance(content, str):
+                return {'type': 'text', 'text': content}, usage
+            u = msg.get('usage') if isinstance(msg.get('usage'), dict) else obj.get('usage')
+            if isinstance(u, dict):
+                usage = u
+        elif obj.get('type') == 'result':
+            u = obj.get('usage')
+            if isinstance(u, dict):
+                usage = u
+        return None, usage
 
     def _parse_stream_json(self, stdout: bytes, stderr: bytes) -> tuple:
         """Parse ``claude -p --output-format stream-json --verbose`` output.

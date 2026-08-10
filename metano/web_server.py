@@ -5,6 +5,8 @@ import time
 import uuid
 from pathlib import Path
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect, Request, Response, Depends, UploadFile, File
+from fastapi.responses import StreamingResponse
+import asyncio
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
@@ -313,12 +315,118 @@ def get_session_messages(session_id: str, limit: int=200, offset: int=0):
 @app.get('/api/analytics/usage')
 @app.get('/api/analytics')
 def analytics_usage(days: int=30):
+    """统计总览。口径分离：「单次对话 token」与「每日总用量」互不混淆。
+
+    - ``daily``：**每日总用量** —— 按消息实际发生日聚合，跨日会话的 in/out token
+      按消息时间戳拆到各自发生日；费用按该会话各日 in/out token 占比分摊
+      ``estimated_cost_usd``（缓存 token 无消息级明细，按占比近似分摊）。
+    - ``total`` / ``by_model`` / ``by_project``：in/out 与 ``daily`` 同口径（消息级，
+      只统计窗口内实际发生的请求），保证加总永远一致；缓存 token 与费用没有消息级
+      明细，按「last_active 落在窗口内」的会话汇总。
+    - ``sessions``：**单次对话** token 排行 —— 每条会话的输入/输出/缓存 token 与费用。
+    """
     conn = get_db()
     cutoff = time.time() - days * 86400
-    total = conn.execute('SELECT COUNT(*) as session_count, SUM(message_count) as message_count, SUM(tool_call_count) as tool_call_count, SUM(input_tokens) as input_tokens, SUM(output_tokens) as output_tokens, SUM(cache_read_tokens) as cache_read_tokens, SUM(estimated_cost_usd) as estimated_cost_usd FROM sessions WHERE last_active >= ?', (cutoff,)).fetchone()
-    by_model = conn.execute('SELECT model, COUNT(*) as session_count, SUM(input_tokens) as input_tokens, SUM(output_tokens) as output_tokens, SUM(estimated_cost_usd) as estimated_cost_usd FROM sessions WHERE last_active >= ? GROUP BY model', (cutoff,)).fetchall()
-    daily = conn.execute("SELECT date(last_active, 'unixepoch', 'localtime') as day, COUNT(*) as session_count, COALESCE(SUM(input_tokens),0) as input_tokens, COALESCE(SUM(output_tokens),0) as output_tokens, COALESCE(SUM(estimated_cost_usd),0) as estimated_cost_usd FROM sessions WHERE last_active >= ? GROUP BY day ORDER BY day", (cutoff,)).fetchall()
-    return {'period_days': days, 'total': dict(total) if total else {}, 'by_model': [dict(r) for r in by_model], 'daily': [dict(r) for r in daily]}
+    daily = _analytics_daily(conn, cutoff)
+    # in/out：消息级（与 daily 同口径，跨窗口长会话只统计窗口内发生的请求）
+    msg = conn.execute(
+        'SELECT COUNT(DISTINCT session_id) as session_count, COUNT(*) as message_count, '
+        'SUM(tool_name IS NOT NULL) as tool_call_count, '
+        'COALESCE(SUM(input_tokens),0) as input_tokens, COALESCE(SUM(output_tokens),0) as output_tokens '
+        'FROM messages WHERE timestamp >= ?',
+        (cutoff,)
+    ).fetchone()
+    by_model = conn.execute(
+        'SELECT COALESCE(s.model, \'<unknown>\') as model, COUNT(DISTINCT m.session_id) as session_count, '
+        'COALESCE(SUM(m.input_tokens),0) as input_tokens, COALESCE(SUM(m.output_tokens),0) as output_tokens '
+        'FROM messages m LEFT JOIN sessions s ON s.id = m.session_id WHERE m.timestamp >= ? '
+        'GROUP BY s.model ORDER BY SUM(m.input_tokens) DESC',
+        (cutoff,)
+    ).fetchall()
+    by_project = conn.execute(
+        'SELECT COALESCE(s.project, \'<unknown>\') as project, COUNT(DISTINCT m.session_id) as session_count, '
+        'COALESCE(SUM(m.input_tokens),0) as input_tokens, COALESCE(SUM(m.output_tokens),0) as output_tokens '
+        'FROM messages m LEFT JOIN sessions s ON s.id = m.session_id WHERE m.timestamp >= ? '
+        'GROUP BY s.project ORDER BY SUM(m.input_tokens) DESC',
+        (cutoff,)
+    ).fetchall()
+    # 缓存 token / 费用：会话级（消息表无缓存明细）
+    sess = conn.execute(
+        'SELECT COALESCE(SUM(cache_read_tokens),0) as cache_read_tokens, '
+        'COALESCE(SUM(estimated_cost_usd),0) as estimated_cost_usd '
+        'FROM sessions WHERE last_active >= ?',
+        (cutoff,)
+    ).fetchone()
+    total = dict(msg)
+    total['cache_read_tokens'] = sess['cache_read_tokens']
+    total['estimated_cost_usd'] = sess['estimated_cost_usd']
+    # 把会话级缓存/费用合并进 by_model / by_project（与 total 同一会话集合）
+    def _merge_sess_agg(rows, sess_by_key, key):
+        out = []
+        for r in rows:
+            row = dict(r)
+            s = sess_by_key.get(row.get(key))
+            row['cache_read_tokens'] = s['cache_read_tokens'] if s else 0
+            row['estimated_cost_usd'] = s['estimated_cost_usd'] if s else 0.0
+            out.append(row)
+        return out
+    sess_by_model = conn.execute(
+        'SELECT model, COALESCE(SUM(cache_read_tokens),0) as cache_read_tokens, '
+        'COALESCE(SUM(estimated_cost_usd),0) as estimated_cost_usd '
+        'FROM sessions WHERE last_active >= ? AND model IS NOT NULL GROUP BY model',
+        (cutoff,)
+    ).fetchall()
+    sess_by_project = conn.execute(
+        'SELECT project, COALESCE(SUM(cache_read_tokens),0) as cache_read_tokens, '
+        'COALESCE(SUM(estimated_cost_usd),0) as estimated_cost_usd '
+        'FROM sessions WHERE last_active >= ? AND project IS NOT NULL GROUP BY project',
+        (cutoff,)
+    ).fetchall()
+    by_model = _merge_sess_agg(by_model, {r['model']: r for r in sess_by_model}, 'model')
+    by_project = _merge_sess_agg(by_project, {r['project']: r for r in sess_by_project}, 'project')
+    # 单次对话排行（会话级全量，含缓存）
+    sessions = conn.execute('SELECT id, title, project, model, message_count, tool_call_count, input_tokens, output_tokens, cache_read_tokens, estimated_cost_usd, started_at, last_active FROM sessions WHERE last_active >= ? ORDER BY (input_tokens + output_tokens + cache_read_tokens) DESC LIMIT 20', (cutoff,)).fetchall()
+    return {'period_days': days, 'total': total, 'by_model': [dict(r) for r in by_model], 'by_project': [dict(r) for r in by_project], 'daily': daily, 'sessions': [dict(r) for r in sessions]}
+
+
+def _analytics_daily(conn, cutoff: float) -> list[dict]:
+    """每日总用量（消息级，按实际发生日聚合）。"""
+    daily: dict[str, dict] = {}
+    for r in conn.execute(
+        "SELECT date(m.timestamp, 'unixepoch', 'localtime') as day, "
+        "COUNT(DISTINCT m.session_id) as session_count, "
+        "COALESCE(SUM(m.input_tokens),0) as input_tokens, "
+        "COALESCE(SUM(m.output_tokens),0) as output_tokens "
+        "FROM messages m WHERE m.timestamp >= ? GROUP BY day ORDER BY day",
+        (cutoff,)
+    ).fetchall():
+        daily[r['day']] = {'day': r['day'], 'session_count': r['session_count'],
+                           'input_tokens': r['input_tokens'], 'output_tokens': r['output_tokens'],
+                           'estimated_cost_usd': 0.0}
+    # 会话费用按日分摊：一次查询拿到每个会话在每天产生的 in/out token 量
+    rows = conn.execute(
+        "SELECT s.id as sid, COALESCE(s.estimated_cost_usd, 0) as cost, "
+        "date(m.timestamp, 'unixepoch', 'localtime') as day, "
+        "COALESCE(SUM(m.input_tokens),0) + COALESCE(SUM(m.output_tokens),0) as day_tokens "
+        "FROM sessions s JOIN messages m ON m.session_id = s.id "
+        "WHERE m.timestamp >= ? AND COALESCE(s.estimated_cost_usd, 0) > 0 "
+        "GROUP BY s.id, day",
+        (cutoff,)
+    ).fetchall()
+    sess_total: dict[str, int] = {}
+    sess_cost: dict[str, float] = {}
+    for r in rows:
+        sess_total[r['sid']] = sess_total.get(r['sid'], 0) + r['day_tokens']
+        sess_cost[r['sid']] = r['cost']
+    for r in rows:
+        total_tokens = sess_total.get(r['sid']) or 0
+        if not total_tokens or not r['day_tokens']:
+            continue
+        day_entry = daily.get(r['day'])
+        if day_entry is None:
+            continue
+        day_entry['estimated_cost_usd'] += (sess_cost.get(r['sid']) or 0) * r['day_tokens'] / total_tokens
+    return list(daily.values())
 
 @app.get('/api/cron/jobs')
 def list_cron_jobs():
@@ -626,26 +734,46 @@ async def api_chat(body: dict):
     msg = body.get('message', '')
     if not isinstance(msg, str) or not msg.strip():
         raise HTTPException(status_code=400, detail='message 不能为空')
-    try:
-        from .gateway.router import router
-        user_id = body.get('user_id', 'web_user')
-        platform = body.get('platform', 'web')
-        session_id = body.get('session_id', '')
-        context = body.get('context', [])
-        if session_id:
-            _inject_session_context(router, platform, user_id, session_id)
-        elif context and isinstance(context, list):
-            router.inject_history(platform, user_id, context)
-        response = await router.route_message(platform, user_id, msg)
+    from .gateway.router import router
+    user_id = body.get('user_id', 'web_user')
+    platform = body.get('platform', 'web')
+    session_id = body.get('session_id', '')
+    context = body.get('context', [])
+    if session_id:
+        _inject_session_context(router, platform, user_id, session_id)
+    elif context and isinstance(context, list):
+        router.inject_history(platform, user_id, context)
+
+    async def event_stream():
+        q: asyncio.Queue = asyncio.Queue()
+
+        def on_event(ev: dict):
+            q.put_nowait(ev)
+
+        async def run():
+            try:
+                response = await router.route_message(platform, user_id, msg, on_event=on_event)
+                try:
+                    sess = router.get_or_create_session(platform, user_id)
+                    sid = sess.db_session_id or session_id
+                except Exception:
+                    sid = session_id
+                await q.put({'type': 'done', 'response': response, 'session_id': sid})
+            except Exception as e:
+                logger.exception()
+                await q.put({'type': 'error', 'message': str(e)})
+
+        task = asyncio.create_task(run())
         try:
-            sess = router.get_or_create_session(platform, user_id)
-            session_id = sess.db_session_id or session_id
-        except Exception:
-            logger.exception()
-        return {'response': response, 'session_id': session_id}
-    except Exception as e:
-        logger.exception()
-        return _error_response('Internal error')
+            while True:
+                ev = await q.get()
+                yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+                if ev['type'] in ('done', 'error'):
+                    break
+        finally:
+            await task
+
+    return StreamingResponse(event_stream(), media_type='text/event-stream')
 
 
 def _inject_session_context(router, platform: str, user_id: str, session_id: str):

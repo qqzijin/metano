@@ -14,6 +14,8 @@ interface ChatMsg {
   role: "user" | "assistant" | "system";
   content: string;
   ts: number;
+  thinking?: string;
+  tool_calls?: Array<{ name: string; input: string }>;
 }
 
 const STORAGE_KEY = "metano-chat-history";
@@ -114,7 +116,7 @@ export default function ChatPage() {
 
   const handleSend = async () => {
     const text = input.trim();
-    if (!text || chatMut.isPending) return;
+    if (!text) return;
 
     const userMsg: ChatMsg = { role: "user", content: text, ts: Date.now() };
     setMessages((prev) => [...prev, userMsg]);
@@ -122,25 +124,63 @@ export default function ChatPage() {
     clearedRef.current = false;
     setDirty(true); // new user message is local-only until /api/chat persists it
 
-    try {
-      const res = await chatMut.mutateAsync({
-        message: text,
-        user_id: "web_user",
-        session_id: connectedSession || undefined,
-        context: messages.slice(-10).map((m) => ({ role: m.role, content: m.content })),
+    // Placeholder assistant message, updated via the SSE stream.
+    const assistantMsg: ChatMsg = { role: "assistant", content: "", thinking: "", tool_calls: [], ts: Date.now() };
+    setMessages((prev) => [...prev, assistantMsg]);
+
+    const patchLast = (fn: (a: ChatMsg) => void) =>
+      setMessages((prev) => {
+        const next = [...prev];
+        if (next.length) fn(next[next.length - 1]);
+        return next;
       });
-      const content = typeof res === "string" ? res : res?.response ?? JSON.stringify(res);
-      if (!clearedRef.current) {
-        setMessages((prev) => [...prev, { role: "assistant", content, ts: Date.now() }]);
+
+    try {
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          message: text,
+          user_id: "web_user",
+          session_id: connectedSession || undefined,
+          context: messages.slice(-10).map((m) => ({ role: m.role, content: m.content })),
+        }),
+      });
+      if (!res.ok || !res.body) throw new Error(`请求失败 (${res.status})`);
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split("\n\n");
+        buffer = parts.pop() ?? "";
+        for (const part of parts) {
+          const line = part.split("\n").find((l) => l.startsWith("data: "));
+          if (!line) continue;
+          let ev: any;
+          try { ev = JSON.parse(line.slice(6)); } catch { continue; }
+          if (ev.type === "thinking") {
+            patchLast((a) => { a.thinking = (a.thinking ?? "") + ev.text; });
+          } else if (ev.type === "text") {
+            patchLast((a) => { a.content += ev.text; });
+          } else if (ev.type === "tool_use") {
+            patchLast((a) => {
+              a.tool_calls = [...(a.tool_calls ?? []), { name: ev.name, input: JSON.stringify(ev.input ?? {}) }];
+            });
+          } else if (ev.type === "done") {
+            setConnectedSession(ev.session_id || null);
+            setDirty(failedSendRef.current);
+          }
+        }
       }
-      // Exchange persisted to DB; keep dirty only if an earlier send failed
-      // (that user message is still local-only).
-      setDirty(failedSendRef.current);
     } catch (err: any) {
       failedSendRef.current = true;
       setDirty(true);
       if (!clearedRef.current) {
-        setMessages((prev) => [...prev, { role: "assistant", content: `错误: ${err.message ?? "请求失败"}`, ts: Date.now() }]);
+        patchLast((a) => { a.content = `错误: ${err.message ?? "请求失败"}`; });
       }
     }
   };
@@ -284,6 +324,22 @@ export default function ChatPage() {
                   m.role === "user" ? "bg-primary text-primary-foreground" : "bg-muted"
                 }`}
               >
+                {m.role === "assistant" && m.thinking ? (
+                  <details className="mb-1.5 text-xs text-muted-foreground">
+                    <summary className="cursor-pointer select-none">💭 思考过程</summary>
+                    <div className="mt-1 whitespace-pre-wrap border-t border-border/50 pt-1">{m.thinking}</div>
+                  </details>
+                ) : null}
+                {m.role === "assistant" && m.tool_calls && m.tool_calls.length > 0 ? (
+                  <div className="mb-1.5 space-y-1">
+                    {m.tool_calls.map((tc, ti) => (
+                      <div key={ti} className="rounded border bg-background/60 px-2 py-1 text-xs font-mono break-all">
+                        <span className="text-primary font-semibold">🔧 {tc.name}</span>
+                        <span className="text-muted-foreground"> {tc.input}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
                 {m.content}
               </div>
               {m.role === "user" && (
