@@ -635,6 +635,12 @@ class MessageRouter:
                     env['ANTHROPIC_API_KEY'] = provider.api_key
                 if provider.model:
                     env['ANTHROPIC_MODEL'] = provider.model
+                # Per-provider proxy: injected only for this call (not persisted
+                # in claude settings), so model routes needing an egress proxy
+                # can get one without fixing it into the remote environment.
+                if getattr(provider, 'proxy', ''):
+                    env['HTTPS_PROXY'] = provider.proxy
+                    env['HTTP_PROXY'] = provider.proxy
         except Exception:
             logger.exception("router: provider env injection failed")
         try:

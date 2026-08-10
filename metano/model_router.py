@@ -32,6 +32,7 @@ class ModelProvider:
     price_input: float = 3.0
     price_output: float = 15.0
     price_cache_read: float = 0.3
+    proxy: str = ''  # optional HTTP(S) proxy, injected as env only when calling this provider
 
 class ModelRouter:
 
@@ -67,7 +68,7 @@ class ModelRouter:
                                 out_p = builtin[1]
                             if cache_p is None:
                                 cache_p = builtin[2]
-                        self._providers[name] = ModelProvider(name=name, base_url=cfg.get('base_url', ''), api_key=cfg.get('api_key', ''), model=cfg.get('model', ''), max_tokens=cfg.get('max_tokens', 4096), supports_vision=cfg.get('supports_vision', False), supports_tools=cfg.get('supports_tools', True), price_input=in_p, price_output=out_p, price_cache_read=cache_p)
+                        self._providers[name] = ModelProvider(name=name, base_url=cfg.get('base_url', ''), api_key=cfg.get('api_key', ''), model=cfg.get('model', ''), max_tokens=cfg.get('max_tokens', 4096), supports_vision=cfg.get('supports_vision', False), supports_tools=cfg.get('supports_tools', True), price_input=in_p, price_output=out_p, price_cache_read=cache_p, proxy=cfg.get('proxy', ''))
                         if cfg.get('default', False):
                             self._default = name
         except Exception:
@@ -173,6 +174,9 @@ class ModelRouter:
             env['ANTHROPIC_API_KEY'] = provider.api_key
         if provider.model:
             env['ANTHROPIC_MODEL'] = provider.model
+        if getattr(provider, 'proxy', ''):
+            env['HTTPS_PROXY'] = provider.proxy
+            env['HTTP_PROXY'] = provider.proxy
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
             response = result.stdout.strip()
