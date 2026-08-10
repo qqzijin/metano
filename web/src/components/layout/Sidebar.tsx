@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTheme } from "@/hooks/useTheme";
+import { VERSION } from "@/version";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { useAuth } from "@/contexts/AuthContext";
@@ -199,7 +200,7 @@ export function Sidebar({ collapsed, onToggle, connected, onNavigate }: SidebarP
           {!collapsed && (
             <div className="leading-none">
               <span className="font-semibold text-sm">CC Bridge</span>
-              <span className="text-xs text-muted-foreground ml-1">v2.0</span>
+              <span className="text-xs text-muted-foreground ml-1">v{VERSION}</span>
             </div>
           )}
         </div>

@@ -213,7 +213,8 @@ def status():
     conn = get_db()
     sessions = conn.execute('SELECT COUNT(*) as c FROM sessions').fetchone()['c']
     messages = conn.execute('SELECT COUNT(*) as c FROM messages').fetchone()['c']
-    result = {'status': 'ok', 'sessions': sessions, 'messages': messages}
+    from . import __version__
+    result = {'status': 'ok', 'version': __version__, 'sessions': sessions, 'messages': messages}
     try:
         from .skills.loader import SkillLoader
         result['skills_count'] = len(SkillLoader().discover_all())
