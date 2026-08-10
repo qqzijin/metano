@@ -691,8 +691,9 @@ class MessageRouter:
         """Parse one stream-json line into a structured event + usage.
 
         Event types: {'type':'text','text':...} / {'type':'thinking','text':...}
-        / {'type':'tool_use','name':...,'input':...}. Returns (None, usage) for
-        lines without a sendable event.
+        / {'type':'tool_use','id':...,'name':...,'input':...} /
+        {'type':'tool_result','id':...,'content':...}. Returns (None, usage)
+        for lines without a sendable event.
         """
         line = line.decode(errors='replace').strip()
         if not line:
@@ -715,18 +716,56 @@ class MessageRouter:
                     if bt == 'thinking' and block.get('thinking'):
                         return {'type': 'thinking', 'text': block['thinking']}, usage
                     if bt == 'tool_use':
-                        return {'type': 'tool_use', 'name': block.get('name', ''),
+                        return {'type': 'tool_use', 'id': block.get('id', ''),
+                                'name': block.get('name', ''),
                                 'input': block.get('input', {})}, usage
             elif isinstance(content, str):
                 return {'type': 'text', 'text': content}, usage
             u = msg.get('usage') if isinstance(msg.get('usage'), dict) else obj.get('usage')
             if isinstance(u, dict):
                 usage = u
+        elif obj.get('type') == 'user':
+            # Tool executions come back as a user turn containing tool_result
+            # blocks — surface them so the UI can show tool output.
+            msg = obj.get('message', obj)
+            content = msg.get('content')
+            if isinstance(content, list):
+                for block in content:
+                    if not isinstance(block, dict):
+                        continue
+                    if block.get('type') == 'tool_result':
+                        return {'type': 'tool_result',
+                                'id': block.get('tool_use_id', ''),
+                                'content': self._tool_result_text(block)}, usage
         elif obj.get('type') == 'result':
             u = obj.get('usage')
             if isinstance(u, dict):
                 usage = u
         return None, usage
+
+    @staticmethod
+    def _tool_result_text(block: dict, limit: int = 2000) -> str:
+        """Flatten a tool_result block's content (str or list of blocks) to
+        text, truncating to ``limit`` chars so SSE payloads stay small."""
+        content = block.get('content', '')
+        if isinstance(content, str):
+            text = content
+        elif isinstance(content, list):
+            parts = []
+            for c in content:
+                if isinstance(c, str):
+                    parts.append(c)
+                elif isinstance(c, dict):
+                    t = c.get('text')
+                    if t:
+                        parts.append(str(t))
+            text = '\n'.join(parts)
+        else:
+            text = str(content)
+        text = text.strip()
+        if len(text) > limit:
+            text = text[:limit] + '\n…(已截断)'
+        return text
 
     def _parse_stream_json(self, stdout: bytes, stderr: bytes) -> tuple:
         """Parse ``claude -p --output-format stream-json --verbose`` output.

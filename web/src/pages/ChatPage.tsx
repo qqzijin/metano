@@ -7,15 +7,23 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Markdown } from "@/components/Markdown";
 import { useChatMutation, useSessions, useMessages, useUploadFile } from "@/api/hooks";
 import { fmtTime } from "@/api/client";
+
+interface ToolCall {
+  id?: string;
+  name: string;
+  input: string;
+  result?: string;
+}
 
 interface ChatMsg {
   role: "user" | "assistant" | "system";
   content: string;
   ts: number;
   thinking?: string;
-  tool_calls?: Array<{ name: string; input: string }>;
+  tool_calls?: ToolCall[];
 }
 
 const STORAGE_KEY = "metano-chat-history";
@@ -171,7 +179,14 @@ export default function ChatPage() {
             patchLast((a) => { a.content += ev.text; });
           } else if (ev.type === "tool_use") {
             patchLast((a) => {
-              a.tool_calls = [...(a.tool_calls ?? []), { name: ev.name, input: JSON.stringify(ev.input ?? {}) }];
+              a.tool_calls = [...(a.tool_calls ?? []), { id: ev.id || "", name: ev.name, input: JSON.stringify(ev.input ?? {}) }];
+            });
+          } else if (ev.type === "tool_result") {
+            // Attach tool output to the matching tool_use by id.
+            patchLast((a) => {
+              a.tool_calls = (a.tool_calls ?? []).map((tc) =>
+                tc.id && ev.id && tc.id === ev.id ? { ...tc, result: ev.content } : tc
+              );
             });
           } else if (ev.type === "done") {
             setConnectedSession(ev.session_id || null);
@@ -323,8 +338,8 @@ export default function ChatPage() {
                 </div>
               )}
               <div
-                className={`rounded-xl px-4 py-2.5 max-w-[80%] whitespace-pre-wrap text-sm ${
-                  m.role === "user" ? "bg-primary text-primary-foreground" : "bg-muted"
+                className={`rounded-xl px-4 py-2.5 max-w-[85%] text-sm ${
+                  m.role === "user" ? "bg-primary text-primary-foreground whitespace-pre-wrap" : "bg-muted"
                 }`}
               >
                 {m.role === "assistant" && m.thinking ? (
@@ -334,16 +349,48 @@ export default function ChatPage() {
                   </details>
                 ) : null}
                 {m.role === "assistant" && m.tool_calls && m.tool_calls.length > 0 ? (
-                  <div className="mb-1.5 space-y-1">
+                  <div className="mb-1.5 space-y-1.5">
                     {m.tool_calls.map((tc, ti) => (
-                      <div key={ti} className="rounded border bg-background/60 px-2 py-1 text-xs font-mono break-all">
-                        <span className="text-primary font-semibold">🔧 {tc.name}</span>
-                        <span className="text-muted-foreground"> {tc.input}</span>
+                      <div key={ti} className="overflow-hidden rounded-lg border bg-background/60 text-xs font-mono">
+                        <div className="flex items-center justify-between border-b border-border/50 px-2.5 py-1.5">
+                          <span className="font-semibold text-primary">🔧 {tc.name}</span>
+                          <span
+                            className={
+                              tc.result !== undefined
+                                ? "text-[10px] text-emerald-500"
+                                : "text-[10px] text-muted-foreground"
+                            }
+                          >
+                            {tc.result !== undefined ? "✓ 完成" : "⏳ 执行中"}
+                          </span>
+                        </div>
+                        <details className="px-2.5 py-1.5">
+                          <summary className="cursor-pointer select-none text-muted-foreground">参数</summary>
+                          <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-all text-muted-foreground">
+                            {tc.input}
+                          </pre>
+                        </details>
+                        {tc.result !== undefined && (
+                          <details className="border-t border-border/50 px-2.5 py-1.5">
+                            <summary className="cursor-pointer select-none text-muted-foreground">结果</summary>
+                            <pre className="mt-1 max-h-60 overflow-auto whitespace-pre-wrap break-all text-muted-foreground">
+                              {tc.result}
+                            </pre>
+                          </details>
+                        )}
                       </div>
                     ))}
                   </div>
                 ) : null}
-                {m.content}
+                {m.role === "assistant" ? (
+                  m.content ? (
+                    <Markdown>{m.content}</Markdown>
+                  ) : (
+                    <span className="text-muted-foreground">思考中…</span>
+                  )
+                ) : (
+                  <span className="whitespace-pre-wrap">{m.content}</span>
+                )}
               </div>
               {m.role === "user" && (
                 <div className="size-8 rounded-full bg-secondary flex items-center justify-center shrink-0">

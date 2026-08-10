@@ -133,3 +133,17 @@
     background: oklch(0.35 0 0);
   }
 }
+/* Markdown code blocks — highlight.js (github-dark) sits inside a fixed
+   dark container, so drop the theme's own padding/background and keep the
+   token colors. */
+.metano-md .hljs {
+  background: transparent;
+  padding: 0;
+}
+.metano-md pre code.hljs {
+  display: block;
+  overflow-x: auto;
+  padding: 0;
+  background: transparent;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
