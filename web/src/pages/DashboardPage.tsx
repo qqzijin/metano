@@ -27,15 +27,18 @@ interface MiniStatProps {
 
 function MiniStat({ icon, label, value, sub, accent }: MiniStatProps) {
   return (
-    <Card className={accent ? "border-primary/30 bg-primary/5" : ""}>
+    <Card className={cn("shadow-sm", accent && "border-primary/25 bg-primary/5")}>
       <CardContent className="p-4">
         <div className="flex items-center gap-3">
-          <div className={`flex items-center justify-center size-9 rounded-lg shrink-0 ${accent ? "bg-primary/20 text-primary" : "bg-muted text-muted-foreground"}`}>
+          <div className={cn(
+            "flex items-center justify-center size-9 rounded-lg shrink-0",
+            accent ? "bg-primary/10 text-primary" : "bg-muted text-muted-foreground"
+          )}>
             {icon}
           </div>
           <div className="min-w-0 flex-1">
             <div className="text-xs text-muted-foreground mb-0.5">{label}</div>
-            <div className="text-xl font-semibold tracking-tight">{value}</div>
+            <div className={cn("text-xl font-semibold tracking-tight", accent && "text-primary")}>{value}</div>
             {sub && <div className="text-xs text-muted-foreground mt-0.5">{sub}</div>}
           </div>
         </div>
@@ -116,8 +119,8 @@ export default function DashboardPage() {
                         target && "cursor-pointer"
                       )}
                     >
-                      <span className={`size-2 rounded-full shrink-0 ${state === "active" ? "bg-emerald-500" : "bg-destructive"}`} />
-                      <span className="capitalize flex-1">{name.replace("metano-", "")}</span>
+                      <span className={`size-2 rounded-full shrink-0 ${state === "active" ? "bg-primary" : "bg-destructive"}`} />
+                      <span className="capitalize flex-1 min-w-0 truncate">{name.replace("metano-", "")}</span>
                       <Badge variant={state === "active" ? "default" : "destructive"} className="text-[10px]">{state === "active" ? "运行" : "停止"}</Badge>
                     </div>
                   );
@@ -131,7 +134,7 @@ export default function DashboardPage() {
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="text-sm flex items-center gap-2">
-              <Cpu className="size-4 text-chart-2" />
+              <Cpu className="size-4 text-primary" />
               进化引擎
               <Badge variant={evo?.paused ? "destructive" : "default"} className="ml-auto text-[10px]">{evo?.paused ? "暂停" : "运行中"}</Badge>
             </CardTitle>
@@ -149,7 +152,7 @@ export default function DashboardPage() {
                 </div>
               </div>
               {evo?.by_stage && (
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
                   {Object.entries(evo.by_stage).map(([stage, count]) => (
                     <div key={stage} className="flex-1 text-center p-1.5 rounded bg-muted/30">
                       <div className="text-sm font-medium">{count}</div>
@@ -176,7 +179,7 @@ export default function DashboardPage() {
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="text-sm flex items-center gap-2">
-              <Eye className="size-4 text-chart-3" />
+              <Eye className="size-4 text-primary" />
               近7日概览
             </CardTitle>
           </CardHeader>
@@ -193,7 +196,7 @@ export default function DashboardPage() {
                     className="flex items-center gap-2 text-sm py-1.5 px-2 rounded-md cursor-pointer hover:bg-muted/50"
                   >
                     <span className="text-xs font-mono text-muted-foreground shrink-0 w-8">{(d.day ?? "").slice(-5)}</span>
-                    <div className="flex-1 flex items-center gap-3">
+                    <div className="flex-1 min-w-0 flex items-center gap-3">
                       <Badge variant="secondary" className="text-[10px]">{d.session_count ?? 0} 会话</Badge>
                       <span className="text-xs text-muted-foreground">{fmtTokens(d.input_tokens ?? 0)} 输入</span>
                     </div>

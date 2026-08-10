@@ -2,7 +2,7 @@ import { useState } from "react";
 import { BookOpen, Upload, Search, Trash2, Loader2 } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { EmptyState } from "@/components/shared/EmptyState";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -56,16 +56,16 @@ export default function KnowledgePage() {
     <>
       <PageHeader title="知识库" description={`${docs.length} 份文档`} />
 
-      <div className="flex gap-3 mb-4 flex-wrap">
-        <div className="flex gap-2 flex-1 min-w-[200px]">
-          <Input placeholder="输入文件路径或 URL 导入..." value={ingestPath} onChange={(e) => setIngestPath(e.target.value)} />
-          <Button onClick={handleIngest} disabled={!ingestPath.trim() || ingestMut.isPending} size="sm">
+      <div className="flex flex-col gap-3 mb-4 lg:flex-row">
+        <div className="flex gap-2 flex-1 min-w-0">
+          <Input placeholder="输入文件路径或 URL 导入..." value={ingestPath} onChange={(e) => setIngestPath(e.target.value)} className="flex-1 min-w-0" />
+          <Button onClick={handleIngest} disabled={!ingestPath.trim() || ingestMut.isPending} size="sm" className="shrink-0">
             <Upload className="size-4 mr-1" /> 导入
           </Button>
         </div>
-        <div className="flex gap-2 flex-1 min-w-[200px]">
-          <Input placeholder="搜索知识库..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} onKeyDown={(e) => e.key === "Enter" && handleSearch()} />
-          <Button onClick={handleSearch} disabled={!searchQuery.trim() || searchMut.isPending} variant="outline" size="sm">
+        <div className="flex gap-2 flex-1 min-w-0">
+          <Input placeholder="搜索知识库..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} onKeyDown={(e) => e.key === "Enter" && handleSearch()} className="flex-1 min-w-0" />
+          <Button onClick={handleSearch} disabled={!searchQuery.trim() || searchMut.isPending} variant="outline" size="sm" className="shrink-0">
             {searchMut.isPending ? <Loader2 className="size-4 mr-1 animate-spin" /> : <Search className="size-4 mr-1" />}
             {searchMut.isPending ? "搜索中..." : "搜索"}
           </Button>
@@ -90,19 +90,21 @@ export default function KnowledgePage() {
 
       {showSearch && !searchMut.isPending && !searchMut.isError && searchMut.data && (
         <Card className="mb-4">
-          <CardContent className="p-4">
-            <div className="text-sm font-medium mb-2">搜索结果</div>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">搜索结果</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2 pt-0">
             {(searchMut.data.results ?? []).length === 0 ? (
               <p className="text-sm text-muted-foreground">未找到结果</p>
             ) : (
-              <div className="space-y-2">
+              <>
                 {searchMut.data.results.map((r, i) => (
                   <div key={i} className="text-sm border-l-2 border-primary pl-3">
                     <div className="font-medium text-xs text-muted-foreground">{r.title} (相关度: {r.score?.toFixed(2) ?? "N/A"})</div>
-                    <div className="line-clamp-2">{r.content}</div>
+                    <div className="line-clamp-2 break-words">{r.content}</div>
                   </div>
                 ))}
-              </div>
+              </>
             )}
           </CardContent>
         </Card>
@@ -124,17 +126,19 @@ export default function KnowledgePage() {
             return (
               <Card key={id ?? i} className="p-4">
                 <div className="flex items-center gap-3">
-                  <BookOpen className="size-4 text-muted-foreground shrink-0" />
+                  <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                    <BookOpen className="size-4" />
+                  </div>
                   <div className="min-w-0 flex-1">
                     <div className="font-medium text-sm truncate">{title}</div>
-                    <div className="text-xs text-muted-foreground flex gap-3 mt-0.5 min-w-0">
+                    <div className="text-xs text-muted-foreground flex flex-wrap gap-x-3 gap-y-0.5 mt-0.5 min-w-0">
                       {d.source && <span className="truncate min-w-0">{d.source}</span>}
                       {chunks != null && <span className="shrink-0">{chunks} 分块</span>}
                       {updatedAt != null && <span className="shrink-0">{fmtTime(updatedAt)}</span>}
                     </div>
                   </div>
                   {id && (
-                    <Button variant="ghost" size="icon" className="size-8 text-muted-foreground hover:text-destructive" onClick={() => handleDelete(id)}>
+                    <Button variant="ghost" size="icon" className="size-8 text-muted-foreground hover:text-destructive shrink-0" onClick={() => handleDelete(id)}>
                       <Trash2 className="size-4" />
                     </Button>
                   )}

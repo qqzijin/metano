@@ -3,7 +3,7 @@ import { Cpu, Star, ExternalLink, Plus, Check, X, Pencil, Save } from "lucide-re
 import { PageHeader } from "@/components/layout/PageHeader";
 import { StatCard } from "@/components/shared/StatCard";
 import { EmptyState } from "@/components/shared/EmptyState";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -123,7 +123,7 @@ export default function ModelsPage() {
         }
       />
 
-      <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mb-6">
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-6">
         <StatCard label="已配置提供商" value={providers.length} />
         <StatCard label="免费预设" value={presets.length} />
         <StatCard label="当前默认" value={currentDefault || "未设置"} />
@@ -132,27 +132,29 @@ export default function ModelsPage() {
       {/* Add Provider Form */}
       {showForm && (
         <Card className="mb-6">
-          <CardContent className="p-4 space-y-3">
-            <h4 className="text-sm font-medium">添加模型提供商</h4>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">添加模型提供商</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div>
-                <label className="text-xs text-muted-foreground mb-1">名称 *</label>
+              <div className="min-w-0">
+                <label className="block text-xs text-muted-foreground mb-1.5">名称 *</label>
                 <Input placeholder="如: openai" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
               </div>
-              <div>
-                <label className="text-xs text-muted-foreground mb-1">Base URL *</label>
+              <div className="min-w-0">
+                <label className="block text-xs text-muted-foreground mb-1.5">Base URL *</label>
                 <Input placeholder="如: https://api.openai.com/v1" value={form.base_url} onChange={(e) => setForm({ ...form, base_url: e.target.value })} />
               </div>
-              <div>
-                <label className="text-xs text-muted-foreground mb-1">API Key</label>
+              <div className="min-w-0">
+                <label className="block text-xs text-muted-foreground mb-1.5">API Key</label>
                 <Input type="password" placeholder="sk-..." value={form.api_key} onChange={(e) => setForm({ ...form, api_key: e.target.value })} />
               </div>
-              <div>
-                <label className="text-xs text-muted-foreground mb-1">默认模型</label>
+              <div className="min-w-0">
+                <label className="block text-xs text-muted-foreground mb-1.5">默认模型</label>
                 <Input placeholder="如: gpt-4o" value={form.model} onChange={(e) => setForm({ ...form, model: e.target.value })} />
               </div>
-              <div>
-                <label className="text-xs text-muted-foreground mb-1">Max Tokens</label>
+              <div className="min-w-0">
+                <label className="block text-xs text-muted-foreground mb-1.5">Max Tokens</label>
                 <Input type="number" placeholder="4096" value={form.max_tokens} onChange={(e) => setForm({ ...form, max_tokens: parseInt(e.target.value) || 4096 })} />
               </div>
             </div>
@@ -178,33 +180,41 @@ export default function ModelsPage() {
               <div className="grid gap-3">
                 {providers.map((p: any) => (
                   <Card key={p.name}>
-                    <CardContent className="p-4 flex items-center gap-4">
-                      <Cpu className="size-5 text-muted-foreground shrink-0" />
-                      <div className="flex-1 min-w-0">
-                        <div className="font-medium text-sm flex items-center gap-2">
-                          {p.name}
-                          {p.is_default && <Badge className="text-[10px]"><Star className="size-3 mr-0.5" /> 默认</Badge>}
+                    <CardContent className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center">
+                      <div className="flex items-center gap-3 min-w-0 flex-1">
+                        <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                          <Cpu className="size-4.5" />
                         </div>
-                        <div className="text-xs text-muted-foreground mt-0.5 flex gap-3">
-                          {p.model && <span>模型: {p.model}</span>}
-                          {p.base_url && <span className="truncate">{p.base_url}</span>}
-                        </div>
-                        <div className="text-xs mt-1 text-muted-foreground">
-                          输入 {fmtPrice(p.price?.input)} · 输出 {fmtPrice(p.price?.output)} · 缓存 {fmtPrice(p.price?.cache_read)}
-                        </div>
-                        {editingPrice === p.name && (
-                          <div className="flex flex-wrap items-center gap-2 mt-2">
-                            <Input type="number" step="any" className="h-8 w-24" placeholder="输入价" value={priceForm.input} onChange={(e) => setPriceForm({ ...priceForm, input: e.target.value })} />
-                            <Input type="number" step="any" className="h-8 w-24" placeholder="输出价" value={priceForm.output} onChange={(e) => setPriceForm({ ...priceForm, output: e.target.value })} />
-                            <Input type="number" step="any" className="h-8 w-24" placeholder="缓存价" value={priceForm.cache_read} onChange={(e) => setPriceForm({ ...priceForm, cache_read: e.target.value })} />
-                            <Button size="sm" onClick={() => savePrice(p.name)} disabled={updateProxyMut.isPending}>
-                              <Save className="size-3.5 mr-1" /> 保存
-                            </Button>
-                            <Button size="sm" variant="ghost" onClick={() => setEditingPrice(null)}>取消</Button>
+                        <div className="min-w-0 flex-1">
+                          <div className="font-medium text-sm flex items-center gap-2 flex-wrap">
+                            <span className="truncate">{p.name}</span>
+                            {p.is_default && <Badge className="text-[10px]"><Star className="size-3 mr-0.5" /> 默认</Badge>}
                           </div>
-                        )}
+                          <div className="text-xs text-muted-foreground mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 min-w-0">
+                            {p.model && <span className="shrink-0">模型: {p.model}</span>}
+                            {p.base_url && <span className="truncate min-w-0">{p.base_url}</span>}
+                          </div>
+                          <div className="text-xs mt-1 text-muted-foreground">
+                            输入 {fmtPrice(p.price?.input)} · 输出 {fmtPrice(p.price?.output)} · 缓存 {fmtPrice(p.price?.cache_read)}
+                          </div>
+                          {editingPrice === p.name && (
+                            <div className="flex flex-col gap-2 mt-2 sm:flex-row sm:items-center">
+                              <div className="grid grid-cols-3 gap-2 w-full sm:w-auto">
+                                <Input type="number" step="any" className="h-8 w-full min-w-0" placeholder="输入价" value={priceForm.input} onChange={(e) => setPriceForm({ ...priceForm, input: e.target.value })} />
+                                <Input type="number" step="any" className="h-8 w-full min-w-0" placeholder="输出价" value={priceForm.output} onChange={(e) => setPriceForm({ ...priceForm, output: e.target.value })} />
+                                <Input type="number" step="any" className="h-8 w-full min-w-0" placeholder="缓存价" value={priceForm.cache_read} onChange={(e) => setPriceForm({ ...priceForm, cache_read: e.target.value })} />
+                              </div>
+                              <div className="flex gap-2 shrink-0">
+                                <Button size="sm" onClick={() => savePrice(p.name)} disabled={updateProxyMut.isPending}>
+                                  <Save className="size-3.5 mr-1" /> 保存
+                                </Button>
+                                <Button size="sm" variant="ghost" onClick={() => setEditingPrice(null)}>取消</Button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
                       </div>
-                      <div className="flex items-center gap-1 shrink-0">
+                      <div className="flex items-center gap-1.5 shrink-0 flex-wrap">
                         <Button size="sm" variant="outline" onClick={() => startEditPrice(p)}>
                           <Pencil className="size-3.5 mr-1" /> 价格
                         </Button>
@@ -229,19 +239,21 @@ export default function ModelsPage() {
                 {presets.map((p: any) => (
                   <Card key={p.name}>
                     <CardContent className="p-4">
-                      <div className="flex items-center gap-2 mb-1">
-                        <ExternalLink className="size-3.5 text-muted-foreground" />
-                        <span className="font-medium text-sm">{p.name}</span>
+                      <div className="flex items-center gap-2 mb-1.5 min-w-0">
+                        <div className="flex size-7 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+                          <ExternalLink className="size-3.5" />
+                        </div>
+                        <span className="font-medium text-sm truncate min-w-0">{p.name}</span>
                       </div>
                       <div className="text-xs text-muted-foreground space-y-0.5">
                         {p.base_url && <div className="truncate">URL: {p.base_url}</div>}
                         {p.model && <div>默认模型: {p.model}</div>}
-                        {p.note && <div>{p.note}</div>}
+                        {p.note && <div className="break-words">{p.note}</div>}
                       </div>
                       <Button
                         size="sm"
                         variant="outline"
-                        className="mt-2"
+                        className="mt-3"
                         onClick={() => handleEnablePreset(p)}
                         disabled={setDefaultMut.isPending}
                       >

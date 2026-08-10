@@ -25,7 +25,7 @@ export default function SessionsPage() {
     const session = sessions.find((s) => s.id === selected);
     return (
       <>
-        <div className="flex items-center gap-3 mb-6">
+        <div className="flex items-start gap-3 mb-6">
           <Button
             variant="ghost"
             size="icon"
@@ -33,12 +33,13 @@ export default function SessionsPage() {
               setSelected(null);
               setSearchParams({}, { replace: true });
             }}
+            className="mt-0.5 shrink-0"
           >
             <ArrowLeft className="size-4" />
           </Button>
-          <div>
-            <h1 className="text-xl font-semibold">{session?.title || selected.slice(0, 12) + "..."}</h1>
-            <div className="flex gap-3 text-xs text-muted-foreground mt-1">
+          <div className="min-w-0 flex-1">
+            <h1 className="text-xl font-semibold break-words">{session?.title || selected.slice(0, 12) + "..."}</h1>
+            <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground mt-1">
               {session?.model && <span className="flex items-center gap-1"><Cpu className="size-3" />{session.model.split("-").slice(0, 2).join("-")}</span>}
               {session?.started_at && <span className="flex items-center gap-1"><Clock className="size-3" />{fmtTime(session.started_at)}</span>}
               {(session?.estimated_cost_usd ?? 0) > 0 && <span className="flex items-center gap-1"><Coins className="size-3" />{fmtCost(session?.estimated_cost_usd ?? 0)}</span>}
@@ -53,13 +54,13 @@ export default function SessionsPage() {
             Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-16 rounded-lg" />)
           ) : messages.map((m) => (
             <Card key={m.id} className="p-4">
-              <div className="flex items-center gap-2 mb-2">
+              <div className="flex flex-wrap items-center gap-2 mb-2">
                 <Badge variant={m.role === "user" ? "default" : "secondary"} className="text-xs">
                   {m.role}
                 </Badge>
                 {m.tool_name && <Badge variant="outline" className="text-xs">工具: {m.tool_name}</Badge>}
               </div>
-              <div className="text-sm whitespace-pre-wrap">{m.content}</div>
+              <div className="text-sm whitespace-pre-wrap break-words">{m.content}</div>
               {((m.input_tokens ?? 0) > 0 || (m.output_tokens ?? 0) > 0) && (
                 <div className="text-xs text-muted-foreground mt-2">
                   入: {fmtTokens(m.input_tokens ?? 0)} 出: {fmtTokens(m.output_tokens ?? 0)}

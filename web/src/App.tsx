@@ -94,7 +94,7 @@ function MainLayout() {
             <Menu className="size-5" />
           </Button>
           <Activity className="size-5 text-primary shrink-0" />
-          <span className="font-semibold text-sm truncate">CC Bridge</span>
+          <span className="font-semibold text-sm truncate">metano</span>
           <div className="ml-auto flex items-center gap-1.5 text-xs text-muted-foreground shrink-0">
             <span className={cn("size-2 rounded-full", connected ? "bg-emerald-500" : "bg-destructive")} />
             <span className="hidden sm:inline">{connected ? "已连接" : "已断开"}</span>

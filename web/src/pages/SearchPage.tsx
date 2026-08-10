@@ -71,13 +71,13 @@ export default function SearchPage() {
                 onClick={() => navigate(`/sessions?session=${encodeURIComponent(r.session_id)}`)}
                 onKeyDown={(e) => { if (e.key === "Enter") navigate(`/sessions?session=${encodeURIComponent(r.session_id)}`); }}
               >
-                <div className="flex items-center gap-2 mb-2">
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mb-2">
                   <Badge variant="outline" className="text-[10px] font-mono">{r.session_id.slice(0, 12)}</Badge>
-                  {r.title && <span className="text-sm font-medium truncate">{r.title}</span>}
+                  {r.title && <span className="text-sm font-medium truncate min-w-0 flex-1">{r.title}</span>}
                   <Badge variant={r.role === "user" ? "default" : "secondary"} className="text-[10px] ml-auto">{r.role}</Badge>
                   {r.timestamp && <span className="text-xs text-muted-foreground shrink-0">{fmtTime(r.timestamp)}</span>}
                 </div>
-                <div className="text-sm text-muted-foreground line-clamp-3" dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(r.snippet) }} />
+                <div className="text-sm text-muted-foreground line-clamp-3 break-words" dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(r.snippet) }} />
               </Card>
             ))}
           </div>

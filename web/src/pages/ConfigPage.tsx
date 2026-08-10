@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { Save } from "lucide-react";
+import { Save, Settings } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -50,12 +50,18 @@ export default function ConfigPage() {
         <Skeleton className="h-96 rounded-lg" />
       ) : (
         <Card>
-          <CardContent className="p-4">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base flex items-center gap-2">
+              <Settings className="size-4 text-primary" /> 系统配置
+            </CardTitle>
+            <CardDescription>JSON 格式，修改后点击右上角保存</CardDescription>
+          </CardHeader>
+          <CardContent>
             <Textarea
               value={configText}
               onChange={(e) => setEdited(e.target.value)}
               spellCheck={false}
-              className="font-mono text-xs min-h-[500px] resize-y"
+              className="font-mono text-xs min-h-[300px] sm:min-h-[500px] resize-y"
             />
           </CardContent>
         </Card>

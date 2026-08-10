@@ -41,15 +41,15 @@ export default function McpToolsPage() {
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <Input
               placeholder="搜索关键词..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="flex-1"
+              className="flex-1 min-w-0"
               onKeyDown={(e) => e.key === "Enter" && handleWebSearch()}
             />
-            <Button onClick={handleWebSearch} disabled={webSearchMut.isPending}>
+            <Button onClick={handleWebSearch} disabled={webSearchMut.isPending} className="shrink-0">
               <Search className="size-4 mr-1" /> 搜索
             </Button>
           </div>
@@ -57,16 +57,16 @@ export default function McpToolsPage() {
           {searchResult && (
             <div className="space-y-3">
               {searchResult.answer && (
-                <div className="bg-primary/5 border border-primary/20 rounded-md p-3">
+                <div className="bg-primary/5 border border-primary/25 rounded-lg p-3">
                   <p className="text-sm font-medium mb-1">摘要</p>
                   <p className="text-sm">{searchResult.answer}</p>
                 </div>
               )}
               {(searchResult.results ?? []).map((r: any, i: number) => (
-                <div key={i} className="bg-muted rounded-md p-3">
-                  <div className="font-medium text-sm mb-1">{r.title}</div>
-                  <p className="text-xs text-muted-foreground mb-1">{r.snippet}</p>
-                  <a href={r.url} target="_blank" rel="noopener noreferrer" className="text-xs text-primary hover:underline">
+                <div key={i} className="bg-muted/50 rounded-lg p-3 min-w-0">
+                  <div className="font-medium text-sm mb-1 break-words">{r.title}</div>
+                  <p className="text-xs text-muted-foreground mb-1 break-words">{r.snippet}</p>
+                  <a href={r.url} target="_blank" rel="noopener noreferrer" className="text-xs text-primary hover:underline break-all">
                     {r.url}
                   </a>
                 </div>
@@ -89,15 +89,15 @@ export default function McpToolsPage() {
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
           {tools.map((t) => (
             <Card key={t.name}>
-              <CardContent className="p-4">
-                <div className="flex items-center gap-2 mb-2">
-                  <Wrench className="size-4 text-muted-foreground" />
-                  <span className="font-medium text-sm font-mono">{t.name}</span>
-                  <Badge variant={t.source === "internal" ? "default" : "secondary"} className="text-[10px]">
+              <CardContent>
+                <div className="flex items-center gap-2 mb-2 min-w-0">
+                  <Wrench className="size-4 text-muted-foreground shrink-0" />
+                  <span className="font-medium text-sm font-mono truncate min-w-0 flex-1">{t.name}</span>
+                  <Badge variant={t.source === "internal" ? "default" : "secondary"} className="text-xs shrink-0">
                     {t.source === "internal" ? "内置" : "外部"}
                   </Badge>
                 </div>
-                <p className="text-xs text-muted-foreground line-clamp-2">{t.description || "无描述"}</p>
+                <p className="text-xs text-muted-foreground line-clamp-2 break-words">{t.description || "无描述"}</p>
               </CardContent>
             </Card>
           ))}

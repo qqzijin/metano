@@ -104,7 +104,7 @@ export default function CronPage() {
               <div className="flex items-center gap-3">
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <span className="font-medium text-sm">{j.name}</span>
+                    <span className="font-medium text-sm break-words">{j.name}</span>
                     <Badge variant={j.enabled ? "default" : "secondary"} className="text-[10px]">{j.enabled ? "已启用" : "已禁用"}</Badge>
                     {j.type && <Badge variant="outline" className="text-[10px]">{j.type}</Badge>}
                   </div>

@@ -5,7 +5,6 @@ import { PageHeader } from "@/components/layout/PageHeader";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Markdown } from "@/components/Markdown";
 import { useChatMutation, useSessions, useMessages, useUploadFile } from "@/api/hooks";
@@ -64,6 +63,14 @@ export default function ChatPage() {
   const clearedRef = useRef(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const taRef = useRef<HTMLTextAreaElement>(null);
+
+  const autoGrow = () => {
+    const ta = taRef.current;
+    if (!ta) return;
+    ta.style.height = "auto";
+    ta.style.height = Math.min(ta.scrollHeight, 160) + "px";
+  };
   const chatMut = useChatMutation();
   const uploadMut = useUploadFile();
   // Only poll the session list while the picker is open; when closed, stop polling
@@ -129,6 +136,7 @@ export default function ChatPage() {
     const userMsg: ChatMsg = { role: "user", content: text, ts: Date.now() };
     setMessages((prev) => [...prev, userMsg]);
     setInput("");
+    if (taRef.current) taRef.current.style.height = "auto";
     clearedRef.current = false;
     setDirty(true); // new user message is local-only until /api/chat persists it
 
@@ -292,7 +300,7 @@ export default function ChatPage() {
         </Card>
       )}
 
-      <Card className="flex flex-col h-[calc(100dvh-15.5rem)] md:h-[calc(100vh-12rem)]">
+      <Card className="-mx-4 flex flex-col h-[calc(100dvh-17rem)] md:mx-0 md:h-[calc(100vh-12rem)]">
         {/* Header bar */}
         <div className="flex items-center justify-between px-4 pt-3 pb-1 border-b">
           <div className="flex items-center gap-2">
@@ -419,35 +427,39 @@ export default function ChatPage() {
           <div ref={bottomRef} />
         </div>
 
-        {/* Input */}
-        <div className="p-3 border-t flex gap-2">
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            title="上传附件"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={uploadMut.isPending || chatMut.isPending}
-          >
-            {uploadMut.isPending ? <span className="text-xs">上传中</span> : <Paperclip className="size-4" />}
-          </Button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            hidden
-            accept=".txt,.md,.pdf,.png,.jpg,.jpeg,.gif,.webp,.csv,.json,.py,.js,.ts,.html,.docx"
-            onChange={handleFileSelected}
-          />
-          <Input
-            placeholder="输入消息..."
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            disabled={chatMut.isPending}
-          />
-          <Button onClick={handleSend} disabled={chatMut.isPending || !input.trim()}>
-            <Send className="size-4" />
-          </Button>
+        {/* Composer — capsule textarea, auto-growing, keyboard-safe */}
+        <div className="p-2.5 pb-safe border-t">
+          <div className="flex w-full min-w-0 items-end gap-1 rounded-[1.4rem] border bg-background py-1 pl-1 pr-1 shadow-sm transition-all focus-within:border-primary/50 focus-within:ring-2 focus-within:ring-primary/15 md:pl-1.5 md:pr-1.5">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="size-8 shrink-0 rounded-full md:size-9"
+              title="上传附件"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploadMut.isPending || chatMut.isPending}
+            >
+              {uploadMut.isPending ? <span className="text-xs">上传中</span> : <Paperclip className="size-4.5" />}
+            </Button>
+            <textarea
+              ref={taRef}
+              rows={1}
+              value={input}
+              placeholder="输入消息..."
+              onChange={(e) => { setInput(e.target.value); autoGrow(); }}
+              onKeyDown={handleKeyDown}
+              disabled={chatMut.isPending}
+              className="min-w-0 flex-1 resize-none bg-transparent px-1 py-2 text-[16px] leading-relaxed outline-none placeholder:text-muted-foreground max-h-40"
+            />
+            <Button
+              onClick={handleSend}
+              disabled={chatMut.isPending || !input.trim()}
+              size="icon"
+              className="size-8 shrink-0 rounded-full md:size-9"
+            >
+              <Send className="size-4" />
+            </Button>
+          </div>
         </div>
       </Card>
     </>

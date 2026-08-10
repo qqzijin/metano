@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Home, Lightbulb, Power, PowerOff, AlertTriangle, Settings2 } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { EmptyState } from "@/components/shared/EmptyState";
-import { Card } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
@@ -107,64 +107,60 @@ export default function SmartHomePage() {
       <PageHeader title="智能家居" description={headerDesc} />
 
       {!configured ? (
-        <div className="mx-auto max-w-md">
-          <Card className="p-5 space-y-4">
-            <div className="flex items-center gap-3">
-              <div className="size-9 rounded-full bg-muted flex items-center justify-center">
-                <Settings2 className="size-4 text-muted-foreground" />
+        <div className="mx-auto w-full max-w-md">
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base flex items-center gap-2">
+                <Settings2 className="size-4.5 text-primary" /> 未配置 Home Assistant
+              </CardTitle>
+              <CardDescription>需要 HA_URL 与 HA_TOKEN 才能连接智能设备</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="text-sm text-muted-foreground space-y-1">
+                <p>配置方式（任选其一）：</p>
+                <ol className="list-decimal list-inside space-y-0.5">
+                  <li>在下方表单填写并保存（写入 gateway_config.yaml）</li>
+                  <li>编辑 gateway_config.yaml 的 <code className="text-foreground break-all">home_assistant</code> 段</li>
+                  <li>设置环境变量 HA_URL / HA_TOKEN 后重启服务</li>
+                </ol>
               </div>
-              <div>
-                <div className="font-medium">未配置 Home Assistant</div>
-                <div className="text-xs text-muted-foreground">
-                  需要 HA_URL 与 HA_TOKEN 才能连接智能设备
+
+              <div className="space-y-2">
+                <div className="min-w-0">
+                  <label className="text-xs font-medium text-muted-foreground">HA_URL</label>
+                  <Input
+                    className="mt-1"
+                    placeholder="http://homeassistant.local:8123"
+                    value={url}
+                    onChange={(e) => setUrl(e.target.value)}
+                    onBlur={syncFromServer}
+                  />
                 </div>
+                <div className="min-w-0">
+                  <label className="text-xs font-medium text-muted-foreground">
+                    HA_TOKEN {configQuery.data?.token_set ? "（已设置，留空保持不变）" : ""}
+                  </label>
+                  <Input
+                    className="mt-1"
+                    type="password"
+                    placeholder={configQuery.data?.token_set ? "••••••••（已设置）" : "长期访问令牌"}
+                    value={token}
+                    onChange={(e) => setToken(e.target.value)}
+                  />
+                </div>
+                <Button
+                  className="w-full"
+                  onClick={handleSaveConfig}
+                  disabled={saveConfig.isPending}
+                >
+                  {saveConfig.isPending ? "保存中…" : "保存配置"}
+                </Button>
               </div>
-            </div>
 
-            <div className="text-sm text-muted-foreground space-y-1">
-              <p>配置方式（任选其一）：</p>
-              <ol className="list-decimal list-inside space-y-0.5">
-                <li>在下方表单填写并保存（写入 gateway_config.yaml）</li>
-                <li>编辑 gateway_config.yaml 的 <code className="text-foreground">home_assistant</code> 段</li>
-                <li>设置环境变量 HA_URL / HA_TOKEN 后重启服务</li>
-              </ol>
-            </div>
-
-            <div className="space-y-2">
-              <div>
-                <label className="text-xs font-medium text-muted-foreground">HA_URL</label>
-                <Input
-                  className="mt-1"
-                  placeholder="http://homeassistant.local:8123"
-                  value={url}
-                  onChange={(e) => setUrl(e.target.value)}
-                  onBlur={syncFromServer}
-                />
-              </div>
-              <div>
-                <label className="text-xs font-medium text-muted-foreground">
-                  HA_TOKEN {configQuery.data?.token_set ? "（已设置，留空保持不变）" : ""}
-                </label>
-                <Input
-                  className="mt-1"
-                  type="password"
-                  placeholder={configQuery.data?.token_set ? "••••••••（已设置）" : "长期访问令牌"}
-                  value={token}
-                  onChange={(e) => setToken(e.target.value)}
-                />
-              </div>
-              <Button
-                className="w-full"
-                onClick={handleSaveConfig}
-                disabled={saveConfig.isPending}
-              >
-                {saveConfig.isPending ? "保存中…" : "保存配置"}
-              </Button>
-            </div>
-
-            {data?.message ? (
-              <p className="text-xs text-muted-foreground">{data.message}</p>
-            ) : null}
+              {data?.message ? (
+                <p className="text-xs text-muted-foreground">{data.message}</p>
+              ) : null}
+            </CardContent>
           </Card>
         </div>
       ) : isError ? (
@@ -203,26 +199,28 @@ export default function SmartHomePage() {
               const isOn = e.state === "on";
               const friendlyName = (e.attributes.friendly_name as string) ?? e.entity_id;
               return (
-                <Card key={e.entity_id} className="p-4">
-                  <div className="flex items-center gap-3">
-                    <div className={`size-8 rounded-full flex items-center justify-center ${isOn ? "bg-yellow-400/20 text-yellow-600" : "bg-muted text-muted-foreground"}`}>
-                      {domain === "light" ? <Lightbulb className="size-4" /> : <Home className="size-4" />}
+                <Card key={e.entity_id}>
+                  <CardContent>
+                    <div className="flex items-center gap-3">
+                      <div className={`size-9 rounded-full flex items-center justify-center shrink-0 ${isOn ? "bg-primary/10 text-primary" : "bg-muted text-muted-foreground"}`}>
+                        {domain === "light" ? <Lightbulb className="size-4.5" /> : <Home className="size-4.5" />}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="font-medium text-sm truncate">{friendlyName}</div>
+                        <div className="text-xs text-muted-foreground">{e.state}</div>
+                      </div>
+                      {domain === "light" || domain === "switch" ? (
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="size-8 shrink-0"
+                          onClick={() => handleControl(e.entity_id, isOn ? "turn_off" : "turn_on")}
+                        >
+                          {isOn ? <PowerOff className="size-4" /> : <Power className="size-4" />}
+                        </Button>
+                      ) : null}
                     </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="font-medium text-sm truncate">{friendlyName}</div>
-                      <div className="text-xs text-muted-foreground">{e.state}</div>
-                    </div>
-                    {domain === "light" || domain === "switch" ? (
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        className="size-8"
-                        onClick={() => handleControl(e.entity_id, isOn ? "turn_off" : "turn_on")}
-                      >
-                        {isOn ? <PowerOff className="size-4" /> : <Power className="size-4" />}
-                      </Button>
-                    ) : null}
-                  </div>
+                  </CardContent>
                 </Card>
               );
             })}

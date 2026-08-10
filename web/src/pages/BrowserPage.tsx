@@ -36,7 +36,7 @@ export default function BrowserPage() {
             </CardHeader>
             <CardContent className="space-y-3">
               <div className="flex flex-col sm:flex-row gap-2">
-                <Input placeholder="https://example.com" value={url} onChange={(e) => setUrl(e.target.value)} className="w-full sm:flex-1" />
+                <Input placeholder="https://example.com" value={url} onChange={(e) => setUrl(e.target.value)} className="w-full sm:flex-1 min-w-0" />
                 <div className="flex gap-2 shrink-0">
                   <Select value={mode} onValueChange={(v) => { if (v) setMode(v); }}>
                     <SelectTrigger className="w-28"><SelectValue /></SelectTrigger>
@@ -52,7 +52,7 @@ export default function BrowserPage() {
                 </div>
               </div>
               {browseMut.data && (
-                <div className="bg-muted rounded-md p-3 text-sm max-h-80 overflow-auto whitespace-pre-wrap">
+                <div className="bg-muted rounded-lg p-3 text-sm max-h-80 overflow-auto whitespace-pre-wrap break-words min-w-0">
                   {browseMut.data.title && <div className="font-medium mb-1">{browseMut.data.title}</div>}
                   {browseMut.data.content?.slice(0, 3000)}
                 </div>
@@ -73,7 +73,7 @@ export default function BrowserPage() {
                   value={shotUrl}
                   onChange={(e) => setShotUrl(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && shotUrl.trim() && !shotMut.isPending && shotMut.mutate(shotUrl)}
-                  className="w-full sm:flex-1"
+                  className="w-full sm:flex-1 min-w-0"
                 />
                 <Button className="shrink-0" disabled={!shotUrl.trim() || shotMut.isPending} onClick={() => shotMut.mutate(shotUrl)}>
                   <Camera className="size-4 mr-1" /> 截图
@@ -83,7 +83,7 @@ export default function BrowserPage() {
               {shotMut.isError && <p className="text-sm text-destructive">{shotMut.error?.message || "截图失败"}</p>}
               {shotMut.data?.error && <p className="text-sm text-destructive">{shotMut.data.error}</p>}
               {shotMut.data?.image && (
-                <div className="overflow-auto rounded-md border">
+                <div className="overflow-auto rounded-lg border border-border">
                   <img src={shotMut.data.image} alt={`${shotUrl} 截图`} className="w-full h-auto" />
                 </div>
               )}
@@ -98,7 +98,7 @@ export default function BrowserPage() {
             </CardHeader>
             <CardContent className="space-y-3">
               <div className="flex flex-wrap gap-2">
-                <Input placeholder="搜索关键词..." value={searchQ} onChange={(e) => setSearchQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && searchMut.mutate(searchQ)} className="flex-1 min-w-[140px]" />
+                <Input placeholder="搜索关键词..." value={searchQ} onChange={(e) => setSearchQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && searchMut.mutate(searchQ)} className="flex-1 min-w-0" />
                 <Button className="shrink-0" disabled={!searchQ.trim() || searchMut.isPending} onClick={() => searchMut.mutate(searchQ)}>
                   <Search className="size-4 mr-1" /> 搜索
                 </Button>
@@ -106,9 +106,9 @@ export default function BrowserPage() {
               {searchMut.data?.results && (
                 <div className="space-y-2">
                   {searchMut.data.results.map((r, i) => (
-                    <div key={i} className="p-3 border rounded-md">
-                      <a href={r.url} target="_blank" rel="noopener noreferrer" className="text-sm font-medium text-primary hover:underline">{r.title}</a>
-                      <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{r.snippet}</p>
+                    <div key={i} className="border border-border rounded-lg p-3 min-w-0">
+                      <a href={r.url} target="_blank" rel="noopener noreferrer" className="text-sm font-medium text-primary hover:underline break-words">{r.title}</a>
+                      <p className="text-xs text-muted-foreground mt-1 line-clamp-2 break-words">{r.snippet}</p>
                     </div>
                   ))}
                 </div>

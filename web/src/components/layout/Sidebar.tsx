@@ -11,6 +11,8 @@ import { useTheme } from "@/hooks/useTheme";
 import { VERSION } from "@/version";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { useAuth } from "@/contexts/AuthContext";
 
 const NAV_GROUPS = [
@@ -98,84 +100,61 @@ function ChangePasswordDialog({ onClose }: { onClose: () => void }) {
     }
   };
 
-  if (success) {
-    return (
-      <div style={{
-        position: "fixed", inset: 0, zIndex: 50,
-        display: "flex", alignItems: "center", justifyContent: "center",
-        background: "rgba(0,0,0,0.6)",
-      }} onClick={onClose}>
-        <div onClick={(e) => e.stopPropagation()} style={{
-          width: 340, padding: 24, borderRadius: 12,
-          background: "#111118", border: "1px solid rgba(170,59,255,0.2)",
-          textAlign: "center",
-        }}>
-          <p style={{ color: "#22c55e", fontSize: 14, marginBottom: 16 }}>密码修改成功</p>
-          <button onClick={onClose} style={{
-            padding: "8px 20", borderRadius: 8,
-            background: "#2a2a3e", border: "none", color: "#e4e4e7",
-            fontSize: 13, cursor: "pointer",
-          }}>关闭</button>
-        </div>
-      </div>
-    );
-  }
-
   return (
-    <div style={{
-      position: "fixed", inset: 0, zIndex: 50,
-      display: "flex", alignItems: "center", justifyContent: "center",
-      background: "rgba(0,0,0,0.6)",
-    }} onClick={onClose}>
-      <div onClick={(e) => e.stopPropagation()} style={{
-        width: 340, padding: 24, borderRadius: 12,
-        background: "#111118", border: "1px solid rgba(170,59,255,0.2)",
-      }}>
-        <h3 style={{ color: "#e4e4e7", fontSize: 16, fontWeight: 600, marginBottom: 20 }}>修改密码</h3>
+    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent className="sm:max-w-sm">
+        <DialogHeader>
+          <DialogTitle>修改密码</DialogTitle>
+        </DialogHeader>
 
-        {error && (
-          <div style={{
-            background: "rgba(255,77,79,0.1)", border: "1px solid rgba(255,77,79,0.3)",
-            borderRadius: 8, padding: "8px 12px", color: "#ff4d4f",
-            fontSize: 13, marginBottom: 16,
-          }}>{error}</div>
+        {success ? (
+          <div className="py-2 text-center">
+            <p className="text-sm font-medium text-emerald-500">密码修改成功</p>
+            <Button className="mt-4" onClick={onClose}>关闭</Button>
+          </div>
+        ) : (
+          <form onSubmit={handleSubmit} className="space-y-4">
+            {error && (
+              <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                {error}
+              </div>
+            )}
+            <div className="space-y-1.5">
+              <label className="text-xs text-muted-foreground">原密码</label>
+              <Input
+                type="password"
+                value={oldPassword}
+                onChange={(e) => setOldPassword(e.target.value)}
+                disabled={loading}
+                required
+                autoComplete="current-password"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs text-muted-foreground">新密码</label>
+              <Input
+                type="password"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                disabled={loading}
+                required
+                minLength={6}
+                placeholder="至少6位"
+                autoComplete="new-password"
+              />
+            </div>
+            <DialogFooter className="flex gap-2 sm:justify-end">
+              <Button type="button" variant="outline" onClick={onClose} disabled={loading}>
+                取消
+              </Button>
+              <Button type="submit" disabled={loading}>
+                {loading ? "提交中..." : "确认修改"}
+              </Button>
+            </DialogFooter>
+          </form>
         )}
-
-        <form onSubmit={handleSubmit}>
-          <div style={{ marginBottom: 14 }}>
-            <label style={{ color: "#a1a1aa", fontSize: 13, display: "block", marginBottom: 4 }}>原密码</label>
-            <input type="password" value={oldPassword} onChange={(e) => setOldPassword(e.target.value)}
-              disabled={loading} required style={{
-                width: "100%", padding: "8px 12", background: "#1a1a2e",
-                border: "1px solid #2a2a3e", borderRadius: 8, color: "#e4e4e7",
-                fontSize: 14, outline: "none", boxSizing: "border-box",
-              }} />
-          </div>
-          <div style={{ marginBottom: 20 }}>
-            <label style={{ color: "#a1a1aa", fontSize: 13, display: "block", marginBottom: 4 }}>新密码</label>
-            <input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)}
-              disabled={loading} required minLength={6} placeholder="至少6位" style={{
-                width: "100%", padding: "8px 12", background: "#1a1a2e",
-                border: "1px solid #2a2a3e", borderRadius: 8, color: "#e4e4e7",
-                fontSize: 14, outline: "none", boxSizing: "border-box",
-              }} />
-          </div>
-          <div style={{ display: "flex", gap: 8 }}>
-            <button type="button" onClick={onClose} style={{
-              flex: 1, padding: "8px 0", borderRadius: 8,
-              background: "#2a2a3e", border: "none", color: "#a1a1aa",
-              fontSize: 13, cursor: "pointer",
-            }}>取消</button>
-            <button type="submit" disabled={loading} style={{
-              flex: 1, padding: "8px 0", borderRadius: 8,
-              background: loading ? "#555" : "linear-gradient(135deg, #7c3aed, #aa3bff)",
-              border: "none", color: "#fff", fontSize: 13,
-              fontWeight: 600, cursor: loading ? "not-allowed" : "pointer",
-            }}>{loading ? "提交中..." : "确认修改"}</button>
-          </div>
-        </form>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -199,7 +178,7 @@ export function Sidebar({ collapsed, onToggle, connected, onNavigate }: SidebarP
           <Activity className="size-5 text-primary shrink-0" />
           {!collapsed && (
             <div className="leading-none">
-              <span className="font-semibold text-sm">CC Bridge</span>
+              <span className="font-semibold text-sm">metano</span>
               <span className="text-xs text-muted-foreground ml-1">v{VERSION}</span>
             </div>
           )}
@@ -247,8 +226,8 @@ export function Sidebar({ collapsed, onToggle, connected, onNavigate }: SidebarP
           {!collapsed && user && (
             <div className="flex items-center justify-between mb-2 px-1">
               <div className="flex items-center gap-2">
-                <div className="size-7 rounded-full bg-purple-500/20 flex items-center justify-center">
-                  <span className="text-xs text-purple-400 font-medium">
+                <div className="flex size-7 items-center justify-center rounded-full bg-primary/15">
+                  <span className="text-xs font-medium text-primary">
                     {user.username.charAt(0).toUpperCase()}
                   </span>
                 </div>

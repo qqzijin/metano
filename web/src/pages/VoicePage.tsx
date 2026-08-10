@@ -61,7 +61,7 @@ export default function VoicePage() {
                   </SelectContent>
                 </Select>
                 <Select value={rate} onValueChange={(v) => { if (v) setRate(v); }}>
-                  <SelectTrigger className="w-28"><SelectValue /></SelectTrigger>
+                  <SelectTrigger className="w-full sm:w-28"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="-20%">慢速</SelectItem>
                     <SelectItem value="+0%">正常</SelectItem>
@@ -73,8 +73,8 @@ export default function VoicePage() {
                 </Button>
               </div>
               {audioPath && (
-                <div className="bg-muted rounded-md p-3">
-                  <p className="text-xs text-muted-foreground mb-2">音频文件: {audioPath}</p>
+                <div className="bg-muted rounded-lg p-3 min-w-0">
+                  <p className="text-xs text-muted-foreground mb-2 break-all">音频文件: {audioPath}</p>
                   <audio controls className="w-full" src={`/api/voice/file?path=${encodeURIComponent(audioPath)}`} />
                 </div>
               )}

@@ -71,40 +71,40 @@ export default function MemoryPage() {
       <PageHeader title="记忆系统" description="跨会话持久记忆，语义压缩存储" />
 
       {/* Stats */}
-      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-6">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-6">
         {statsError ? (
           <div className="col-span-full text-sm text-destructive">加载失败，请检查服务或刷新重试</div>
         ) : statsLoading ? (
           Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-20 rounded-lg" />)
         ) : (
           <>
-            <Card>
-              <CardContent className="p-4 text-center">
+            <Card className="col-span-2 sm:col-span-1 bg-gradient-to-br from-primary/10 via-primary/5 to-transparent">
+              <CardContent className="text-center">
                 <div className="text-2xl font-bold">{total}</div>
                 <div className="text-xs text-muted-foreground">总记忆数</div>
               </CardContent>
             </Card>
             <Card>
-              <CardContent className="p-4 text-center">
+              <CardContent className="text-center">
                 <div className="text-2xl font-bold">{Object.keys(byCategory).length}</div>
                 <div className="text-xs text-muted-foreground">分类数</div>
               </CardContent>
             </Card>
             <Card>
-              <CardContent className="p-4 text-center">
+              <CardContent className="text-center">
                 <div className="text-2xl font-bold">{avgImportance.toFixed(2)}</div>
                 <div className="text-xs text-muted-foreground">平均重要度</div>
               </CardContent>
             </Card>
-            <Card>
-              <CardContent className="p-4 flex items-center justify-center">
+            <Card className="col-span-2 sm:col-span-1">
+              <CardContent className="flex items-center justify-center">
                 <Button size="sm" variant="outline" onClick={handleSeed} disabled={seedMut.isPending}>
                   <Sparkles className="size-4 mr-1" /> 导入种子
                 </Button>
               </CardContent>
             </Card>
-            <Card>
-              <CardContent className="p-4 flex items-center justify-center gap-2">
+            <Card className="col-span-2 sm:col-span-1">
+              <CardContent className="flex flex-wrap items-center justify-center gap-2">
                 <Button size="sm" variant="outline" onClick={handleExport} disabled={exportMut.isPending}>
                   <Download className="size-4 mr-1" /> 导出
                 </Button>
@@ -153,12 +153,12 @@ export default function MemoryPage() {
           {query && searchResults.length > 0 && (
             <div className="space-y-2 mt-3">
               {searchResults.map((r: any) => (
-                <div key={r.id} className="bg-muted rounded-md p-3">
-                  <div className="flex items-center gap-2 mb-1">
-                    <Badge variant="outline" className="text-[10px]">{r.category}</Badge>
+                <div key={r.id} className="bg-muted/50 rounded-lg p-3 min-w-0">
+                  <div className="flex items-center gap-2 mb-1 flex-wrap">
+                    <Badge variant="outline" className="text-xs">{r.category}</Badge>
                     <span className="text-xs text-muted-foreground">重要度: {r.importance?.toFixed(2)}</span>
                   </div>
-                  <p className="text-sm whitespace-pre-wrap">{r.content}</p>
+                  <p className="text-sm whitespace-pre-wrap break-words">{r.content}</p>
                 </div>
               ))}
             </div>
@@ -186,23 +186,23 @@ export default function MemoryPage() {
                   .map(([cat, items]) => (
                     <div key={cat}>
                       <button
-                        className="flex items-center gap-2 w-full text-left py-1.5 hover:bg-muted/50 rounded px-2"
+                        className="flex items-center gap-2 w-full text-left py-1.5 hover:bg-muted/50 rounded-lg px-2 min-w-0"
                         onClick={() => toggleCat(cat)}
                       >
-                        {expandedCats[cat] ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
-                        <Badge variant="secondary">{cat}</Badge>
+                        {expandedCats[cat] ? <ChevronDown className="size-4 shrink-0" /> : <ChevronRight className="size-4 shrink-0" />}
+                        <Badge variant="secondary" className="shrink-0">{cat}</Badge>
                         <span className="text-xs text-muted-foreground">{items.length} 条</span>
                       </button>
                       {expandedCats[cat] && (
                         <div className="ml-6 space-y-1.5 mt-1">
                           {items.map((m) => (
-                            <div key={m.id} className="bg-muted/50 rounded-md p-3 text-sm">
-                              <div className="flex items-center gap-2 mb-1">
-                                <span className="text-[10px] text-muted-foreground">#{m.id}</span>
-                                <span className="text-[10px] text-muted-foreground">重要度: {m.importance?.toFixed(2)}</span>
-                                {m.created_at && <span className="text-[10px] text-muted-foreground">{m.created_at?.slice(0, 10)}</span>}
+                            <div key={m.id} className="bg-muted/50 rounded-lg p-3 text-sm min-w-0">
+                              <div className="flex items-center gap-2 mb-1 flex-wrap">
+                                <span className="text-xs text-muted-foreground">#{m.id}</span>
+                                <span className="text-xs text-muted-foreground">重要度: {m.importance?.toFixed(2)}</span>
+                                {m.created_at && <span className="text-xs text-muted-foreground">{m.created_at?.slice(0, 10)}</span>}
                               </div>
-                              <p className="whitespace-pre-wrap">{m.content}</p>
+                              <p className="whitespace-pre-wrap break-words">{m.content}</p>
                             </div>
                           ))}
                         </div>

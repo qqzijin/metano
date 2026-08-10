@@ -51,7 +51,7 @@ export default function LogsPage() {
     <>
       <PageHeader title="日志" description={`${entries.length} 条记录`} />
 
-      <div className="flex gap-2 mb-4">
+      <div className="flex flex-wrap gap-2 mb-4">
         {(["evolution", "audit", "gateway"] as LogSource[]).map((s) => (
           <Badge
             key={s}
@@ -67,7 +67,7 @@ export default function LogsPage() {
       {isError ? (
         <div className="text-sm text-destructive">加载失败，请检查服务或刷新重试</div>
       ) : isLoading ? (
-        <div className="space-y-2">{Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-10 rounded" />)}</div>
+        <div className="space-y-2">{Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-10 rounded-lg" />)}</div>
       ) : entries.length === 0 ? (
         <EmptyState title="暂无日志" description={`${source} 事件将在此显示`} icon={<FileText className="size-10" />} />
       ) : (

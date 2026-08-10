@@ -44,9 +44,9 @@ export default function SkillsPage() {
           {skills.map((s) => (
             <Card key={s.name} className="cursor-pointer hover:shadow-sm transition-shadow" onClick={() => setDetailName(s.name)}>
               <CardContent className="p-4">
-                <div className="font-medium text-sm">{s.name}</div>
-                <div className="text-xs text-muted-foreground mt-1 line-clamp-2">{s.description}</div>
-                <div className="flex gap-2 mt-2">
+                <div className="font-medium text-sm truncate">{s.name}</div>
+                <div className="text-xs text-muted-foreground mt-1 line-clamp-2 break-words">{s.description}</div>
+                <div className="flex gap-2 mt-2 flex-wrap">
                   <Badge variant="secondary" className="text-[10px]">{s.trigger}</Badge>
                   <Badge variant="outline" className="text-[10px]">{s.category}</Badge>
                   {s.source && <Badge variant="outline" className="text-[10px]">{s.source}</Badge>}
@@ -64,12 +64,12 @@ export default function SkillsPage() {
           </DialogHeader>
           {detail && (
             <div className="space-y-3">
-              <div className="flex gap-2">
+              <div className="flex gap-2 flex-wrap">
                 <Badge variant="secondary">{detail.trigger}</Badge>
                 <Badge variant="outline">{detail.category}</Badge>
               </div>
-              <p className="text-sm text-muted-foreground">{detail.description}</p>
-              <pre className="text-xs bg-muted p-3 rounded-md overflow-auto max-h-72 whitespace-pre-wrap">{detail.content}</pre>
+              <p className="text-sm text-muted-foreground break-words">{detail.description}</p>
+              <pre className="text-xs bg-muted p-3 rounded-md overflow-auto max-h-72 whitespace-pre-wrap break-words">{detail.content}</pre>
             </div>
           )}
         </DialogContent>

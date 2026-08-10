@@ -29,11 +29,13 @@ const ENTITY_TYPE_LABELS: Record<string, string> = {
   file: "文件",
 };
 
+// Theme-aware tinted chips — resolve against chart/indigo tokens so they
+// follow the active light/dark theme automatically.
 const ENTITY_TYPE_COLORS: Record<string, string> = {
-  technology: "bg-blue-500/15 text-blue-600 dark:text-blue-400",
-  concept: "bg-violet-500/15 text-violet-600 dark:text-violet-400",
-  module: "bg-amber-500/15 text-amber-600 dark:text-amber-400",
-  file: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400",
+  technology: "bg-chart-1/15 text-chart-1",
+  concept: "bg-chart-2/15 text-chart-2",
+  module: "bg-chart-4/15 text-chart-4",
+  file: "bg-chart-3/15 text-chart-3",
 };
 
 const REL_TYPE_LABELS: Record<string, string> = {
@@ -134,8 +136,8 @@ export default function KnowledgeGraphPage() {
       />
 
       {/* Search / filter bar */}
-      <div className="flex flex-col sm:flex-row gap-2 mb-4">
-        <div className="flex gap-2 flex-1 min-w-[200px]">
+      <div className="flex flex-col gap-2 mb-4 sm:flex-row">
+        <div className="flex gap-2 flex-1 min-w-0">
           <Input
             placeholder="搜索实体（如 Python、web_server、react）..."
             value={search}
@@ -147,10 +149,12 @@ export default function KnowledgeGraphPage() {
                 refetch();
               }
             }}
+            className="flex-1 min-w-0"
           />
           <Button
             size="sm"
             variant="outline"
+            className="shrink-0"
             onClick={() => {
               setSelectedId(null);
               setSelectedName("");
