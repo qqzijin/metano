@@ -67,8 +67,13 @@ async def run_gateway():
         bots.append(("qq", qq))
 
     # WeChat
-    if config.get("wechat", {}).get("enabled"):
-        wx = WeChatBot(method=config["wechat"].get("method", "wcferry"))
+    wx_cfg = config.get("wechat", {})
+    if wx_cfg.get("enabled"):
+        if wx_cfg.get("method", "wcferry") == "ilink":
+            from .wechat_ilink import WeChatIlinkBot
+            wx = WeChatIlinkBot(config=wx_cfg, router=router)
+        else:
+            wx = WeChatBot(method=wx_cfg.get("method", "wcferry"))
         bots.append(("wechat", wx))
 
     # Feishu/Lark
