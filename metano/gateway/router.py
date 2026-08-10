@@ -64,8 +64,7 @@ class MessageRouter:
         if not session.history:
             session.history = history[-self.max_history * 2:]
 
-    async def route_message(self, platform: str, user_id: str, message: str,
-                            on_text=None) -> str:
+    async def route_message(self, platform: str, user_id: str, message: str) -> str:
         """Route a message from a platform user to Claude Code and return the response."""
         from ..security import security
         check = security.check_message(user_id, message)
@@ -89,7 +88,7 @@ class MessageRouter:
         tools = base_tools + [t for t in auth['granted'] if t not in base_tools]
         skip = (auth['mode'] == 'free')
         response, in_tok, out_tok, cache_tok = await self._call_claude(
-            prompt, session, skill_prefix=skill_prefix, allowed_tools=tools, skip_permissions=skip, on_text=on_text)
+            prompt, session, skill_prefix=skill_prefix, allowed_tools=tools, skip_permissions=skip)
         session.last_active = time.time()
         session.message_count += 1
         session.history.append({'role': 'user', 'content': message})
@@ -447,13 +446,18 @@ class MessageRouter:
     def _build_prompt(self, session: GatewaySession, message: str) -> str:
         """Build a prompt with conversation context."""
         if not session.history:
-            return message
-        context_parts = []
-        for msg in session.history[-10:]:
-            role = 'User' if msg['role'] == 'user' else 'Assistant'
-            context_parts.append(f"{role}: {msg['content'][:500]}")
-        context = '\n'.join(context_parts)
-        return f'Previous conversation:\n{context}\n\nUser: {message}'
+            prompt = message
+        else:
+            context_parts = []
+            for msg in session.history[-10:]:
+                role = 'User' if msg['role'] == 'user' else 'Assistant'
+                context_parts.append(f"{role}: {msg['content'][:500]}")
+            context = '\n'.join(context_parts)
+            prompt = f'Previous conversation:\n{context}\n\nUser: {message}'
+        # Attachment hint: message embeds [附件: /path] markers, tell the model to read them.
+        if '[附件:' in message:
+            prompt += '\n\n（用户发来了附件，路径已标注为 [附件: 路径]，请用 Read 工具读取附件内容后回答。）'
+        return prompt
 
     # Categories that should never be injected into system context
     _SKIP_CATEGORIES = {'tool_error', 'correction', 'code_quality', 'self_reflection'}
@@ -545,8 +549,7 @@ class MessageRouter:
     ]
 
     async def _call_claude(self, prompt: str, session: GatewaySession, skill_prefix: str='',
-                           allowed_tools=None, skip_permissions: bool=True,
-                           on_text=None) -> tuple:
+                           allowed_tools=None, skip_permissions: bool=True) -> tuple:
         """Call Claude Code CLI with the prompt (async, non-blocking).
 
         Gateway sessions are non-interactive (no TTY), so by default we
@@ -601,8 +604,6 @@ class MessageRouter:
             logger.exception("router: provider env injection failed")
         try:
             proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env)
-            if on_text:
-                return await self._call_claude_stream(proc, on_text)
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=600)
             return self._parse_stream_json(stdout, stderr)
         except asyncio.TimeoutError:
@@ -612,71 +613,6 @@ class MessageRouter:
         except Exception as e:
             logger.exception()
             return f'Error: {str(e)}', 0, 0, 0
-
-    async def _call_claude_stream(self, proc, on_text) -> tuple:
-        """Read claude stream-json output line-by-line, invoking ``on_text`` per delta."""
-        text_parts: list[str] = []
-        usage: dict = {}
-        try:
-            while True:
-                line = await asyncio.wait_for(proc.stdout.readline(), timeout=600)
-                if not line:
-                    break
-                text, u = self._parse_stream_line(line)
-                if text:
-                    text_parts.append(text)
-                    try:
-                        on_text(text)
-                    except Exception:
-                        logger.exception('on_text callback failed')
-                if u:
-                    usage = u
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
-            response = ''.join(text_parts).strip()
-            return (response or 'Response timed out. Please try again.', 0, 0, 0)
-        try:
-            stderr = await asyncio.wait_for(proc.stderr.read(), timeout=10)
-        except Exception:
-            stderr = b''
-        response = ''.join(text_parts).strip()
-        if not response:
-            err = (stderr or b'').decode(errors='replace').strip()
-            response = f'Error: {err[:300]}' if err else 'Error: empty response'
-        return (response,
-                usage.get('input_tokens', 0) or 0,
-                usage.get('output_tokens', 0) or 0,
-                usage.get('cache_read_input_tokens', 0) or 0)
-
-    def _parse_stream_line(self, line: bytes) -> tuple[str, dict]:
-        """Parse a single stream-json line. Returns (text_delta, usage_dict)."""
-        line = line.decode(errors='replace').strip()
-        if not line:
-            return '', {}
-        try:
-            obj = json.loads(line)
-        except Exception:
-            return '', {}
-        text = ''
-        usage = {}
-        if obj.get('type') == 'assistant':
-            msg = obj.get('message', obj)
-            content = msg.get('content')
-            if isinstance(content, list):
-                for block in content:
-                    if isinstance(block, dict) and block.get('type') == 'text':
-                        text += block.get('text', '')
-            elif isinstance(content, str):
-                text += content
-            u = msg.get('usage') if isinstance(msg.get('usage'), dict) else obj.get('usage')
-            if isinstance(u, dict):
-                usage = u
-        elif obj.get('type') == 'result':
-            u = obj.get('usage')
-            if isinstance(u, dict):
-                usage = u
-        return text, usage
 
     def _parse_stream_json(self, stdout: bytes, stderr: bytes) -> tuple:
         """Parse ``claude -p --output-format stream-json --verbose`` output.
