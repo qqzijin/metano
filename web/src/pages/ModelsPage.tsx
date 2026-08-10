@@ -73,7 +73,7 @@ export default function ModelsPage() {
         <Card className="mb-6">
           <CardContent className="p-4 space-y-3">
             <h4 className="text-sm font-medium">添加模型提供商</h4>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="text-xs text-muted-foreground mb-1">名称 *</label>
                 <Input placeholder="如: openai" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />

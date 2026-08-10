@@ -58,6 +58,8 @@ interface SidebarProps {
   collapsed: boolean;
   onToggle: () => void;
   connected: boolean;
+  /** When set, the sidebar renders as a non-collapsible drawer (mobile sheet). */
+  onNavigate?: () => void;
 }
 
 function ChangePasswordDialog({ onClose }: { onClose: () => void }) {
@@ -175,18 +177,19 @@ function ChangePasswordDialog({ onClose }: { onClose: () => void }) {
   );
 }
 
-export function Sidebar({ collapsed, onToggle, connected }: SidebarProps) {
+export function Sidebar({ collapsed, onToggle, connected, onNavigate }: SidebarProps) {
   const { theme, setTheme } = useTheme();
   const { user, logout } = useAuth();
   const [showChangePwd, setShowChangePwd] = useState(false);
+  const mobile = !!onNavigate;
 
   return (
     <>
       {showChangePwd && <ChangePasswordDialog onClose={() => setShowChangePwd(false)} />}
       <aside
         className={cn(
-          "flex flex-col border-r border-border bg-sidebar transition-all duration-200",
-          collapsed ? "w-16" : "w-56"
+          "flex flex-col border-r border-border bg-sidebar h-full transition-all duration-200",
+          mobile ? "w-56" : collapsed ? "w-16" : "w-56"
         )}
       >
         {/* Brand */}
@@ -216,6 +219,7 @@ export function Sidebar({ collapsed, onToggle, connected }: SidebarProps) {
                   key={to}
                   to={to}
                   end={end}
+                  onClick={onNavigate}
                   className={({ isActive }) =>
                     cn(
                       "flex items-center gap-3 px-4 h-9 text-sm rounded-md mx-1 transition-colors",
@@ -283,10 +287,12 @@ export function Sidebar({ collapsed, onToggle, connected }: SidebarProps) {
               </div>
             )}
 
-            {/* Collapse toggle */}
-            <Button variant="ghost" size="icon" className="size-7 ml-auto" onClick={onToggle}>
-              {collapsed ? <ChevronsRight className="size-3.5" /> : <ChevronsLeft className="size-3.5" />}
-            </Button>
+            {/* Collapse toggle (desktop only) */}
+            {!mobile && (
+              <Button variant="ghost" size="icon" className="size-7 ml-auto" onClick={onToggle}>
+                {collapsed ? <ChevronsRight className="size-3.5" /> : <ChevronsLeft className="size-3.5" />}
+              </Button>
+            )}
           </div>
         </div>
       </aside>

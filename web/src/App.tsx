@@ -1,10 +1,14 @@
 import { useState } from "react";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { Menu, Activity } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ThemeProvider } from "@/hooks/useTheme";
+import { Button } from "@/components/ui/button";
 import { Sidebar } from "@/components/layout/Sidebar";
+import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { AuthGuard } from "@/components/auth/AuthGuard";
@@ -44,6 +48,7 @@ function MainLayout() {
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem("sidebar-collapsed") === "true"
   );
+  const [mobileOpen, setMobileOpen] = useState(false);
   const { connected } = useWebSocket();
 
   const toggle = () => {
@@ -54,12 +59,48 @@ function MainLayout() {
 
   return (
     <div className="flex h-screen overflow-hidden">
-      <Sidebar
-        collapsed={collapsed}
-        onToggle={toggle}
-        connected={connected}
-      />
-      <main className="flex-1 overflow-auto p-6">
+      {/* Desktop sidebar */}
+      <div className="hidden md:block shrink-0">
+        <Sidebar
+          collapsed={collapsed}
+          onToggle={toggle}
+          connected={connected}
+        />
+      </div>
+
+      {/* Mobile drawer */}
+      <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
+        <SheetContent side="left" className="w-[280px] p-0 gap-0">
+          <Sidebar
+            collapsed={false}
+            onToggle={() => {}}
+            connected={connected}
+            onNavigate={() => setMobileOpen(false)}
+          />
+        </SheetContent>
+      </Sheet>
+
+      <div className="flex flex-1 flex-col min-w-0">
+        {/* Mobile top bar */}
+        <header className="md:hidden flex items-center gap-2.5 h-14 px-3 border-b border-border bg-sidebar shrink-0">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-9"
+            onClick={() => setMobileOpen(true)}
+            aria-label="打开菜单"
+          >
+            <Menu className="size-5" />
+          </Button>
+          <Activity className="size-5 text-primary shrink-0" />
+          <span className="font-semibold text-sm truncate">CC Bridge</span>
+          <div className="ml-auto flex items-center gap-1.5 text-xs text-muted-foreground shrink-0">
+            <span className={cn("size-2 rounded-full", connected ? "bg-emerald-500" : "bg-destructive")} />
+            <span className="hidden sm:inline">{connected ? "已连接" : "已断开"}</span>
+          </div>
+        </header>
+
+      <main className="flex-1 overflow-auto p-4 md:p-6">
         <AuthGuard>
           <ErrorBoundary>
             <Routes>
@@ -86,6 +127,7 @@ function MainLayout() {
           </ErrorBoundary>
         </AuthGuard>
       </main>
+      </div>
     </div>
   );
 }
