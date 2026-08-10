@@ -1,12 +1,13 @@
 import { useState } from "react";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { Menu, Activity } from "lucide-react";
+import { Menu } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ThemeProvider } from "@/hooks/useTheme";
 import { Button } from "@/components/ui/button";
+import { Logo } from "@/components/Logo";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { useWebSocket } from "@/hooks/useWebSocket";
@@ -71,12 +72,13 @@ function MainLayout() {
 
       {/* Mobile drawer */}
       <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
-        <SheetContent side="left" className="w-[280px] p-0 gap-0">
+        <SheetContent side="left" className="w-[280px] p-0 gap-0" showCloseButton={false}>
           <Sidebar
             collapsed={false}
             onToggle={() => {}}
             connected={connected}
             onNavigate={() => setMobileOpen(false)}
+            onClose={() => setMobileOpen(false)}
           />
         </SheetContent>
       </Sheet>
@@ -93,7 +95,7 @@ function MainLayout() {
           >
             <Menu className="size-5" />
           </Button>
-          <Activity className="size-5 text-primary shrink-0" />
+          <Logo className="size-5 shrink-0" />
           <span className="font-semibold text-sm truncate">metano</span>
           <div className="ml-auto flex items-center gap-1.5 text-xs text-muted-foreground shrink-0">
             <span className={cn("size-2 rounded-full", connected ? "bg-emerald-500" : "bg-destructive")} />
@@ -101,7 +103,7 @@ function MainLayout() {
           </div>
         </header>
 
-      <main className="flex-1 overflow-auto p-4 md:p-6">
+      <main className="relative flex-1 overflow-auto p-4 md:p-6">
         <AuthGuard>
           <ErrorBoundary>
             <Routes>

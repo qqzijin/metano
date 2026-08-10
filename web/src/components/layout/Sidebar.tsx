@@ -1,10 +1,10 @@
 import { useState } from "react";
 import { NavLink } from "react-router-dom";
 import {
-  Activity, BarChart3, BookOpen, Bot, Brain, Clock, Cpu, Dna,
+  BarChart3, BookOpen, Bot, Brain, Clock, Cpu, Dna,
   FileText, Globe, Home, LayoutDashboard, MessageSquare,
   Mic, Network, Puzzle, Search, Settings, Shield, User, Zap,
-  ChevronsLeft, ChevronsRight, Sun, Moon, Monitor, LogOut, KeyRound,
+  X, ChevronsLeft, ChevronsRight, Sun, Moon, Monitor, LogOut, KeyRound,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTheme } from "@/hooks/useTheme";
@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Logo } from "@/components/Logo";
 import { useAuth } from "@/contexts/AuthContext";
 
 const NAV_GROUPS = [
@@ -64,6 +65,8 @@ interface SidebarProps {
   connected: boolean;
   /** When set, the sidebar renders as a non-collapsible drawer (mobile sheet). */
   onNavigate?: () => void;
+  /** Mobile only — render a close button in the brand row. */
+  onClose?: () => void;
 }
 
 function ChangePasswordDialog({ onClose }: { onClose: () => void }) {
@@ -158,7 +161,7 @@ function ChangePasswordDialog({ onClose }: { onClose: () => void }) {
   );
 }
 
-export function Sidebar({ collapsed, onToggle, connected, onNavigate }: SidebarProps) {
+export function Sidebar({ collapsed, onToggle, connected, onNavigate, onClose }: SidebarProps) {
   const { theme, setTheme } = useTheme();
   const { user, logout } = useAuth();
   const [showChangePwd, setShowChangePwd] = useState(false);
@@ -175,12 +178,17 @@ export function Sidebar({ collapsed, onToggle, connected, onNavigate }: SidebarP
       >
         {/* Brand */}
         <div className="flex items-center gap-2 px-4 h-14 shrink-0">
-          <Activity className="size-5 text-primary shrink-0" />
+          <Logo className="size-5 shrink-0" />
           {!collapsed && (
-            <div className="leading-none">
+            <div className="min-w-0 flex-1 leading-none">
               <span className="font-semibold text-sm">metano</span>
               <span className="text-xs text-muted-foreground ml-1">v{VERSION}</span>
             </div>
+          )}
+          {onClose && (
+            <Button variant="ghost" size="icon" className="size-8 shrink-0 rounded-full" onClick={onClose} aria-label="关闭菜单">
+              <X className="size-4" />
+            </Button>
           )}
         </div>
 

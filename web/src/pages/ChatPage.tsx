@@ -1,7 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { Send, Bot, User, Trash2, History, X, Plus, Paperclip } from "lucide-react";
 import { toast } from "sonner";
-import { PageHeader } from "@/components/layout/PageHeader";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -263,11 +262,12 @@ export default function ChatPage() {
 
   return (
     <>
-      <PageHeader title="对话" description="与 AI 助手对话，支持接入历史会话" />
+      {/* Native app chat has no page header — the chat fills the whole
+          viewport below the mobile top bar. */}
 
       {/* Session Picker Modal */}
       {showSessionPicker && (
-        <Card className="mb-4">
+        <Card className="relative z-10 mb-4">
           <div className="flex items-center justify-between p-4 pb-2">
             <span className="font-medium text-sm">选择历史会话继续对话</span>
             <Button size="sm" variant="ghost" onClick={() => setShowSessionPicker(false)}>
@@ -300,8 +300,10 @@ export default function ChatPage() {
         </Card>
       )}
 
-      {/* Native-app style chat: full-bleed, grey thread background, no card box */}
-      <div className="-mx-4 flex h-[calc(100dvh-17rem)] flex-col overflow-hidden bg-muted/40 md:mx-0 md:h-[calc(100vh-12rem)] md:rounded-xl md:border md:border-border">
+      {/* Native-app style chat: absolutely fills the <main> area on mobile
+          (top bar → screen bottom, edge to edge, no gaps). Desktop keeps a
+          normal-flow card with margins. */}
+      <div className="absolute inset-x-0 bottom-0 top-0 z-0 flex flex-col overflow-hidden bg-muted/40 md:static md:z-auto md:h-[calc(100vh-12rem)] md:rounded-xl md:border md:border-border">
         {/* Header bar */}
         <div className="flex items-center justify-between bg-background px-4 py-2.5 border-b">
           <div className="flex items-center gap-2">
