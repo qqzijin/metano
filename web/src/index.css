@@ -179,3 +179,58 @@ svg *:focus,
 .recharts-wrapper *:focus {
   outline: none;
 }
+
+/* Code block syntax highlighting — themed per light/dark (github palette). */
+.metano-md .hljs-comment,
+.metano-md .hljs-quote { color: #6a737d; font-style: italic; }
+.metano-md .hljs-keyword,
+.metano-md .hljs-selector-tag,
+.metano-md .hljs-literal,
+.metano-md .hljs-doctag,
+.metano-md .hljs-title.function_,
+.metano-md .hljs-title.class_ { color: #d73a49; }
+.metano-md .hljs-string,
+.metano-md .hljs-regexp,
+.metano-md .hljs-symbol,
+.metano-md .hljs-variable,
+.metano-md .hljs-template-variable,
+.metano-md .hljs-addition { color: #032f62; }
+.metano-md .hljs-number,
+.metano-md .hljs-built_in,
+.metano-md .hljs-attr,
+.metano-md .hljs-attribute,
+.metano-md .hljs-type,
+.metano-md .hljs-selector-id,
+.metano-md .hljs-meta { color: #005cc5; }
+.metano-md .hljs-title,
+.metano-md .hljs-section,
+.metano-md .hljs-selector-class { color: #6f42c1; }
+.metano-md .hljs-deletion { color: #b31d28; }
+.metano-md .hljs-emphasis { font-style: italic; }
+.metano-md .hljs-strong { font-weight: 600; }
+
+.dark .metano-md .hljs-comment,
+.dark .metano-md .hljs-quote { color: #8b949e; font-style: italic; }
+.dark .metano-md .hljs-keyword,
+.dark .metano-md .hljs-selector-tag,
+.dark .metano-md .hljs-literal,
+.dark .metano-md .hljs-doctag,
+.dark .metano-md .hljs-title.function_,
+.dark .metano-md .hljs-title.class_ { color: #ff7b72; }
+.dark .metano-md .hljs-string,
+.dark .metano-md .hljs-regexp,
+.dark .metano-md .hljs-symbol,
+.dark .metano-md .hljs-variable,
+.dark .metano-md .hljs-template-variable,
+.dark .metano-md .hljs-addition { color: #a5d6ff; }
+.dark .metano-md .hljs-number,
+.dark .metano-md .hljs-built_in,
+.dark .metano-md .hljs-attr,
+.dark .metano-md .hljs-attribute,
+.dark .metano-md .hljs-type,
+.dark .metano-md .hljs-selector-id,
+.dark .metano-md .hljs-meta { color: #79c0ff; }
+.dark .metano-md .hljs-title,
+.dark .metano-md .hljs-section,
+.dark .metano-md .hljs-selector-class { color: #d2a8ff; }
+.dark .metano-md .hljs-deletion { color: #ffa198; }

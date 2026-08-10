@@ -173,7 +173,7 @@ export function Sidebar({ collapsed, onToggle, connected, onNavigate, onClose }:
       <aside
         className={cn(
           "flex flex-col border-r border-border bg-sidebar h-full transition-all duration-200",
-          mobile ? "w-56" : collapsed ? "w-16" : "w-56"
+          mobile ? "w-full" : collapsed ? "w-16" : "w-56"
         )}
       >
         {/* Brand */}

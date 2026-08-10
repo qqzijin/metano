@@ -4,7 +4,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { Check, Copy } from "lucide-react";
-import "highlight.js/styles/github-dark.css";
+// Syntax colours are themed in index.css (.metano-md .hljs-*) for light/dark.
 
 /** Recursively extract plain text from a React node tree (e.g. the already
  *  syntax-highlighted <code> children) so the copy button gets raw code. */
@@ -30,19 +30,19 @@ function CodeBlock({ code, lang, children }: { code: string; lang: string; child
     }
   };
   return (
-    <div className="metano-md my-3 overflow-hidden rounded-lg border border-border/60 bg-[#0d1117]">
-      <div className="flex items-center justify-between bg-white/[0.05] px-3 py-1.5">
-        <span className="text-[11px] font-mono text-white/55">{lang || "code"}</span>
+    <div className="metano-md my-3 overflow-hidden rounded-lg border border-border/60 bg-muted">
+      <div className="flex items-center justify-between border-b border-border/50 bg-muted/60 px-3 py-1.5">
+        <span className="text-[11px] font-mono text-muted-foreground">{lang || "code"}</span>
         <button
           type="button"
           onClick={copy}
-          className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-white/60 transition-colors hover:bg-white/10 hover:text-white"
+          className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
         >
           {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
           {copied ? "已复制" : "复制"}
         </button>
       </div>
-      <pre className="overflow-x-auto p-3 text-[13px] leading-relaxed text-slate-100">{children}</pre>
+      <pre className="overflow-x-auto p-3 text-[13px] leading-relaxed">{children}</pre>
     </div>
   );
 }

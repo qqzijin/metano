@@ -304,32 +304,37 @@ export default function ChatPage() {
           (top bar → screen bottom, edge to edge, no gaps). Desktop keeps a
           normal-flow card with margins. */}
       <div className="absolute inset-x-0 bottom-0 top-0 z-0 flex flex-col overflow-hidden bg-muted/40 md:static md:z-auto md:h-[calc(100vh-12rem)] md:rounded-xl md:border md:border-border">
-        {/* Header bar */}
-        <div className="flex items-center justify-between bg-background px-4 py-2.5 border-b">
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-muted-foreground">{messages.length} 条消息</span>
+        {/* Header bar — blends into the grey thread on mobile (icon buttons),
+            full labels + white bar on desktop. */}
+        <div className="flex items-center justify-between bg-muted/40 px-3 py-2 border-b md:bg-background md:px-4 md:py-2.5">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="text-xs text-muted-foreground md:text-sm">{messages.length} 条消息</span>
             {connectedSession && (
               <Badge variant="outline" className="text-[10px] font-mono">
                 已接入: {connectedSession.slice(0, 12)}
               </Badge>
             )}
           </div>
-          <div className="flex gap-1">
-            <Button size="sm" variant="ghost" onClick={handleNewChat}>
-              <Plus className="size-3.5 mr-1" /> 新对话
+          <div className="flex items-center gap-0.5 md:gap-1">
+            <Button size="icon" variant="ghost" className="size-8 rounded-full md:size-9" title="新对话" onClick={handleNewChat}>
+              <Plus className="size-4" />
+              <span className="hidden md:inline md:ml-1.5 md:text-sm">新对话</span>
             </Button>
             {!connectedSession && (
-              <Button size="sm" variant="ghost" onClick={() => setShowSessionPicker(!showSessionPicker)}>
-                <History className="size-3.5 mr-1" /> 接入历史
+              <Button size="icon" variant="ghost" className="size-8 rounded-full md:size-9" title="接入历史" onClick={() => setShowSessionPicker(!showSessionPicker)}>
+                <History className="size-4" />
+                <span className="hidden md:inline md:ml-1.5 md:text-sm">接入历史</span>
               </Button>
             )}
             {connectedSession && (
-              <Button size="sm" variant="ghost" onClick={handleDisconnect}>
-                <X className="size-3.5 mr-1" /> 断开
+              <Button size="icon" variant="ghost" className="size-8 rounded-full md:size-9" title="断开" onClick={handleDisconnect}>
+                <X className="size-4" />
+                <span className="hidden md:inline md:ml-1.5 md:text-sm">断开</span>
               </Button>
             )}
-            <Button size="sm" variant="ghost" onClick={handleClear}>
-              <Trash2 className="size-3.5 mr-1" /> 清空
+            <Button size="icon" variant="ghost" className="size-8 rounded-full md:size-9" title="清空" onClick={handleClear}>
+              <Trash2 className="size-4" />
+              <span className="hidden md:inline md:ml-1.5 md:text-sm">清空</span>
             </Button>
           </div>
         </div>
@@ -435,7 +440,7 @@ export default function ChatPage() {
         {/* Composer — capsule textarea, auto-growing, keyboard-safe.
             Buttons live OUTSIDE the input row so the textarea takes full width. */}
         <div className="bg-background p-2.5 pb-safe border-t">
-          <div className="flex w-full min-w-0 items-end gap-1 rounded-[1.4rem] border bg-background py-1 pl-3 pr-1.5 shadow-sm transition-all focus-within:border-primary/50 focus-within:ring-2 focus-within:ring-primary/15">
+          <div className="flex w-full min-w-0 items-end gap-0.5 rounded-[1.4rem] border bg-background py-1 pl-3 pr-1.5 shadow-sm transition-all focus-within:border-primary/50 focus-within:ring-2 focus-within:ring-primary/15">
             <textarea
               ref={taRef}
               rows={1}
@@ -447,6 +452,17 @@ export default function ChatPage() {
               className="min-w-0 flex-1 resize-none bg-transparent px-1 py-2 text-[16px] leading-relaxed outline-none placeholder:text-muted-foreground max-h-40"
             />
             <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="size-8 shrink-0 rounded-full md:size-9"
+              title="上传附件"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploadMut.isPending || chatMut.isPending}
+            >
+              {uploadMut.isPending ? <span className="text-xs">上传中</span> : <Paperclip className="size-4.5" />}
+            </Button>
+            <Button
               onClick={handleSend}
               disabled={chatMut.isPending || !input.trim()}
               size="icon"
@@ -454,19 +470,6 @@ export default function ChatPage() {
               aria-label="发送"
             >
               <Send className="size-4" />
-            </Button>
-          </div>
-          <div className="mt-1 flex items-center gap-1.5">
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={uploadMut.isPending || chatMut.isPending}
-            >
-              <Paperclip className="mr-1 size-3.5" />
-              {uploadMut.isPending ? "上传中…" : "附件"}
             </Button>
           </div>
           <input
