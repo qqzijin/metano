@@ -109,9 +109,13 @@ export default function MemoryPage() {
                 <Button
                   size="sm"
                   variant="outline"
-                  onClick={() => {
-                    compressMut.mutate(undefined as any);
-                    toast.success("压缩完成");
+                  onClick={async () => {
+                    try {
+                      await compressMut.mutateAsync(undefined as any);
+                      toast.success("压缩完成");
+                    } catch {
+                      toast.error("压缩失败");
+                    }
                   }}
                   disabled={compressMut.isPending}
                 >

@@ -21,6 +21,11 @@ export default function VoicePage() {
     if (!ttsText.trim()) return;
     try {
       const result = await ttsMut.mutateAsync({ text: ttsText, voice, rate });
+      // Backend returns HTTP 200 with { error } when TTS is unavailable — treat as failure.
+      if ((result as any)?.error || !result?.path) {
+        toast.error((result as any)?.error || "语音生成失败");
+        return;
+      }
       setAudioPath(result.path);
       toast.success("音频已生成");
     } catch {
@@ -46,9 +51,9 @@ export default function VoicePage() {
             </CardHeader>
             <CardContent className="space-y-3">
               <Textarea placeholder="输入要朗读的文字..." value={ttsText} onChange={(e) => setTtsText(e.target.value)} className="min-h-24" />
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 <Select value={voice} onValueChange={(v) => { if (v) setVoice(v); }}>
-                  <SelectTrigger className="w-48"><SelectValue /></SelectTrigger>
+                  <SelectTrigger className="w-full sm:w-48"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="zh-CN-YunxiNeural">Yunxi (Chinese)</SelectItem>
                     <SelectItem value="en-US-AriaNeural">Aria (English)</SelectItem>
@@ -63,7 +68,7 @@ export default function VoicePage() {
                     <SelectItem value="+20%">快速</SelectItem>
                   </SelectContent>
                 </Select>
-                <Button disabled={!ttsText.trim() || ttsMut.isPending} onClick={handleTTS}>
+                <Button className="shrink-0" disabled={!ttsText.trim() || ttsMut.isPending} onClick={handleTTS}>
                   <Volume2 className="size-4 mr-1" /> 生成
                 </Button>
               </div>

@@ -207,7 +207,7 @@ export default function AnalyticsPage() {
             ) : (
               <div className="h-[220px] flex items-center justify-center text-sm text-muted-foreground">暂无数据</div>
             )}
-            <div className="flex gap-2 mt-2">
+            <div className="flex flex-wrap gap-2 mt-2">
               {byModel.map((m, i) => (
                 <Badge key={m.name} variant="secondary" className="text-xs">
                   <span className={`size-2 rounded-full shrink-0 mr-1`} style={{ backgroundColor: PIE_COLORS[i % PIE_COLORS.length] }} />

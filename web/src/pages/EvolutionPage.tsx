@@ -168,7 +168,7 @@ function RulesTab() {
 
   return (
     <div className="space-y-4">
-      <div className="flex gap-2">
+      <div className="flex flex-wrap gap-2">
         <button onClick={() => setFilter('all')} className={`px-3 py-1 rounded text-sm ${filter === 'all' ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300'}`}>
           全部 ({rules.length})
         </button>
@@ -183,12 +183,12 @@ function RulesTab() {
         {filtered.map((rule: AgentRule) => (
           <div key={rule.id} className={`bg-gray-800 rounded-lg p-4 ${!rule.active ? 'opacity-50' : ''}`}>
             <div className="flex items-start justify-between">
-              <div className="flex-1">
-                <div className="flex items-center gap-2 mb-1">
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 mb-1 min-w-0">
                   <KindBadge kind={rule.kind} />
-                  <span className="text-sm text-gray-300">{rule.content}</span>
+                  <span className="text-sm text-gray-300 truncate">{rule.content}</span>
                 </div>
-                <div className="flex items-center gap-4 mt-2">
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-2">
                   <EffectivenessBar value={rule.effectiveness} applied={rule.times_applied} />
                   <span className="text-xs text-gray-500">置信度: {Math.round(rule.confidence * 100)}%</span>
                   <span className="text-xs text-gray-500">来源: {rule.source}</span>
@@ -226,14 +226,14 @@ function StrategyTab() {
 
   return (
     <div className="space-y-4">
-      <div className="flex gap-2">
+      <div className="flex flex-wrap gap-2">
         <input
           type="text" value={context} onChange={e => setContext(e.target.value)}
           placeholder="输入上下文关键词（可选）"
-          className="flex-1 bg-gray-700 rounded px-3 py-2 text-sm text-white placeholder-gray-400"
+          className="flex-1 min-w-[160px] bg-gray-700 rounded px-3 py-2 text-sm text-white placeholder-gray-400"
         />
         <button onClick={handleDetect} disabled={detect.isPending}
-          className="px-4 py-2 bg-purple-600 text-white rounded text-sm hover:bg-purple-700 disabled:opacity-50">
+          className="shrink-0 px-4 py-2 bg-purple-600 text-white rounded text-sm hover:bg-purple-700 disabled:opacity-50">
           {detect.isPending ? '检测中...' : '检测策略模式'}
         </button>
       </div>
@@ -244,15 +244,15 @@ function StrategyTab() {
           <div className="space-y-2">
             {strategies.map((s: AgentRule) => (
               <div key={s.id} className="flex items-center justify-between bg-gray-750 rounded p-3">
-                <div className="flex-1">
-                  <div className="flex items-center gap-2">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 min-w-0">
                     <KindBadge kind={s.kind} />
-                    <span className="text-sm text-gray-300">{s.content}</span>
+                    <span className="text-sm text-gray-300 truncate">{s.content}</span>
                   </div>
                   <EffectivenessBar value={s.effectiveness} applied={s.times_applied} />
                 </div>
                 {s.strategy_score != null && (
-                  <span className="text-xs text-gray-400 ml-2">评分: {Math.round(s.strategy_score * 100)}</span>
+                  <span className="text-xs text-gray-400 ml-2 shrink-0">评分: {Math.round(s.strategy_score * 100)}</span>
                 )}
               </div>
             ))}
@@ -301,14 +301,14 @@ function KnowledgeTab() {
     <div className="space-y-4">
       <div className="bg-gray-800 rounded-lg p-4">
         <h3 className="text-sm font-medium text-gray-300 mb-3">主动探索</h3>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <input type="text" value={topic} onChange={e => setTopic(e.target.value)}
             placeholder="输入要探索的主题"
-            className="flex-1 bg-gray-700 rounded px-3 py-2 text-sm text-white placeholder-gray-400"
+            className="flex-1 min-w-[160px] bg-gray-700 rounded px-3 py-2 text-sm text-white placeholder-gray-400"
             onKeyDown={e => e.key === 'Enter' && handleExplore()}
           />
           <button onClick={handleExplore} disabled={explore.isPending || !topic.trim()}
-            className="px-4 py-2 bg-teal-600 text-white rounded text-sm hover:bg-teal-700 disabled:opacity-50">
+            className="shrink-0 px-4 py-2 bg-teal-600 text-white rounded text-sm hover:bg-teal-700 disabled:opacity-50">
             {explore.isPending ? '探索中...' : '探索'}
           </button>
         </div>
@@ -569,10 +569,10 @@ export default function EvolutionPage() {
     <div className="p-6 max-w-6xl mx-auto">
       <h1 className="text-2xl font-bold text-white mb-6">进化系统</h1>
 
-      <div className="flex gap-1 mb-6 border-b border-gray-700">
+      <div className="flex gap-1 mb-6 border-b border-gray-700 overflow-x-auto">
         {tabs.map(tab => (
           <button key={tab.key} onClick={() => setActiveTab(tab.key)}
-            className={`px-4 py-2 text-sm font-medium transition-colors ${
+            className={`px-4 py-2 text-sm font-medium transition-colors shrink-0 whitespace-nowrap ${
               activeTab === tab.key ? 'text-blue-400 border-b-2 border-blue-400' : 'text-gray-400 hover:text-gray-200'
             }`}>
             {tab.label}

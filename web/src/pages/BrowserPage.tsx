@@ -33,19 +33,21 @@ export default function BrowserPage() {
               <CardTitle className="text-base">浏览网址</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
-              <div className="flex gap-2">
-                <Input placeholder="https://example.com" value={url} onChange={(e) => setUrl(e.target.value)} className="flex-1" />
-                <Select value={mode} onValueChange={(v) => { if (v) setMode(v); }}>
-                  <SelectTrigger className="w-28"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="static">静态</SelectItem>
-                    <SelectItem value="dynamic">动态</SelectItem>
-                    <SelectItem value="stealth">隐身</SelectItem>
-                  </SelectContent>
-                </Select>
-                <Button disabled={!url.trim() || browseMut.isPending} onClick={() => browseMut.mutate(url)}>
-                  <Globe className="size-4 mr-1" /> Go
-                </Button>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <Input placeholder="https://example.com" value={url} onChange={(e) => setUrl(e.target.value)} className="w-full sm:flex-1" />
+                <div className="flex gap-2 shrink-0">
+                  <Select value={mode} onValueChange={(v) => { if (v) setMode(v); }}>
+                    <SelectTrigger className="w-28"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="static">静态</SelectItem>
+                      <SelectItem value="dynamic">动态</SelectItem>
+                      <SelectItem value="stealth">隐身</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <Button disabled={!url.trim() || browseMut.isPending} onClick={() => browseMut.mutate(url)}>
+                    <Globe className="size-4 mr-1" /> Go
+                  </Button>
+                </div>
               </div>
               {browseMut.data && (
                 <div className="bg-muted rounded-md p-3 text-sm max-h-80 overflow-auto whitespace-pre-wrap">
@@ -74,9 +76,9 @@ export default function BrowserPage() {
               <CardTitle className="text-base">网页搜索</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
-              <div className="flex gap-2">
-                <Input placeholder="搜索关键词..." value={searchQ} onChange={(e) => setSearchQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && searchMut.mutate(searchQ)} className="flex-1" />
-                <Button disabled={!searchQ.trim() || searchMut.isPending} onClick={() => searchMut.mutate(searchQ)}>
+              <div className="flex flex-wrap gap-2">
+                <Input placeholder="搜索关键词..." value={searchQ} onChange={(e) => setSearchQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && searchMut.mutate(searchQ)} className="flex-1 min-w-[140px]" />
+                <Button className="shrink-0" disabled={!searchQ.trim() || searchMut.isPending} onClick={() => searchMut.mutate(searchQ)}>
                   <Search className="size-4 mr-1" /> 搜索
                 </Button>
               </div>

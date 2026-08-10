@@ -103,10 +103,10 @@ export default function KnowledgePage() {
                   <BookOpen className="size-4 text-muted-foreground shrink-0" />
                   <div className="min-w-0 flex-1">
                     <div className="font-medium text-sm truncate">{title}</div>
-                    <div className="text-xs text-muted-foreground flex gap-3 mt-0.5">
-                      {d.source && <span>{d.source}</span>}
-                      {chunks != null && <span>{chunks} 分块</span>}
-                      {updatedAt != null && <span>{fmtTime(updatedAt)}</span>}
+                    <div className="text-xs text-muted-foreground flex gap-3 mt-0.5 min-w-0">
+                      {d.source && <span className="truncate min-w-0">{d.source}</span>}
+                      {chunks != null && <span className="shrink-0">{chunks} 分块</span>}
+                      {updatedAt != null && <span className="shrink-0">{fmtTime(updatedAt)}</span>}
                     </div>
                   </div>
                   {id && (

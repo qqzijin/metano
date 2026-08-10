@@ -78,11 +78,11 @@ export default function SessionsPage() {
                 <MessageSquare className="size-4 text-muted-foreground shrink-0" />
                 <div className="min-w-0 flex-1">
                   <div className="font-medium text-sm truncate">{s.title || s.id}</div>
-                  <div className="text-xs text-muted-foreground flex gap-3 mt-0.5">
-                    {s.model && <span>{s.model}</span>}
-                    <span>{s.message_count ?? 0} 条消息</span>
-                    {(s.input_tokens || s.output_tokens) && <span>{fmtTokens((s.input_tokens ?? 0) + (s.output_tokens ?? 0))} 令牌</span>}
-                    {s.estimated_cost_usd != null && s.estimated_cost_usd > 0 && <span>{fmtCost(s.estimated_cost_usd)}</span>}
+                  <div className="text-xs text-muted-foreground flex flex-wrap gap-x-3 gap-y-1 mt-0.5">
+                    {s.model && <span className="truncate min-w-0">{s.model}</span>}
+                    <span className="shrink-0">{s.message_count ?? 0} 条消息</span>
+                    {(s.input_tokens || s.output_tokens) && <span className="shrink-0">{fmtTokens((s.input_tokens ?? 0) + (s.output_tokens ?? 0))} 令牌</span>}
+                    {s.estimated_cost_usd != null && s.estimated_cost_usd > 0 && <span className="shrink-0">{fmtCost(s.estimated_cost_usd)}</span>}
                   </div>
                 </div>
                 {s.started_at && <Badge variant="secondary" className="text-xs shrink-0">{fmtTime(s.started_at)}</Badge>}

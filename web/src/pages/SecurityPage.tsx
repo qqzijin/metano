@@ -40,8 +40,15 @@ export default function SecurityPage() {
                       key={tier}
                       size="sm"
                       variant={u.tier === tier ? "default" : "outline"}
-                      className="text-xs h-7"
-                      onClick={() => { setTierMut.mutate({ userId: u.user_id, tier }); toast.success(`${u.user_id} → ${tier}`); }}
+                      className="text-xs h-8"
+                      onClick={async () => {
+                        try {
+                          await setTierMut.mutateAsync({ userId: u.user_id, tier });
+                          toast.success(`${u.user_id} → ${tier}`);
+                        } catch {
+                          toast.error(`设置失败: ${u.user_id}`);
+                        }
+                      }}
                     >
                       {tier}
                     </Button>

@@ -32,6 +32,17 @@ export default function ModelsPage() {
     }
   };
 
+  // Presets are display-only; "启用" must register the provider first, then set default.
+  const handleEnablePreset = async (p: any) => {
+    try {
+      await addProxyMut.mutateAsync({ name: p.name, base_url: p.base_url, model: p.model });
+      await setDefaultMut.mutateAsync(p.name);
+      toast.success(`已启用并设为默认: ${p.name}`);
+    } catch {
+      toast.error("启用预设失败");
+    }
+  };
+
   const handleAddProxy = async () => {
     if (!form.name || !form.base_url) {
       toast.error("名称和 URL 必填");
@@ -160,7 +171,7 @@ export default function ModelsPage() {
                         size="sm"
                         variant="outline"
                         className="mt-2"
-                        onClick={() => handleSetDefault(p.name)}
+                        onClick={() => handleEnablePreset(p)}
                         disabled={setDefaultMut.isPending}
                       >
                         <Plus className="size-3.5 mr-1" /> 启用

@@ -57,9 +57,12 @@ export default function ChatPage() {
     // When messages data arrives, merge them into chat
   };
 
-  // Load session messages when data arrives
+  // Only load session messages once per connected session, so later refetches
+  // (e.g. refetchOnWindowFocus) don't overwrite messages sent locally this turn.
+  const loadedSessionRef = useRef<string | null>(null);
   useEffect(() => {
-    if (connectedSession && msgData && !msgLoading) {
+    if (connectedSession && msgData && !msgLoading && loadedSessionRef.current !== connectedSession) {
+      loadedSessionRef.current = connectedSession;
       const sessionMsgs = msgData.messages.map((m: any) => ({
         role: m.role as "user" | "assistant" | "system",
         content: m.content ?? "",
@@ -147,7 +150,7 @@ export default function ChatPage() {
         </Card>
       )}
 
-      <Card className="flex flex-col h-[calc(100vh-12rem)]">
+      <Card className="flex flex-col h-[calc(100dvh-15.5rem)] md:h-[calc(100vh-12rem)]">
         {/* Header bar */}
         <div className="flex items-center justify-between px-4 pt-3 pb-1 border-b">
           <div className="flex items-center gap-2">

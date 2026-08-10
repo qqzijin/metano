@@ -626,6 +626,24 @@ async def api_knowledge_semantic_search(body: dict):
         logger.exception()
         return _error_response('Internal error')
 
+@app.post('/api/knowledge/explore')
+async def api_knowledge_explore(body: dict):
+    try:
+        from .knowledge_explorer import explore_domain
+        return explore_domain(body.get('topic', ''), depth=body.get('depth', 3))
+    except Exception as e:
+        logger.exception()
+        return _error_response('Internal error')
+
+@app.get('/api/knowledge/gaps')
+async def api_knowledge_gaps():
+    try:
+        from .knowledge_explorer import discover_knowledge_gaps
+        return {'gaps': discover_knowledge_gaps()}
+    except Exception as e:
+        logger.exception()
+        return _error_response('Internal error')
+
 @app.post('/api/knowledge/ingest')
 async def api_knowledge_ingest(body: dict, _admin=Depends(require_role("admin"))):
     try:
@@ -734,7 +752,8 @@ async def api_browser_search(body: dict):
 @app.get('/api/voice/file')
 async def get_voice_file(path: str):
     import os
-    voice_dir = os.environ.get('VOICE_OUTPUT_DIR', '/tmp/tts_output')
+    from .voice.core import AUDIO_DIR
+    voice_dir = os.environ.get('VOICE_OUTPUT_DIR', str(AUDIO_DIR))
     safe_path = os.path.normpath(os.path.join(voice_dir, os.path.basename(path)))
     if not safe_path.startswith(voice_dir) or not os.path.exists(safe_path):
         raise HTTPException(status_code=404, detail='File not found')
@@ -780,7 +799,7 @@ async def api_home_entity(entity_id: str):
 async def api_home_control(body: dict):
     try:
         from .home_assistant import home_control
-        return home_control(body.get('entity_id', ''), service=body.get('service', 'toggle'))
+        return home_control(body.get('entity_id', ''), body.get('service', 'toggle'))
     except Exception as e:
         logger.exception()
         return _error_response('Internal error')

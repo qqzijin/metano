@@ -89,7 +89,7 @@ export default function ProfilesPage() {
             {profile.recent_observations.map((o: any) => (
               <Card key={o.id}>
                 <CardContent className="p-3 flex items-center gap-3">
-                  <div className="text-sm text-muted-foreground flex-1">{o.content}</div>
+                  <div className="text-sm text-muted-foreground flex-1 min-w-0">{o.content}</div>
                   {o.timestamp != null && <span className="text-xs text-muted-foreground shrink-0">{fmtTime(o.timestamp)}</span>}
                 </CardContent>
               </Card>

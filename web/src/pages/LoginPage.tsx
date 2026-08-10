@@ -33,14 +33,16 @@ export default function LoginPage() {
       display: "flex",
       alignItems: "center",
       justifyContent: "center",
+      padding: 16,
     }}>
       <div style={{
-        width: 380,
+        width: "min(380px, 100%)",
+        boxSizing: "border-box",
         background: "#111118",
         borderRadius: 16,
         border: "1px solid rgba(170,59,255,0.2)",
         boxShadow: "0 0 60px rgba(170,59,255,0.08)",
-        padding: 40,
+        padding: "32px 24px",
       }}>
         <div style={{ textAlign: "center", marginBottom: 32 }}>
           <div style={{
