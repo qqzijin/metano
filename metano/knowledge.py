@@ -4,7 +4,11 @@ import hashlib
 import json
 import logging
 import math
+import os
 import sqlite3
+import struct
+import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -16,6 +20,269 @@ ALLOWED_INGEST_PREFIXES = [PROJECT_ROOT, Path.home() / "scrapling-project", Path
 
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 200
+
+# ── Local embeddings (chunks.embedding) ────────────────────────────────────
+# The embedding model (snowflake-arctic-embed-xs) is served from the local HF
+# cache by a python that has sentence-transformers + torch — the cocoindex
+# pipx venv. Query embeddings use the model's "query" prompt; passage/chunk
+# embeddings use no prompt. Both are unit-normalized, so cosine similarity is a
+# plain dot product. Embeddings are stored in chunks.embedding as raw
+# little-endian float32 blobs (384 floats).
+EMBED_MODEL = "Snowflake/snowflake-arctic-embed-xs"
+_EMBED_HELPER = Path(__file__).resolve().parent / "_embed_helper.py"
+_EMBED_FILLER = Path(__file__).resolve().parent / "_embed_filler.py"
+_embed_proc: Optional[subprocess.Popen] = None
+_embed_lock = threading.Lock()
+
+
+def _find_embed_python() -> Optional[str]:
+    """Locate a python interpreter that can import sentence-transformers.
+
+    Prefers the METANO_EMBED_PYTHON env var, else the cocoindex pipx venv.
+    Returns None when no candidate exists (callers should then fall back to
+    CocoIndex or report an error).
+    """
+    forced = os.environ.get("METANO_EMBED_PYTHON")
+    if forced and Path(forced).exists():
+        return forced
+    for cand in (
+        str(Path.home() / ".local/share/pipx/venvs/cocoindex-code/bin/python"),
+        "/home/dk/.local/share/pipx/venvs/cocoindex-code/bin/python",
+    ):
+        if Path(cand).exists():
+            return cand
+    return None
+
+
+def _reset_embed_proc() -> None:
+    """Close/terminate the persistent embed helper, if any."""
+    global _embed_proc
+    if _embed_proc is not None:
+        try:
+            _embed_proc.stdin.close()
+        except Exception:
+            pass
+        try:
+            _embed_proc.terminate()
+        except Exception:
+            pass
+        _embed_proc = None
+
+
+def _ensure_embed_proc() -> subprocess.Popen:
+    """Return the live persistent embed helper, spawning it if needed."""
+    global _embed_proc
+    if _embed_proc is not None and _embed_proc.poll() is None:
+        return _embed_proc
+    py = _find_embed_python()
+    if py is None:
+        raise RuntimeError(
+            "No python with sentence-transformers found; set METANO_EMBED_PYTHON"
+        )
+    _embed_proc = subprocess.Popen(
+        [py, str(_EMBED_HELPER)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        bufsize=1,
+        env={**os.environ, "HF_HUB_OFFLINE": "1"},
+    )
+    return _embed_proc
+
+
+def _embed_texts(texts: list[str], prompt_name: Optional[str] = None) -> list[list[float]]:
+    """Embed a list of texts with the local model via the persistent helper.
+
+    prompt_name="query" applies the model's query prompt (asymmetric search).
+    Returns a list of unit-normalized float vectors.
+    """
+    if not texts:
+        return []
+    with _embed_lock:
+        req = {"texts": texts, "prompt_name": prompt_name}
+        for attempt in range(2):
+            proc = _ensure_embed_proc()
+            try:
+                proc.stdin.write(json.dumps(req) + "\n")
+                proc.stdin.flush()
+                line = proc.stdout.readline()
+            except (BrokenPipeError, ValueError, OSError):
+                _reset_embed_proc()
+                if attempt == 1:
+                    raise
+                continue
+            if not line:
+                _reset_embed_proc()
+                if attempt == 1:
+                    raise RuntimeError("embed helper closed unexpectedly")
+                continue
+            resp = json.loads(line)
+            if "error" in resp:
+                raise RuntimeError(f"embed helper error: {resp['error']}")
+            return resp["embeddings"]
+    raise RuntimeError("embed helper unavailable")
+
+
+def _blob_to_vec(blob: bytes) -> tuple[float, ...] | None:
+    """Decode a stored float32 BLOB into a tuple of floats."""
+    if not blob:
+        return None
+    return struct.unpack(f"<{len(blob) // 4}f", blob)
+
+
+def _vec_to_blob(vec) -> bytes:
+    """Encode a float vector into the raw little-endian float32 BLOB format."""
+    return struct.pack(f"<{len(vec)}f", *vec)
+
+
+def _embedding_count() -> int:
+    """Number of chunks that have an embedding stored."""
+    conn = _get_kb_conn()
+    try:
+        return conn.execute(
+            "SELECT COUNT(*) FROM chunks WHERE embedding IS NOT NULL"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+
+def populate_embeddings(batch_size: int = 64) -> dict:
+    """Fill chunks.embedding for every chunk that lacks one. Idempotent.
+
+    Runs the one-shot filler (_embed_filler.py) under the interpreter that has
+    sentence-transformers (the cocoindex pipx venv). The model is read from
+    the local HF cache with HF_HUB_OFFLINE=1, so no network access is needed.
+    Chunks with a non-null embedding are skipped, so re-running only processes
+    chunks that were added after the last run.
+    """
+    py = _find_embed_python()
+    if py is None:
+        return {
+            "error": "No python with sentence-transformers found. "
+                     "Install it or set METANO_EMBED_PYTHON.",
+        }
+    try:
+        result = subprocess.run(
+            [py, str(_EMBED_FILLER), str(KB_DB), str(batch_size)],
+            capture_output=True,
+            text=True,
+            timeout=3600,
+            env={**os.environ, "HF_HUB_OFFLINE": "1"},
+        )
+    except subprocess.TimeoutExpired:
+        return {"error": "embedding fill timed out"}
+    if result.returncode != 0:
+        return {"error": (result.stderr or result.stdout)[-500:]}
+    summary: dict = {"raw": result.stdout.strip()}
+    for line in result.stdout.strip().splitlines():
+        if line.startswith("{"):
+            try:
+                summary = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+    summary["batch_size"] = batch_size
+    return summary
+
+
+def _vector_search(query: str, limit: int = 5) -> dict:
+    """Local vector search over chunk embeddings (no CocoIndex dependency).
+
+    Embeds the query with the local cached model and scores every chunk by
+    cosine similarity. Embeddings are unit-normalized, so cosine == dot.
+    Returns results shaped like _keyword_search with real cosine scores.
+    """
+    conn = _get_kb_conn()
+    try:
+        total = _embedding_count()
+        if total == 0:
+            return {"query": query, "results": [], "source": "local_vector",
+                    "error": "no_embeddings"}
+        try:
+            qvec = _embed_texts([query], prompt_name="query")[0]
+        except Exception:
+            logging.getLogger(__name__).exception("query embedding failed")
+            return {"query": query, "results": [], "source": "local_vector",
+                    "error": "embed_failed"}
+        rows = conn.execute(
+            "SELECT c.chunk_id, c.doc_id, c.content, c.chunk_index, c.embedding,"
+            " d.title, d.source, d.doc_type"
+            " FROM chunks c JOIN documents d ON c.doc_id = d.doc_id"
+            " WHERE c.embedding IS NOT NULL"
+        ).fetchall()
+        scored = []
+        for r in rows:
+            ev = _blob_to_vec(r["embedding"])
+            if ev is None:
+                continue
+            sim = sum(a * b for a, b in zip(qvec, ev))
+            scored.append({
+                "chunk_id": r["chunk_id"],
+                "doc_id": r["doc_id"],
+                "title": r["title"],
+                "content": r["content"][:500],
+                "score": round(sim, 6),
+                "chunk_index": r["chunk_index"],
+                "source": "local_vector",
+            })
+        scored.sort(key=lambda x: x["score"], reverse=True)
+        return {"query": query, "results": scored[:limit], "source": "local_vector"}
+    finally:
+        conn.close()
+
+
+def knowledge_vector_search(query: str, limit: int = 5) -> dict:
+    """Local vector (semantic) search over the knowledge base chunks.
+
+    Uses the cached snowflake-arctic-embed-xs model for the query and the
+    per-chunk embeddings stored in chunks.embedding. No CocoIndex dependency
+    and no CocoIndex CLI cold start.
+    """
+    return _vector_search(query, limit=limit)
+
+
+def _merge_results(query: str, semantic_results: list, semantic_source: str,
+                   keyword_results: list, limit: int) -> dict:
+    """Merge semantic (score < 1.0) results with real TF-IDF keyword hits.
+
+    Semantic results carry a score below 1.0 — either the CocoIndex rank
+    discount or a cosine similarity — so a genuine TF-IDF keyword match
+    (>= ~1.0) always outranks them, while relative semantic order among
+    semantic hits is preserved. This keeps the documented ranking invariant:
+    real keyword matches are never pushed out by weak semantic noise.
+    """
+    combined = []
+    seen = set()
+    n_sem = len(semantic_results)
+    for i, r in enumerate(semantic_results):
+        if semantic_source == "cocoindex":
+            key = r.get("file", "")
+            score = round((n_sem - i) / (n_sem + 1), 4) if n_sem else 0.0
+            title = r.get("file", "")
+        else:  # local_vector
+            key = f"{r.get('doc_id')}/{r.get('chunk_index')}"
+            score = r.get("score", 0.0)
+            title = r.get("title", "")
+        if key not in seen:
+            combined.append({
+                "title": title,
+                "content": r.get("content", ""),
+                "score": score,
+                "source": semantic_source,
+            })
+            seen.add(key)
+    for r in keyword_results or []:
+        key = f"{r.get('doc_id')}/{r.get('chunk_index')}"
+        if key not in seen:
+            combined.append({
+                "title": r.get("title", ""),
+                "content": r.get("content", ""),
+                "score": r.get("score", 0),
+                "source": "local_kb",
+            })
+            seen.add(key)
+    combined.sort(key=lambda x: x["score"], reverse=True)
+    return {"query": query, "results": combined[:limit], "source": "merged"}
 
 
 def _validate_ingest_path(path: str) -> str | None:
@@ -254,52 +521,35 @@ def knowledge_semantic_search(query: str, project: str = "", limit: int = 5) -> 
 def knowledge_search(query: str, limit: int = 5) -> dict:
     """Search the knowledge base for relevant chunks.
 
-    Merges CocoIndex semantic results with local TF-IDF keyword hits, then
-    ranks the combined list so genuine keyword matches outrank weak semantic
-    noise.
+    When chunk embeddings are populated, semantic results come from a fast
+    local vector search over the KB itself (no CocoIndex CLI cold start),
+    merged with TF-IDF keyword hits. When embeddings are absent, falls back to
+    the legacy CocoIndex semantic search merged with keyword hits.
 
-    CocoIndex results carry no usable score through semantic_search() (the
-    returned structure only has file/content), so they are weighted by their
-    rank: best hit ~1.0, descending, always below real TF-IDF scores
-    (which are >= ~1.0). Local hits keep their actual TF-IDF score. The merged
-    list is sorted by score desc and only then truncated to `limit`, so local
-    keyword hits are no longer pushed out by 0-score semantic results.
+    Ranking invariant (unchanged): real TF-IDF keyword scores (>= ~1.0)
+    always outrank semantic scores (CocoIndex rank discount or cosine
+    similarity, both < 1.0), so genuine keyword matches are never pushed out
+    by weak semantic noise. The merged list is sorted by score desc and only
+    then truncated to `limit`.
     """
-    # Try semantic search first
+    # Local vector search first — fast, no external CocoIndex dependency.
+    if _embedding_count() > 0:
+        vec = _vector_search(query, limit=limit)
+        if vec.get("results") and vec.get("source") == "local_vector":
+            local = _keyword_search(query, limit=limit)
+            return _merge_results(
+                query, vec["results"], "local_vector", local.get("results", []), limit
+            )
+
+    # Fallback: CocoIndex semantic search merged with keyword hits.
     semantic = knowledge_semantic_search(query, limit=limit)
     if semantic.get("results") and semantic.get("source") == "cocoindex":
         local = _keyword_search(query, limit=limit)
-        combined = []
-        seen = set()
-        # Rank-weighted score for semantic hits: top hit = n/(n+1) < 1.0,
-        # so it never outranks a real TF-IDF keyword match (>= ~1.0), while
-        # still preserving relative semantic order among themselves.
-        n_semantic = len(semantic["results"])
-        for i, r in enumerate(semantic["results"]):
-            key = r.get("file", "")
-            if key not in seen:
-                combined.append({
-                    "title": r.get("file", ""),
-                    "content": r.get("content", ""),
-                    "score": round((n_semantic - i) / (n_semantic + 1), 4) if n_semantic else 0.0,
-                    "source": "cocoindex",
-                })
-                seen.add(key)
-        for r in local.get("results", []):
-            key = f"{r.get('doc_id')}/{r.get('chunk_index')}"
-            if key not in seen:
-                combined.append({
-                    "title": r.get("title", ""),
-                    "content": r.get("content", ""),
-                    "score": r.get("score", 0),
-                    "source": "local_kb",
-                })
-                seen.add(key)
-        # Sort merged results by score desc, THEN truncate to limit.
-        combined.sort(key=lambda x: x["score"], reverse=True)
-        return {"query": query, "results": combined[:limit], "source": "merged"}
+        return _merge_results(
+            query, semantic["results"], "cocoindex", local.get("results", []), limit
+        )
 
-    # Fallback to keyword search
+    # Last resort: keyword-only search.
     return _keyword_search(query, limit=limit)
 
 

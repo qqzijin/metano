@@ -11,6 +11,9 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useModels, useProxyProviders, useModelSetDefault, useProxyAdd } from "@/api/hooks";
 import { toast } from "sonner";
 
+// 这些预设依赖外部 API，启用时必须提供 API Key；ollama-local 为本地服务无需 Key。
+const NEEDS_API_KEY_PRESETS = new Set(["nvidia-nim", "deepseek", "kimi", "openrouter", "siliconflow"]);
+
 export default function ModelsPage() {
   const { data: modelsData, isLoading: modelsLoading, isError: modelsError } = useModels();
   const { data: proxyData, isLoading: proxyLoading, isError: proxyError } = useProxyProviders();
@@ -34,8 +37,21 @@ export default function ModelsPage() {
 
   // Presets are display-only; "启用" must register the provider first, then set default.
   const handleEnablePreset = async (p: any) => {
+    const payload: { name: string; base_url: string; model: string; api_key?: string } = {
+      name: p.name,
+      base_url: p.base_url,
+      model: p.model,
+    };
+    // 若预设自带 api_key 则直接使用
+    if (p.api_key) payload.api_key = p.api_key;
+    // 需要 Key 但未提供时引导到添加表单
+    if (NEEDS_API_KEY_PRESETS.has(p.name) && !payload.api_key) {
+      setShowForm(true);
+      toast.error(`该预设需要 API Key，请先配置`);
+      return;
+    }
     try {
-      await addProxyMut.mutateAsync({ name: p.name, base_url: p.base_url, model: p.model });
+      await addProxyMut.mutateAsync(payload);
       await setDefaultMut.mutateAsync(p.name);
       toast.success(`已启用并设为默认: ${p.name}`);
     } catch {

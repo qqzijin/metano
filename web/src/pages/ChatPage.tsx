@@ -16,6 +16,7 @@ interface ChatMsg {
 }
 
 const STORAGE_KEY = "metano-chat-history";
+const DIRTY_KEY = "metano-chat-dirty";
 
 function loadHistory(): ChatMsg[] {
   try {
@@ -23,6 +24,13 @@ function loadHistory(): ChatMsg[] {
     if (raw) return JSON.parse(raw);
   } catch {}
   return [];
+}
+
+function loadDirty(): boolean {
+  try {
+    return localStorage.getItem(DIRTY_KEY) === "1";
+  } catch {}
+  return false;
 }
 
 function saveHistory(msgs: ChatMsg[]) {
@@ -36,6 +44,13 @@ export default function ChatPage() {
   const [input, setInput] = useState("");
   const [showSessionPicker, setShowSessionPicker] = useState(false);
   const [connectedSession, setConnectedSession] = useState<string | null>(null);
+  // dirty = local state contains messages not (yet) confirmed persisted to DB.
+  // Covers: failed sends (route_message threw -> _persist_chat never ran) and
+  // in-flight requests. Survives page reloads via localStorage so disconnect
+  // after a refresh still warns.
+  const [dirty, setDirty] = useState<boolean>(loadDirty);
+  const failedSendRef = useRef(false);
+  const clearedRef = useRef(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const chatMut = useChatMutation();
   const { data: sessionsData, isError: sessionsError } = useSessions("", 20);
@@ -51,9 +66,19 @@ export default function ChatPage() {
     saveHistory(messages);
   }, [messages]);
 
+  useEffect(() => {
+    try {
+      if (dirty) localStorage.setItem(DIRTY_KEY, "1");
+      else localStorage.removeItem(DIRTY_KEY);
+    } catch {}
+  }, [dirty]);
+
   const handleConnectSession = (sessionId: string) => {
     setShowSessionPicker(false);
     setConnectedSession(sessionId);
+    clearedRef.current = false;
+    failedSendRef.current = false;
+    setDirty(false); // replacing local state with persisted DB messages
     // When messages data arrives, merge them into chat
   };
 
@@ -73,6 +98,10 @@ export default function ChatPage() {
   }, [connectedSession, msgData, msgLoading]);
 
   const handleDisconnect = () => {
+    if (dirty && !window.confirm("当前有未成功保存到历史的消息，断开后将丢失这些消息。仍要断开吗？")) return;
+    clearedRef.current = true;
+    failedSendRef.current = false;
+    setDirty(false);
     setConnectedSession(null);
     setMessages([]);
     localStorage.removeItem(STORAGE_KEY);
@@ -85,6 +114,8 @@ export default function ChatPage() {
     const userMsg: ChatMsg = { role: "user", content: text, ts: Date.now() };
     setMessages((prev) => [...prev, userMsg]);
     setInput("");
+    clearedRef.current = false;
+    setDirty(true); // new user message is local-only until /api/chat persists it
 
     try {
       const res = await chatMut.mutateAsync({
@@ -94,13 +125,26 @@ export default function ChatPage() {
         context: messages.slice(-10).map((m) => ({ role: m.role, content: m.content })),
       });
       const content = typeof res === "string" ? res : res?.response ?? JSON.stringify(res);
-      setMessages((prev) => [...prev, { role: "assistant", content, ts: Date.now() }]);
+      if (!clearedRef.current) {
+        setMessages((prev) => [...prev, { role: "assistant", content, ts: Date.now() }]);
+      }
+      // Exchange persisted to DB; keep dirty only if an earlier send failed
+      // (that user message is still local-only).
+      setDirty(failedSendRef.current);
     } catch (err: any) {
-      setMessages((prev) => [...prev, { role: "assistant", content: `错误: ${err.message ?? "请求失败"}`, ts: Date.now() }]);
+      failedSendRef.current = true;
+      setDirty(true);
+      if (!clearedRef.current) {
+        setMessages((prev) => [...prev, { role: "assistant", content: `错误: ${err.message ?? "请求失败"}`, ts: Date.now() }]);
+      }
     }
   };
 
   const handleClear = () => {
+    if (dirty && !window.confirm("当前有未成功保存到历史的消息，清空后将丢失这些消息。仍要清空吗？")) return;
+    clearedRef.current = true;
+    failedSendRef.current = false;
+    setDirty(false);
     setMessages([]);
     setConnectedSession(null);
     localStorage.removeItem(STORAGE_KEY);

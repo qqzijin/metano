@@ -6,17 +6,53 @@ and proactively explores to fill them.
 """
 import json
 import os
+import re
 import subprocess
 import time
 import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
 from .evo_models import get_recent_actions, get_meta, set_meta
 from .evolution import _log
 from .llm_call import call_llm
 from metano.log import logger
-TAVILY_API_KEY = os.environ.get('TAVILY_API_KEY', '')
 ANTHROPIC_API_KEY = os.environ.get('ANTHROPIC_API_KEY', '')
 ANTHROPIC_BASE_URL = os.environ.get('ANTHROPIC_BASE_URL', 'https://api.anthropic.com/v1')
 ANTHROPIC_MODEL = os.environ.get('HONCHO_MODEL', 'claude-sonnet-4-6')
+
+# Exploration markdown is written under the project root so knowledge_ingest's
+# path validator (which only allows PROJECT_ROOT + a few sibling dirs) accepts
+# it — /tmp would be silently rejected.
+EXPLORATION_DIR = Path.home() / '.claude' / 'metano' / 'knowledge' / 'explorations'
+
+# Fallback topics explored when action_log shows no failures. Keeps the KB
+# actively accumulating exploration docs. Each topic costs 1 web search + 1 LLM
+# synthesis call, so the scheduler only picks 1-2 per run and dedups for 14 days.
+DEFAULT_EXPLORE_TOPICS = [
+    'Claude Code agent hooks and automation best practices',
+    'Web scraping and anti-bot detection bypass techniques 2026',
+    'Building persistent memory systems for AI agents',
+    'LLM cost optimization and circuit breaker patterns',
+    'Self-improving autonomous agent architecture patterns',
+]
+# evo_meta key holding {topic: ISO-timestamp} of recently explored topics.
+EXPLORED_META_KEY = 'explored_knowledge_topics'
+
+
+def _resolve_tavily_key() -> str:
+    """Find the Tavily API key: env first, then ~/.mcp.json (where the MCP
+    server config stores it). The cron daemon has no TAVILY_API_KEY in env, so
+    the ~/.mcp.json fallback is what makes web search work under cron."""
+    if os.environ.get('TAVILY_API_KEY'):
+        return os.environ['TAVILY_API_KEY']
+    mcp_path = Path.home() / '.mcp.json'
+    if mcp_path.exists():
+        try:
+            cfg = json.loads(mcp_path.read_text())
+            return cfg.get('mcpServers', {}).get('tavily', {}).get('env', {}).get('TAVILY_API_KEY', '')
+        except (json.JSONDecodeError, OSError):
+            pass
+    return ''
 
 def semantic_search(query: str, project: str='') -> dict:
     """Search indexed codebases using CocoIndex semantic search.
@@ -55,9 +91,11 @@ def semantic_search(query: str, project: str='') -> dict:
 
 def _tavily_search(query: str, max_results: int=5) -> list[dict]:
     """Search the web using Tavily API."""
-    if not TAVILY_API_KEY:
+    api_key = _resolve_tavily_key()
+    if not api_key:
+        _log('knowledge', 'tavily_no_key', {'error': 'TAVILY_API_KEY not configured'})
         return []
-    payload = {'api_key': TAVILY_API_KEY, 'query': query, 'max_results': max_results, 'search_depth': 'advanced', 'include_raw_content': False}
+    payload = {'api_key': api_key, 'query': query, 'max_results': max_results, 'search_depth': 'advanced', 'include_raw_content': False}
     try:
         req = urllib.request.Request('https://api.tavily.com/search', data=json.dumps(payload).encode(), headers={'Content-Type': 'application/json'})
         proxy = os.environ.get('HTTPS_PROXY') or os.environ.get('HTTP_PROXY')
@@ -104,17 +142,20 @@ def explore_domain(topic: str, depth: int=3) -> dict:
         findings = []
     if findings:
         from .knowledge import knowledge_ingest
-        from pathlib import Path
-        import tempfile
+        slug = re.sub(r'[^a-zA-Z0-9一-鿿]+', '_', topic)[:40].strip('_') or 'topic'
+        out_dir = EXPLORATION_DIR
+        out_dir.mkdir(parents=True, exist_ok=True)
         content = f'# Knowledge Exploration: {topic}\n\n'
+        content += f'> Generated {datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")}\n\n'
         for f in findings:
             content += f"## {f.get('title', 'Untitled')}\n"
             content += f"{f.get('summary', '')}\n"
             content += f"Source: {f.get('source_url', 'N/A')}\n\n"
-        tmp = Path(tempfile.gettempdir()) / f'evo_explore_{int(time.time())}.md'
-        tmp.write_text(content)
-        ingest_result = knowledge_ingest(str(tmp), title=f'Exploration: {topic}')
-        tmp.unlink(missing_ok=True)
+        out_path = out_dir / f'{slug}_{int(time.time())}.md'
+        out_path.write_text(content)
+        # Ingest from a project-root path so knowledge_ingest's validator
+        # accepts it. The markdown artifact is kept for provenance/traceability.
+        ingest_result = knowledge_ingest(str(out_path), title=f'Exploration: {topic}')
     else:
         ingest_result = None
     result = {'status': 'completed', 'topic': topic, 'sources_found': len(search_results), 'findings': findings, 'ingested': bool(ingest_result and ingest_result.get('status') == 'ingested')}
@@ -188,3 +229,137 @@ def synthesize_from_experience() -> list[dict]:
             existing.add(content)
     _log('knowledge', 'synthesize_experience', {'successes': len(successes), 'patterns': len(stored)})
     return stored
+
+
+# ── Scheduled knowledge exploration ──
+
+def _load_explored_topics() -> dict:
+    """Load {topic: ISO-timestamp} of recently explored topics from evo meta."""
+    raw = get_meta(EXPLORED_META_KEY)
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, TypeError):
+        return {}
+
+
+def _save_explored_topics(explored: dict):
+    set_meta(EXPLORED_META_KEY, explored)
+
+
+def _topic_recently_explored(explored: dict, topic: str, dedup_days: int) -> bool:
+    """True if `topic` was explored within `dedup_days` (cost gate)."""
+    ts = explored.get(topic)
+    if not ts:
+        return False
+    try:
+        last = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+        age_days = (datetime.now(timezone.utc) - last).total_seconds() / 86400
+        return age_days < dedup_days
+    except (ValueError, TypeError):
+        return False
+
+
+def _dedup_pick(pool: list[str], explored: dict, max_topics: int,
+                dedup_days: int, already: list[str]) -> tuple[list[str], int]:
+    """Pick topics from pool, skipping recently-explored ones.
+
+    Returns (new_picked, skipped_count). `already` holds topics already picked
+    this run so the cap is enforced across pools.
+    """
+    picked: list[str] = []
+    skipped = 0
+    for t in pool:
+        if len(already) + len(picked) >= max_topics:
+            break
+        if not t or t in already:
+            continue
+        if _topic_recently_explored(explored, t, dedup_days):
+            skipped += 1
+            continue
+        picked.append(t)
+    return picked, skipped
+
+
+def run_knowledge_exploration(max_topics: int = 2, dedup_days: int = 14,
+                              fallback_topics: list[str] | None = None) -> dict:
+    """Scheduled knowledge exploration: gaps → topics → explore → ingest.
+
+    Orchestration wrapper for the cron daemon (evolution.cron_explore →
+    evolution.explore job). Pipeline:
+      1. discover_knowledge_gaps() — topics derived from recent action_log
+         failures (costs an LLM call only when failures exist).
+      2. If failures yield no topics, fall back to a curated evergreen topic
+         list so the KB keeps accumulating exploration docs.
+      3. Cap to max_topics (default 2), skipping topics explored within
+         dedup_days — each topic is 1 web search + 1 LLM synthesis call, so
+         this is the primary cost gate.
+      4. explore_domain() per topic writes a markdown doc and ingests it into
+         the knowledge base. Each topic is failure-isolated so one bad explore
+         can't abort the whole pass.
+
+    Returns a summary dict suitable for the cron daemon's output file.
+    """
+    from .evolution import _is_paused
+    if _is_paused():
+        _log('knowledge', 'explore_paused_skip', {})
+        return {'status': 'paused', 'gaps_found': 0, 'topics_picked': 0,
+                'skipped_recent': 0, 'results': [], 'source': 'paused'}
+
+    # 1. Gap discovery (no LLM cost when action_log has no failures).
+    try:
+        gaps = discover_knowledge_gaps() or []
+    except Exception as e:
+        _log('knowledge', 'explore_gaps_failed', {'error': str(e)})
+        gaps = []
+    gap_topics = [(g.get('topic') or '').strip() for g in gaps if g.get('topic')]
+    curated = fallback_topics if fallback_topics is not None else list(DEFAULT_EXPLORE_TOPICS)
+
+    # 2. Dedup + cap across pools (gaps first, then curated top-up).
+    explored = _load_explored_topics()
+    picked: list[str] = []
+    skipped = 0
+    new_p, sk = _dedup_pick(gap_topics, explored, max_topics, dedup_days, picked)
+    picked.extend(new_p)
+    skipped += sk
+    from_gaps = bool(new_p)
+    if len(picked) < max_topics:
+        new_p, sk = _dedup_pick(curated, explored, max_topics, dedup_days, picked)
+        picked.extend(new_p)
+        skipped += sk
+    source = 'failure_gaps' if from_gaps else 'fallback_topics'
+
+    # 3. Explore each picked topic (failure-isolated; ingest happens inside
+    #    explore_domain). Markdown artifact is kept in knowledge/explorations/.
+    results = []
+    for topic in picked:
+        try:
+            r = explore_domain(topic, depth=2)
+            results.append({
+                'topic': topic,
+                'status': r.get('status'),
+                'findings': len(r.get('findings', [])),
+                'ingested': r.get('ingested', False),
+            })
+            if r.get('status') == 'completed':
+                explored[topic] = datetime.now(timezone.utc).isoformat()
+        except Exception as e:
+            logger.exception("run_knowledge_exploration: topic %r failed", topic)
+            results.append({'topic': topic, 'status': 'error', 'error': str(e)})
+
+    _save_explored_topics(explored)
+    _log('knowledge', 'run_exploration', {
+        'gaps_found': len(gaps), 'source': source,
+        'topics_picked': len(picked), 'skipped_recent': skipped,
+        'explored': len(results),
+    })
+    return {
+        'status': 'completed',
+        'gaps_found': len(gaps),
+        'source': source,
+        'topics_picked': len(picked),
+        'skipped_recent': skipped,
+        'results': results,
+    }

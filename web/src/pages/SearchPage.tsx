@@ -12,16 +12,26 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useSearch } from "@/api/hooks";
 import { fmtTime } from "@/api/client";
 
+const PAGE_SIZE = 20;
+
 export default function SearchPage() {
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
   const [searched, setSearched] = useState("");
-  const { data, isLoading, isError } = useSearch(searched);
+  const [limit, setLimit] = useState(PAGE_SIZE);
+  const { data, isLoading, isError } = useSearch(searched, limit);
   const results = data?.results ?? [];
+  const total = data?.total ?? 0;
+  const hasMore = total > results.length;
 
   const doSearch = () => {
-    if (query.trim()) setSearched(query.trim());
+    if (query.trim()) {
+      setSearched(query.trim());
+      setLimit(PAGE_SIZE);
+    }
   };
+
+  const loadMore = () => setLimit((n) => n + PAGE_SIZE);
 
   return (
     <>
@@ -49,26 +59,36 @@ export default function SearchPage() {
       ) : !searched ? (
         <EmptyState title="搜索会话" description="输入关键词以搜索所有对话" icon={<FileText className="size-10" />} />
       ) : (
-        <div className="grid gap-3">
-          {results.map((r, i) => (
-            <Card
-              key={i}
-              role="link"
-              tabIndex={0}
-              className="p-4 cursor-pointer transition-shadow hover:shadow-sm"
-              onClick={() => navigate(`/sessions?session=${encodeURIComponent(r.session_id)}`)}
-              onKeyDown={(e) => { if (e.key === "Enter") navigate(`/sessions?session=${encodeURIComponent(r.session_id)}`); }}
-            >
-              <div className="flex items-center gap-2 mb-2">
-                <Badge variant="outline" className="text-[10px] font-mono">{r.session_id.slice(0, 12)}</Badge>
-                {r.title && <span className="text-sm font-medium truncate">{r.title}</span>}
-                <Badge variant={r.role === "user" ? "default" : "secondary"} className="text-[10px] ml-auto">{r.role}</Badge>
-                {r.timestamp && <span className="text-xs text-muted-foreground shrink-0">{fmtTime(r.timestamp)}</span>}
-              </div>
-              <div className="text-sm text-muted-foreground line-clamp-3" dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(r.snippet) }} />
-            </Card>
-          ))}
-        </div>
+        <>
+          <div className="text-xs text-muted-foreground mb-2">共 {total} 条结果</div>
+          <div className="grid gap-3">
+            {results.map((r, i) => (
+              <Card
+                key={i}
+                role="link"
+                tabIndex={0}
+                className="p-4 cursor-pointer transition-shadow hover:shadow-sm"
+                onClick={() => navigate(`/sessions?session=${encodeURIComponent(r.session_id)}`)}
+                onKeyDown={(e) => { if (e.key === "Enter") navigate(`/sessions?session=${encodeURIComponent(r.session_id)}`); }}
+              >
+                <div className="flex items-center gap-2 mb-2">
+                  <Badge variant="outline" className="text-[10px] font-mono">{r.session_id.slice(0, 12)}</Badge>
+                  {r.title && <span className="text-sm font-medium truncate">{r.title}</span>}
+                  <Badge variant={r.role === "user" ? "default" : "secondary"} className="text-[10px] ml-auto">{r.role}</Badge>
+                  {r.timestamp && <span className="text-xs text-muted-foreground shrink-0">{fmtTime(r.timestamp)}</span>}
+                </div>
+                <div className="text-sm text-muted-foreground line-clamp-3" dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(r.snippet) }} />
+              </Card>
+            ))}
+          </div>
+          {hasMore && (
+            <div className="flex justify-center mt-4">
+              <Button variant="outline" onClick={loadMore} disabled={isLoading}>
+                {isLoading ? "加载中..." : "加载更多"}
+              </Button>
+            </div>
+          )}
+        </>
       )}
     </>
   );

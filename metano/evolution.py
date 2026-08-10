@@ -341,20 +341,30 @@ def generate_temporal_abstraction(conn, user_id: str) -> dict:
     return summary
 
 def cron_explore():
-    """Called from cron weekly. Discover knowledge gaps and explore."""
+    """Called from cron weekly. Discover knowledge gaps and explore them.
+
+    Delegates to knowledge_explorer.run_knowledge_exploration(), which:
+    - caps at 2 topics per run and dedups recently-explored topics (cost gate),
+    - falls back to a curated topic list when action_log shows no failures,
+    - failure-isolates each topic so one bad explore can't abort the pass,
+    - writes a markdown doc and ingests it into the knowledge base.
+    """
     if _is_paused():
         return {'status': 'paused'}
-    from .knowledge_explorer import discover_knowledge_gaps, explore_domain
-    gaps = discover_knowledge_gaps()
-    results = []
-    for gap in gaps[:3]:
-        topic = gap.get('topic', '')
-        if topic:
-            result = explore_domain(topic, depth=2)
-            results.append({'topic': topic, 'status': result.get('status')})
-            _log('knowledge', 'explore_gap', {'topic': topic, 'status': result.get('status')})
-    _log('knowledge', 'cron_explore', {'gaps_found': len(gaps), 'explored': len(results)})
-    return {'gaps_found': len(gaps), 'explored': len(results)}
+    try:
+        from .knowledge_explorer import run_knowledge_exploration
+        result = run_knowledge_exploration(max_topics=2, dedup_days=14)
+        _log('knowledge', 'cron_explore', {
+            'gaps_found': result.get('gaps_found', 0),
+            'source': result.get('source'),
+            'topics_picked': result.get('topics_picked', 0),
+            'skipped_recent': result.get('skipped_recent', 0),
+            'results': result.get('results', []),
+        })
+        return result
+    except Exception:
+        logger.exception("cron_explore failed")
+        return {'status': 'error'}
 
 def cron_architect():
     """Called from cron weekly. Build architecture model and detect bottlenecks."""

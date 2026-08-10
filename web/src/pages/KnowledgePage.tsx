@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { BookOpen, Upload, Search, Trash2 } from "lucide-react";
+import { BookOpen, Upload, Search, Trash2, Loader2 } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { Card, CardContent } from "@/components/ui/card";
@@ -45,7 +45,11 @@ export default function KnowledgePage() {
   const handleSearch = async () => {
     if (!searchQuery.trim()) return;
     setShowSearch(true);
-    searchMut.mutate(searchQuery);
+    try {
+      await searchMut.mutateAsync(searchQuery);
+    } catch {
+      toast.error("搜索失败");
+    }
   };
 
   return (
@@ -61,13 +65,30 @@ export default function KnowledgePage() {
         </div>
         <div className="flex gap-2 flex-1 min-w-[200px]">
           <Input placeholder="搜索知识库..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} onKeyDown={(e) => e.key === "Enter" && handleSearch()} />
-          <Button onClick={handleSearch} disabled={!searchQuery.trim()} variant="outline" size="sm">
-            <Search className="size-4 mr-1" /> 搜索
+          <Button onClick={handleSearch} disabled={!searchQuery.trim() || searchMut.isPending} variant="outline" size="sm">
+            {searchMut.isPending ? <Loader2 className="size-4 mr-1 animate-spin" /> : <Search className="size-4 mr-1" />}
+            {searchMut.isPending ? "搜索中..." : "搜索"}
           </Button>
         </div>
       </div>
 
-      {showSearch && searchMut.data && (
+      {showSearch && searchMut.isPending && (
+        <Card className="mb-4">
+          <CardContent className="p-4 flex items-center gap-2 text-sm text-muted-foreground">
+            <Loader2 className="size-4 animate-spin" /> 搜索中...
+          </CardContent>
+        </Card>
+      )}
+
+      {showSearch && searchMut.isError && (
+        <Card className="mb-4">
+          <CardContent className="p-4">
+            <div className="text-sm text-destructive">搜索失败，请检查服务后重试</div>
+          </CardContent>
+        </Card>
+      )}
+
+      {showSearch && !searchMut.isPending && !searchMut.isError && searchMut.data && (
         <Card className="mb-4">
           <CardContent className="p-4">
             <div className="text-sm font-medium mb-2">搜索结果</div>

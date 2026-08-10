@@ -39,7 +39,7 @@ export const qk = {
   session: (id: string) => ["session", id] as const,
   messages: (id: string) => ["messages", id] as const,
   analytics: (days?: number) => ["analytics", days] as const,
-  search: (q: string) => ["search", q] as const,
+  search: (q: string, limit = 20, offset = 0) => ["search", q, limit, offset] as const,
   cron: ["cron"] as const,
   skills: ["skills"] as const,
   skill: (n: string) => ["skill", n] as const,
@@ -99,10 +99,11 @@ export function useAnalytics(days = 7) {
   });
 }
 
-export function useSearch(query: string) {
-  return useQuery<{ results: SearchResult[] }>({
-    queryKey: qk.search(query),
-    queryFn: () => fetchAPI(`/search?q=${encodeURIComponent(query)}`),
+export function useSearch(query: string, limit = 20, offset = 0) {
+  return useQuery<{ results: SearchResult[]; total: number }>({
+    queryKey: qk.search(query, limit, offset),
+    queryFn: () =>
+      fetchAPI(`/search?q=${encodeURIComponent(query)}&limit=${limit}&offset=${offset}`),
     enabled: !!query,
   });
 }

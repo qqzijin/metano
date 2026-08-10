@@ -261,21 +261,23 @@ def list_sessions(limit: int=20, offset: int=0, search: str=''):
     return {'items': [dict(r) for r in rows], 'total': total}
 
 @app.get('/api/sessions/search')
-def search_sessions(q: str=Query(...), limit: int=20):
+def search_sessions(q: str=Query(...), limit: int=20, offset: int=0):
     conn = get_db()
     try:
-        rows = conn.execute("SELECT m.session_id, m.role, snippet(messages_fts, -1, '<mark>', '</mark>', '...', 30) as snippet, m.timestamp, s.title FROM messages_fts JOIN messages m ON m.id = messages_fts.rowid JOIN sessions s ON s.id = m.session_id WHERE messages_fts MATCH ? ORDER BY m.timestamp DESC LIMIT ?", (q, limit)).fetchall()
-        if rows:
-            return {'query': q, 'results': [dict(r) for r in rows]}
+        total = conn.execute('SELECT COUNT(*) as c FROM messages_fts WHERE messages_fts MATCH ?', (q,)).fetchone()['c']
+        rows = conn.execute("SELECT m.session_id, m.role, snippet(messages_fts, -1, '<mark>', '</mark>', '...', 30) as snippet, m.timestamp, s.title FROM messages_fts JOIN messages m ON m.id = messages_fts.rowid JOIN sessions s ON s.id = m.session_id WHERE messages_fts MATCH ? ORDER BY m.timestamp DESC LIMIT ? OFFSET ?", (q, limit, offset)).fetchall()
+        if total or rows:
+            return {'query': q, 'results': [dict(r) for r in rows], 'total': total}
     except Exception:
         logger.exception()
-    rows = conn.execute('SELECT m.session_id, m.role, substr(m.content, 1, 300) as snippet, m.timestamp, s.title FROM messages m JOIN sessions s ON s.id = m.session_id WHERE m.content LIKE ? ORDER BY m.timestamp DESC LIMIT ?', (f'%{q}%', limit)).fetchall()
-    return {'query': q, 'results': [dict(r) for r in rows]}
+    rows = conn.execute('SELECT m.session_id, m.role, substr(m.content, 1, 300) as snippet, m.timestamp, s.title FROM messages m JOIN sessions s ON s.id = m.session_id WHERE m.content LIKE ? ORDER BY m.timestamp DESC LIMIT ? OFFSET ?', (f'%{q}%', limit, offset)).fetchall()
+    total = conn.execute('SELECT COUNT(*) as c FROM messages m JOIN sessions s ON s.id = m.session_id WHERE m.content LIKE ?', (f'%{q}%',)).fetchone()['c']
+    return {'query': q, 'results': [dict(r) for r in rows], 'total': total}
 
 @app.get('/api/search')
-def global_search(q: str=Query(...), limit: int=20):
+def global_search(q: str=Query(...), limit: int=20, offset: int=0):
     """Alias for /api/sessions/search."""
-    return search_sessions(q=q, limit=limit)
+    return search_sessions(q=q, limit=limit, offset=offset)
 
 @app.get('/api/sessions/{session_id}')
 def get_session(session_id: str):
