@@ -220,7 +220,7 @@ def _apply_gateway_change(description: str) -> dict:
 
     NOTE: Gateway config changes cannot be automated safely. Manual review required:
     - Edit gateway_config.yaml directly
-    - Restart gateway via ./cc-bridge.sh restart
+    - Restart gateway via ./metano.sh restart
     """
     logger.warning("architect: gateway change requires manual review — no automated apply")
     _log('architect', 'gateway_change_skipped',

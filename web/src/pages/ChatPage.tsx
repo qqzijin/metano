@@ -15,7 +15,7 @@ interface ChatMsg {
   ts: number;
 }
 
-const STORAGE_KEY = "cc-hermes-chat-history";
+const STORAGE_KEY = "metano-chat-history";
 
 function loadHistory(): ChatMsg[] {
   try {

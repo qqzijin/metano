@@ -104,8 +104,13 @@ def call_llm(system_prompt: str, user_prompt: str, max_tokens: int = 3000,
                 }, ensure_ascii=False), cost=cost, model=model)
             except Exception:
                 pass
-            if content and content[0].get('type') == 'text':
-                return content[0]['text'], cost
+            # Some providers (e.g. DeepSeek via proxy) emit a leading
+            # 'thinking' block — take the first real 'text' block instead.
+            text = next((c.get('text') for c in content if c.get('type') == 'text'), None)
+            if text is not None:
+                return text, cost
+            if content and content[0].get('type') == 'thinking':
+                return content[0].get('thinking', ''), cost
             return str(content), cost
     except Exception:
         logger.exception("llm_call: API request failed")

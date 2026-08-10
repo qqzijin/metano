@@ -617,6 +617,15 @@ async def api_knowledge_search(body: dict):
         logger.exception()
         return _error_response('Internal error')
 
+@app.post('/api/knowledge/semantic-search')
+async def api_knowledge_semantic_search(body: dict):
+    try:
+        from .knowledge import knowledge_semantic_search
+        return knowledge_semantic_search(body.get('query', ''), project=body.get('project', ''), limit=body.get('limit', 5))
+    except Exception as e:
+        logger.exception()
+        return _error_response('Internal error')
+
 @app.post('/api/knowledge/ingest')
 async def api_knowledge_ingest(body: dict, _admin=Depends(require_role("admin"))):
     try:

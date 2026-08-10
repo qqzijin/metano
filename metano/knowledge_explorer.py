@@ -28,7 +28,9 @@ def semantic_search(query: str, project: str='') -> dict:
         # flag, so run in the target project dir when one is given.
         cmd = ['ccc', 'search', query]
         run_cwd = project if project and os.path.isdir(project) else None
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15, cwd=run_cwd)
+        # Cold start (first search after daemon restart) loads the embedding
+        # model and can take ~70s; warm searches are <1s. Generous timeout.
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120, cwd=run_cwd)
         if result.returncode != 0:
             return {'results': [], 'source': 'ccc_error', 'error': result.stderr[:200]}
         results = []

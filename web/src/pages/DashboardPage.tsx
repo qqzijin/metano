@@ -75,7 +75,7 @@ export default function DashboardPage() {
                 {serviceEntries.map(([name, state]) => (
                   <div key={name} className="flex items-center gap-2 text-sm py-1.5 px-2 rounded-md hover:bg-muted/50">
                     <span className={`size-2 rounded-full shrink-0 ${state === "active" ? "bg-emerald-500" : "bg-destructive"}`} />
-                    <span className="capitalize flex-1">{name.replace("cc-hermes-", "")}</span>
+                    <span className="capitalize flex-1">{name.replace("metano-", "")}</span>
                     <Badge variant={state === "active" ? "default" : "destructive"} className="text-[10px]">{state === "active" ? "运行" : "停止"}</Badge>
                   </div>
                 ))}
