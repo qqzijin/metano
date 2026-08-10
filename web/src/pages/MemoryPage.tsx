@@ -14,8 +14,8 @@ export default function MemoryPage() {
   const [allMemories, setAllMemories] = useState<any[]>([]);
   const [loadingAll, setLoadingAll] = useState(true);
   const [expandedCats, setExpandedCats] = useState<Record<string, boolean>>({});
-  const { data: stats, isLoading: statsLoading, refetch } = useMemoryStats();
-  const { data: searchResult, isLoading: searchLoading } = useMemorySearch(query);
+  const { data: stats, isLoading: statsLoading, isError: statsError, refetch } = useMemoryStats();
+  const { data: searchResult, isLoading: searchLoading, isError: searchError } = useMemorySearch(query);
   const compressMut = useMemoryCompress();
   const seedMut = useMemorySeed();
   const exportMut = useMemoryExport();
@@ -72,7 +72,9 @@ export default function MemoryPage() {
 
       {/* Stats */}
       <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-6">
-        {statsLoading ? (
+        {statsError ? (
+          <div className="col-span-full text-sm text-destructive">加载失败，请检查服务或刷新重试</div>
+        ) : statsLoading ? (
           Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-20 rounded-lg" />)
         ) : (
           <>
@@ -142,6 +144,9 @@ export default function MemoryPage() {
             className="flex-1"
           />
           {query && searchLoading && <Skeleton className="h-20 mt-3 rounded-md" />}
+          {query && searchError && (
+            <p className="text-sm text-destructive mt-3">加载失败，请检查服务或刷新重试</p>
+          )}
           {query && !searchLoading && searchResults.length === 0 && (
             <p className="text-sm text-muted-foreground mt-3">未找到相关记忆</p>
           )}

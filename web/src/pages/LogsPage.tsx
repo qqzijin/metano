@@ -12,7 +12,7 @@ type LogSource = "evolution" | "audit" | "gateway";
 
 export default function LogsPage() {
   const [source, setSource] = useState<LogSource>("evolution");
-  const { data, isLoading } = useLogs(source);
+  const { data, isLoading, isError } = useLogs(source);
 
   const entries = data?.[source] ?? [];
 
@@ -33,7 +33,9 @@ export default function LogsPage() {
         ))}
       </div>
 
-      {isLoading ? (
+      {isError ? (
+        <div className="text-sm text-destructive">加载失败，请检查服务或刷新重试</div>
+      ) : isLoading ? (
         <div className="space-y-2">{Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-10 rounded" />)}</div>
       ) : entries.length === 0 ? (
         <EmptyState title="暂无日志" description={`${source} 事件将在此显示`} icon={<FileText className="size-10" />} />

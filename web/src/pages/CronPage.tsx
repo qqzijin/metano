@@ -12,7 +12,7 @@ import { useCronJobs, useCronPause, useCronResume, useCronDelete, useCronTrigger
 import { toast } from "sonner";
 
 export default function CronPage() {
-  const { data, isLoading } = useCronJobs();
+  const { data, isLoading, isError } = useCronJobs();
   const pauseMut = useCronPause();
   const resumeMut = useCronResume();
   const deleteMut = useCronDelete();
@@ -91,7 +91,9 @@ export default function CronPage() {
         </Card>
       )}
 
-      {isLoading ? (
+      {isError ? (
+        <div className="text-sm text-destructive">加载失败，请检查服务或刷新重试</div>
+      ) : isLoading ? (
         <div className="space-y-3">{Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-16 rounded-lg" />)}</div>
       ) : jobs.length === 0 ? (
         <EmptyState title="暂无定时任务" description="点击右上角「新建任务」创建定时任务" />

@@ -23,8 +23,9 @@ function computeStage(b: any): string {
 }
 
 export default function ProfilesPage() {
-  const { data: profile, isLoading } = useProfile();
+  const { data: profile, isLoading, isError } = useProfile();
 
+  if (isError) return <div className="text-sm text-destructive">加载失败，请检查服务或刷新重试</div>;
   if (isLoading) return <div className="space-y-4">{Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-28 rounded-lg" />)}</div>;
   if (profile?.error) return <EmptyState title="用户画像不可用" description={profile.error} icon={<User className="size-10" />} />;
 

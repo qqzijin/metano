@@ -11,7 +11,7 @@ import { fetchAPI } from "@/api/client";
 import { toast } from "sonner";
 
 export default function ConfigPage() {
-  const { data, isLoading } = useConfig();
+  const { data, isLoading, isError } = useConfig();
   const qc = useQueryClient();
   const [edited, setEdited] = useState<string | null>(null);
 
@@ -44,7 +44,9 @@ export default function ConfigPage() {
         }
       />
 
-      {isLoading ? (
+      {isError ? (
+        <div className="text-sm text-destructive">加载失败，请检查服务或刷新重试</div>
+      ) : isLoading ? (
         <Skeleton className="h-96 rounded-lg" />
       ) : (
         <Card>

@@ -17,7 +17,7 @@ interface HAType {
 
 export default function SmartHomePage() {
   const [filter, setFilter] = useState("");
-  const { data, isLoading } = useQuery<{ entities: HAType[] }>({
+  const { data, isLoading, isError } = useQuery<{ entities: HAType[] }>({
     queryKey: ["home", "status"],
     queryFn: () => fetchAPI("/home/status"),
     refetchInterval: 15000,
@@ -54,7 +54,9 @@ export default function SmartHomePage() {
         ))}
       </div>
 
-      {isLoading ? (
+      {isError ? (
+        <div className="text-sm text-destructive">加载失败，请检查服务或刷新重试</div>
+      ) : isLoading ? (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
           {Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-20 rounded-lg" />)}
         </div>

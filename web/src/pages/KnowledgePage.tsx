@@ -14,7 +14,7 @@ export default function KnowledgePage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [ingestPath, setIngestPath] = useState("");
   const [showSearch, setShowSearch] = useState(false);
-  const { data, isLoading } = useKnowledge();
+  const { data, isLoading, isError } = useKnowledge();
   const searchMut = useKnowledgeSearch();
   const ingestMut = useKnowledgeIngest();
   const deleteMut = useKnowledgeDelete();
@@ -33,6 +33,7 @@ export default function KnowledgePage() {
   };
 
   const handleDelete = async (docId: string) => {
+    if (!window.confirm("确定删除该文档？")) return;
     try {
       await deleteMut.mutateAsync(docId);
       toast.success("文档已删除");
@@ -86,7 +87,9 @@ export default function KnowledgePage() {
         </Card>
       )}
 
-      {isLoading ? (
+      {isError ? (
+        <div className="text-sm text-destructive">加载失败，请检查服务或刷新重试</div>
+      ) : isLoading ? (
         <div className="space-y-3">{Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-14 rounded-lg" />)}</div>
       ) : docs.length === 0 ? (
         <EmptyState title="暂无文档" description="导入文件以启用 RAG 检索" icon={<BookOpen className="size-10" />} />

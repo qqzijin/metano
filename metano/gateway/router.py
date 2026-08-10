@@ -8,6 +8,18 @@ from dataclasses import dataclass, field
 from metano.log import logger
 GATEWAY_CONFIG = Path.home() / '.claude' / 'metano' / 'gateway_config.yaml'
 SESSIONS_DIR = Path.home() / '.claude' / 'metano' / 'gateway_sessions'
+GATEWAY_LOG = Path.home() / '.claude' / 'metano' / 'gateway' / 'gateway_log.jsonl'
+
+
+def _log_gateway_event(**fields) -> None:
+    """Append a structured event line to the gateway log (used by /api/logs)."""
+    try:
+        GATEWAY_LOG.parent.mkdir(parents=True, exist_ok=True)
+        entry = {'timestamp': time.time(), **fields}
+        with open(GATEWAY_LOG, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + '\n')
+    except Exception:
+        logger.exception('gateway log write failed')
 
 @dataclass
 class GatewaySession:
@@ -73,6 +85,11 @@ class MessageRouter:
             track_rule_adherence(session.history)
         except Exception:
             logger.exception()
+        try:
+            _log_gateway_event(platform=platform, user_id=user_id, action='message', content=message[:200])
+            _log_gateway_event(platform=platform, user_id=user_id, action='reply', content=response[:300])
+        except Exception:
+            logger.exception('gateway event logging failed')
         return response
 
     def _resolve_skill_command(self, message: str) -> tuple[str, str]:

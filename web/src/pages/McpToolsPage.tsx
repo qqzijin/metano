@@ -11,7 +11,7 @@ import { useMcpTools, useWebSearch } from "@/api/hooks";
 import { toast } from "sonner";
 
 export default function McpToolsPage() {
-  const { data, isLoading } = useMcpTools();
+  const { data, isLoading, isError } = useMcpTools();
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResult, setSearchResult] = useState<any>(null);
   const webSearchMut = useWebSearch();
@@ -77,7 +77,9 @@ export default function McpToolsPage() {
       </Card>
 
       {/* Tool Registry */}
-      {isLoading ? (
+      {isError ? (
+        <div className="text-sm text-destructive">加载失败，请检查服务或刷新重试</div>
+      ) : isLoading ? (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
           {Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-24 rounded-lg" />)}
         </div>

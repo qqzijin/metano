@@ -558,6 +558,20 @@ async def api_logs(source: str='all', lines: int=100, _admin=Depends(require_rol
             except Exception:
                 logger.exception()
         result['audit'] = entries
+    if source in ('all', 'gateway'):
+        try:
+            from .gateway.router import GATEWAY_LOG
+            if GATEWAY_LOG.exists():
+                raw = GATEWAY_LOG.read_text().strip().split('\n')
+                entries = []
+                for line in raw[-lines:]:
+                    try:
+                        entries.append(json.loads(line))
+                    except Exception:
+                        logger.exception()
+                result['gateway'] = entries
+        except Exception:
+            logger.exception()
     return result
 
 @app.get('/api/profile')
@@ -1090,8 +1104,18 @@ async def api_evolution_behavior_reject(suggestion_id: str, _admin=Depends(requi
 @app.post('/api/browser/screenshot')
 async def api_browser_screenshot(body: dict):
     try:
+        import base64 as _b64
+        import os as _os
         from .browser import web_screenshot
         result = web_screenshot(body.get('url', ''), full_page=body.get('full_page', True))
+        if result.get('status') == 'ok' and result.get('path'):
+            path = result['path']
+            if _os.path.isfile(path):
+                try:
+                    with open(path, 'rb') as f:
+                        result['image'] = 'data:image/png;base64,' + _b64.b64encode(f.read()).decode()
+                except Exception:
+                    logger.exception('failed to read screenshot file for base64')
         return result
     except Exception as e:
         logger.exception()

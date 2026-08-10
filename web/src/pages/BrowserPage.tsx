@@ -1,20 +1,22 @@
 import { useState } from "react";
-import { Globe, Search } from "lucide-react";
+import { Camera, Globe, Search } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { useBrowserSearch, useBrowserBrowse } from "@/api/hooks";
+import { useBrowserSearch, useBrowserBrowse, useBrowserScreenshot } from "@/api/hooks";
 
 export default function BrowserPage() {
   const [url, setUrl] = useState("");
   const [mode, setMode] = useState("static");
   const [searchQ, setSearchQ] = useState("");
+  const [shotUrl, setShotUrl] = useState("");
 
   const browseMut = useBrowserBrowse();
   const searchMut = useBrowserSearch();
+  const shotMut = useBrowserScreenshot();
 
   return (
     <>
@@ -64,8 +66,27 @@ export default function BrowserPage() {
             <CardHeader className="pb-3">
               <CardTitle className="text-base">截图</CardTitle>
             </CardHeader>
-            <CardContent>
-              <p className="text-sm text-muted-foreground">截图功能需要浏览器服务运行中。请使用浏览标签页获取网页内容。</p>
+            <CardContent className="space-y-3">
+              <div className="flex flex-col sm:flex-row gap-2">
+                <Input
+                  placeholder="https://example.com"
+                  value={shotUrl}
+                  onChange={(e) => setShotUrl(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && shotUrl.trim() && !shotMut.isPending && shotMut.mutate(shotUrl)}
+                  className="w-full sm:flex-1"
+                />
+                <Button className="shrink-0" disabled={!shotUrl.trim() || shotMut.isPending} onClick={() => shotMut.mutate(shotUrl)}>
+                  <Camera className="size-4 mr-1" /> 截图
+                </Button>
+              </div>
+              {shotMut.isPending && <p className="text-sm text-muted-foreground">正在截图，请稍候...</p>}
+              {shotMut.isError && <p className="text-sm text-destructive">{shotMut.error?.message || "截图失败"}</p>}
+              {shotMut.data?.error && <p className="text-sm text-destructive">{shotMut.data.error}</p>}
+              {shotMut.data?.image && (
+                <div className="overflow-auto rounded-md border">
+                  <img src={shotMut.data.image} alt={`${shotUrl} 截图`} className="w-full h-auto" />
+                </div>
+              )}
             </CardContent>
           </Card>
         </TabsContent>

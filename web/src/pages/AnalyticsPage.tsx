@@ -44,8 +44,9 @@ function MiniStat({ icon, label, value, sub, accent }: MiniStatProps) {
 
 export default function AnalyticsPage() {
   const [days, setDays] = useState<number>(7);
-  const { data, isLoading } = useAnalytics(days);
+  const { data, isLoading, isError } = useAnalytics(days);
 
+  if (isError) return <div className="text-sm text-destructive">加载失败，请检查服务或刷新重试</div>;
   if (isLoading) return <div className="space-y-4">{Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-28 rounded-lg" />)}</div>;
 
   const total = data?.total ?? {};

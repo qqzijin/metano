@@ -38,8 +38,8 @@ export default function ChatPage() {
   const [connectedSession, setConnectedSession] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const chatMut = useChatMutation();
-  const { data: sessionsData } = useSessions("", 20);
-  const { data: msgData, isLoading: msgLoading } = useMessages(connectedSession ?? "");
+  const { data: sessionsData, isError: sessionsError } = useSessions("", 20);
+  const { data: msgData, isLoading: msgLoading, isError: msgError } = useMessages(connectedSession ?? "");
 
   const sessions = sessionsData?.sessions ?? [];
 
@@ -127,7 +127,9 @@ export default function ChatPage() {
             </Button>
           </div>
           <div className="px-4 pb-4 space-y-2 max-h-[300px] overflow-y-auto">
-            {sessions.length === 0 ? (
+            {sessionsError ? (
+              <p className="text-sm text-destructive">加载失败，请检查服务或刷新重试</p>
+            ) : sessions.length === 0 ? (
               <p className="text-sm text-muted-foreground">暂无历史会话</p>
             ) : sessions.map((s) => (
               <button
@@ -190,6 +192,9 @@ export default function ChatPage() {
           )}
           {msgLoading && connectedSession && (
             <div className="space-y-3">{Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-12 rounded-lg" />)}</div>
+          )}
+          {msgError && connectedSession && (
+            <div className="text-sm text-destructive">加载失败，请检查服务或刷新重试</div>
           )}
           {messages.map((m, i) => (
             <div key={i} className={`flex gap-3 ${m.role === "user" ? "justify-end" : ""}`}>

@@ -17,6 +17,7 @@ import {
   useProposalsApplyApproved,
 } from '../api/hooks';
 import type { AgentRule, KnowledgeGap, ActionLogEntry, Proposal } from '../api/client';
+import { toast } from 'sonner';
 
 type TabKey = 'overview' | 'proposals' | 'rules' | 'strategy' | 'knowledge' | 'architecture' | 'actions';
 
@@ -86,9 +87,10 @@ function StatCard({ label, value }: { label: string; value: number }) {
 
 // ── Overview ──
 function OverviewTab() {
-  const { data: status, isLoading } = useEvolution();
+  const { data: status, isLoading, isError } = useEvolution();
   const { data: patterns } = useBehaviorPatterns();
 
+  if (isError) return <div className="text-sm text-destructive">加载失败，请检查服务或刷新重试</div>;
   if (isLoading) return <div className="text-gray-400">加载中...</div>;
 
   return (
@@ -156,10 +158,11 @@ function OverviewTab() {
 
 // ── Rules ──
 function RulesTab() {
-  const { data: rulesData, isLoading } = useAgentRules();
+  const { data: rulesData, isLoading, isError } = useAgentRules();
   const toggle = useToggleRule();
   const [filter, setFilter] = useState<string>('all');
 
+  if (isError) return <div className="text-sm text-destructive">加载失败，请检查服务或刷新重试</div>;
   if (isLoading) return <div className="text-gray-400">加载中...</div>;
 
   const rules = rulesData?.rules ?? [];
@@ -196,7 +199,15 @@ function RulesTab() {
                 </div>
               </div>
               <button
-                onClick={() => toggle.mutate({ ruleId: rule.id, active: !rule.active })}
+                onClick={async () => {
+                  const newActive = !rule.active;
+                  try {
+                    await toggle.mutateAsync({ ruleId: rule.id, active: newActive });
+                    toast.success(newActive ? '规则已启用' : '规则已禁用');
+                  } catch {
+                    toast.error('切换规则失败');
+                  }
+                }}
                 className={`ml-3 px-2 py-1 rounded text-xs ${rule.active ? 'bg-green-900 text-green-300' : 'bg-gray-700 text-gray-400'}`}
               >
                 {rule.active ? '启用' : '禁用'}
@@ -213,7 +224,7 @@ function RulesTab() {
 // ── Strategy ──
 function StrategyTab() {
   const [context, setContext] = useState('');
-  const { data: strategyData, isLoading } = useStrategy(context || undefined);
+  const { data: strategyData, isLoading, isError } = useStrategy(context || undefined);
   const detect = useDetectPatterns();
   const [detectedPatterns, setDetectedPatterns] = useState<any[]>([]);
 
@@ -240,7 +251,7 @@ function StrategyTab() {
 
       <div className="bg-gray-800 rounded-lg p-4">
         <h3 className="text-sm font-medium text-gray-300 mb-3">策略推荐</h3>
-        {isLoading ? <div className="text-gray-400 text-sm">加载中...</div> : (
+        {isError ? <div className="text-sm text-destructive">加载失败，请检查服务或刷新重试</div> : isLoading ? <div className="text-gray-400 text-sm">加载中...</div> : (
           <div className="space-y-2">
             {strategies.map((s: AgentRule) => (
               <div key={s.id} className="flex items-center justify-between bg-gray-750 rounded p-3">
@@ -286,7 +297,7 @@ function StrategyTab() {
 function KnowledgeTab() {
   const [topic, setTopic] = useState('');
   const explore = useExploreKnowledge();
-  const { data: gapsData, isLoading: gapsLoading } = useKnowledgeGaps();
+  const { data: gapsData, isLoading: gapsLoading, isError: gapsError } = useKnowledgeGaps();
   const [exploreResult, setExploreResult] = useState<any>(null);
 
   const handleExplore = async () => {
@@ -329,7 +340,7 @@ function KnowledgeTab() {
 
       <div className="bg-gray-800 rounded-lg p-4">
         <h3 className="text-sm font-medium text-gray-300 mb-3">知识缺口</h3>
-        {gapsLoading ? <div className="text-gray-400 text-sm">加载中...</div> : gaps.length ? (
+        {gapsError ? <div className="text-sm text-destructive">加载失败，请检查服务或刷新重试</div> : gapsLoading ? <div className="text-gray-400 text-sm">加载中...</div> : gaps.length ? (
           <div className="space-y-2">
             {gaps.map((g: KnowledgeGap, i: number) => (
               <div key={i} className="flex items-start justify-between bg-gray-750 rounded p-3">
@@ -352,9 +363,10 @@ function KnowledgeTab() {
 
 // ── Architecture ──
 function ArchitectureTab() {
-  const { data: snapshot, isLoading } = useArchitecture();
+  const { data: snapshot, isLoading, isError } = useArchitecture();
   const model = snapshot?.model;
 
+  if (isError) return <div className="text-sm text-destructive">加载失败，请检查服务或刷新重试</div>;
   if (isLoading) return <div className="text-gray-400">加载中...</div>;
 
   return (
@@ -422,8 +434,9 @@ function ArchitectureTab() {
 
 // ── Actions ──
 function ActionsTab() {
-  const { data: actionsData, isLoading } = useActionLog(50);
+  const { data: actionsData, isLoading, isError } = useActionLog(50);
 
+  if (isError) return <div className="text-sm text-destructive">加载失败，请检查服务或刷新重试</div>;
   if (isLoading) return <div className="text-gray-400">加载中...</div>;
 
   const actions = actionsData?.actions ?? [];
@@ -480,12 +493,13 @@ const STATUS_LABELS: Record<string, string> = {
 function ProposalsTab() {
   const [statusFilter, setStatusFilter] = useState<string>('');
   const [typeFilter, setTypeFilter] = useState<string>('');
-  const { data, isLoading } = useProposals(statusFilter || undefined, typeFilter || undefined);
+  const { data, isLoading, isError } = useProposals(statusFilter || undefined, typeFilter || undefined);
   const approve = useProposalApprove();
   const reject = useProposalReject();
   const apply = useProposalApply();
   const applyAll = useProposalsApplyApproved();
 
+  if (isError) return <div className="text-sm text-destructive">加载失败，请检查服务或刷新重试</div>;
   if (isLoading) return <div className="text-gray-400">加载中...</div>;
 
   const proposals = data?.items ?? [];
@@ -508,7 +522,14 @@ function ProposalsTab() {
           </button>
         ))}
         {proposals.some(p => p.status === 'approved') && (
-          <button onClick={() => applyAll.mutate()}
+          <button onClick={async () => {
+              try {
+                const res = await applyAll.mutateAsync();
+                toast.success(`已应用 ${res.applied} 个提案`);
+              } catch {
+                toast.error('批量应用失败');
+              }
+            }}
             disabled={applyAll.isPending}
             className="ml-auto px-3 py-1.5 bg-green-700 text-green-200 rounded text-xs hover:bg-green-600 disabled:opacity-50">
             {applyAll.isPending ? '执行中...' : '批量应用已批准'}
@@ -539,14 +560,35 @@ function ProposalsTab() {
               <div className="flex gap-1 shrink-0">
                 {p.status === 'pending' && (
                   <>
-                    <button onClick={() => approve.mutate(p.id)} disabled={approve.isPending}
+                    <button onClick={async () => {
+                        try {
+                          await approve.mutateAsync(p.id);
+                          toast.success('提案已批准');
+                        } catch {
+                          toast.error('批准失败');
+                        }
+                      }} disabled={approve.isPending}
                       className="px-2 py-1 bg-blue-700 text-blue-200 rounded text-xs hover:bg-blue-600 disabled:opacity-50">批准</button>
-                    <button onClick={() => reject.mutate(p.id)} disabled={reject.isPending}
+                    <button onClick={async () => {
+                        try {
+                          await reject.mutateAsync(p.id);
+                          toast.success('提案已拒绝');
+                        } catch {
+                          toast.error('拒绝失败');
+                        }
+                      }} disabled={reject.isPending}
                       className="px-2 py-1 bg-red-700 text-red-200 rounded text-xs hover:bg-red-600 disabled:opacity-50">拒绝</button>
                   </>
                 )}
                 {p.status === 'approved' && (
-                  <button onClick={() => apply.mutate(p.id)} disabled={apply.isPending}
+                  <button onClick={async () => {
+                      try {
+                        await apply.mutateAsync(p.id);
+                        toast.success('提案已应用');
+                      } catch {
+                        toast.error('应用失败');
+                      }
+                    }} disabled={apply.isPending}
                     className="px-2 py-1 bg-green-700 text-green-200 rounded text-xs hover:bg-green-600 disabled:opacity-50">
                     {apply.isPending ? '执行中...' : '应用'}
                   </button>

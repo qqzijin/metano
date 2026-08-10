@@ -33,7 +33,7 @@ function MiniStat({ icon, label, value, sub, accent }: MiniStatProps) {
 }
 
 export default function DashboardPage() {
-  const { data: status } = useStatus();
+  const { data: status, isError: statusError } = useStatus();
   const { data: evo } = useEvolution();
   const { data: analytics } = useAnalytics(7);
 
@@ -42,6 +42,15 @@ export default function DashboardPage() {
   const daily = analytics?.daily ?? [];
   const todayCost = daily.length > 0 ? daily[daily.length - 1]?.estimated_cost_usd ?? 0 : 0;
   const totalCost7d = analytics?.total?.estimated_cost_usd ?? 0;
+
+  if (statusError) {
+    return (
+      <>
+        <PageHeader title="仪表盘" description="系统概览与核心指标" />
+        <div className="text-sm text-destructive">加载失败，请检查服务或刷新重试</div>
+      </>
+    );
+  }
 
   return (
     <>

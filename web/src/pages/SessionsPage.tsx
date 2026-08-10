@@ -13,8 +13,8 @@ import { fmtTokens, fmtCost, fmtTime } from "@/api/client";
 export default function SessionsPage() {
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<string | null>(null);
-  const { data, isLoading } = useSessions(search);
-  const { data: msgData, isLoading: msgLoading } = useMessages(selected ?? "");
+  const { data, isLoading, isError } = useSessions(search);
+  const { data: msgData, isLoading: msgLoading, isError: msgError } = useMessages(selected ?? "");
 
   const sessions = data?.sessions ?? [];
   const messages = msgData?.messages ?? [];
@@ -38,7 +38,9 @@ export default function SessionsPage() {
         </div>
 
         <div className="space-y-3">
-          {msgLoading ? (
+          {msgError ? (
+            <div className="text-sm text-destructive">加载失败，请检查服务或刷新重试</div>
+          ) : msgLoading ? (
             Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-16 rounded-lg" />)
           ) : messages.map((m) => (
             <Card key={m.id} className="p-4">
@@ -66,7 +68,9 @@ export default function SessionsPage() {
       <PageHeader title="会话" description="对话历史记录" />
       <SearchInput value={search} onChange={setSearch} placeholder="搜索会话..." className="max-w-sm mb-4" />
 
-      {isLoading ? (
+      {isError ? (
+        <div className="text-sm text-destructive">加载失败，请检查服务或刷新重试</div>
+      ) : isLoading ? (
         <div className="space-y-3">{Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-14 rounded-lg" />)}</div>
       ) : sessions.length === 0 ? (
         <EmptyState title="暂无会话" description="从聊天页面开始一段对话" />

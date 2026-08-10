@@ -12,7 +12,7 @@ import { useSkills, useSkill } from "@/api/hooks";
 export default function SkillsPage() {
   const [category, setCategory] = useState("");
   const [detailName, setDetailName] = useState<string | null>(null);
-  const { data, isLoading } = useSkills();
+  const { data, isLoading, isError } = useSkills();
   const { data: detail } = useSkill(detailName ?? "");
 
   const skills = data?.skills ?? [];
@@ -31,7 +31,9 @@ export default function SkillsPage() {
         ))}
       </div>
 
-      {isLoading ? (
+      {isError ? (
+        <div className="text-sm text-destructive">加载失败，请检查服务或刷新重试</div>
+      ) : isLoading ? (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
           {Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-28 rounded-lg" />)}
         </div>

@@ -8,7 +8,7 @@ import { useSecurityUsers, useSecuritySetTier } from "@/api/hooks";
 import { toast } from "sonner";
 
 export default function SecurityPage() {
-  const { data, isLoading } = useSecurityUsers();
+  const { data, isLoading, isError } = useSecurityUsers();
   const setTierMut = useSecuritySetTier();
 
   const users = data?.users ?? [];
@@ -17,7 +17,9 @@ export default function SecurityPage() {
     <>
       <PageHeader title="安全管理" description="访问控制与审计" />
 
-      {isLoading ? (
+      {isError ? (
+        <div className="text-sm text-destructive">加载失败，请检查服务或刷新重试</div>
+      ) : isLoading ? (
         <div className="space-y-3">{Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-14 rounded-lg" />)}</div>
       ) : users.length === 0 ? (
         <EmptyState title="暂无用户" description="用户与网关交互后将自动出现" />

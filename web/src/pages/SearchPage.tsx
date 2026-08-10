@@ -14,7 +14,7 @@ import { fmtTime } from "@/api/client";
 export default function SearchPage() {
   const [query, setQuery] = useState("");
   const [searched, setSearched] = useState("");
-  const { data, isLoading } = useSearch(searched);
+  const { data, isLoading, isError } = useSearch(searched);
   const results = data?.results ?? [];
 
   const doSearch = () => {
@@ -38,7 +38,9 @@ export default function SearchPage() {
         <Button onClick={doSearch} disabled={!query.trim()}>搜索</Button>
       </div>
 
-      {isLoading ? (
+      {isError ? (
+        <div className="text-sm text-destructive">加载失败，请检查服务或刷新重试</div>
+      ) : isLoading ? (
         <div className="space-y-3">{Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-20 rounded-lg" />)}</div>
       ) : searched && results.length === 0 ? (
         <EmptyState title="未找到结果" description="请尝试不同的关键词" />

@@ -12,8 +12,8 @@ import { useModels, useProxyProviders, useModelSetDefault, useProxyAdd } from "@
 import { toast } from "sonner";
 
 export default function ModelsPage() {
-  const { data: modelsData, isLoading: modelsLoading } = useModels();
-  const { data: proxyData, isLoading: proxyLoading } = useProxyProviders();
+  const { data: modelsData, isLoading: modelsLoading, isError: modelsError } = useModels();
+  const { data: proxyData, isLoading: proxyLoading, isError: proxyError } = useProxyProviders();
   const setDefaultMut = useModelSetDefault();
   const addProxyMut = useProxyAdd();
   const [showForm, setShowForm] = useState(false);
@@ -59,6 +59,7 @@ export default function ModelsPage() {
   };
 
   const isLoading = modelsLoading || proxyLoading;
+  const isError = modelsError || proxyError;
 
   return (
     <>
@@ -113,7 +114,9 @@ export default function ModelsPage() {
         </Card>
       )}
 
-      {isLoading ? (
+      {isError ? (
+        <div className="text-sm text-destructive">加载失败，请检查服务或刷新重试</div>
+      ) : isLoading ? (
         <div className="space-y-3">{Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-24 rounded-lg" />)}</div>
       ) : (
         <>
