@@ -175,22 +175,30 @@ export default function AnalyticsPage() {
           <CardContent className="pt-0">
             {daily.length > 0 ? (
               <ResponsiveContainer width="100%" height={240}>
-                <AreaChart data={daily}>
+                <AreaChart data={daily} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
                   <defs>
                     <linearGradient id="costGrad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor={PRIMARY} stopOpacity={0.28} />
-                      <stop offset="95%" stopColor={PRIMARY} stopOpacity={0} />
+                      <stop offset="0%" stopColor={PRIMARY} stopOpacity={0.22} />
+                      <stop offset="100%" stopColor={PRIMARY} stopOpacity={0} />
                     </linearGradient>
                   </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke={GRID_STROKE} opacity={0.5} />
-                  <XAxis dataKey="day" tick={AXIS_TICK} stroke={AXIS_STROKE} />
-                  <YAxis tickFormatter={(v: number) => fmtCost(v)} tick={AXIS_TICK} stroke={AXIS_STROKE} width={58} />
+                  <XAxis dataKey="day" tick={AXIS_TICK} axisLine={false} tickLine={false} dy={6} />
+                  <YAxis tickFormatter={(v: number) => fmtCost(v)} tick={AXIS_TICK} axisLine={false} tickLine={false} width={52} />
                   <Tooltip
                     formatter={(value: unknown) => [fmtCost(Number(value)), "费用"]}
                     labelFormatter={(label: unknown) => `${String(label)}`}
                     contentStyle={TOOLTIP_STYLE}
+                    cursor={{ stroke: PRIMARY, strokeDasharray: "4 4", strokeOpacity: 0.35 }}
                   />
-                  <Area type="monotone" dataKey="estimated_cost_usd" stroke={PRIMARY} fill="url(#costGrad)" strokeWidth={2.5} />
+                  <Area
+                    type="monotone"
+                    dataKey="estimated_cost_usd"
+                    stroke={PRIMARY}
+                    strokeWidth={2.5}
+                    fill="url(#costGrad)"
+                    dot={false}
+                    activeDot={{ r: 4, strokeWidth: 2, stroke: "var(--card)" }}
+                  />
                 </AreaChart>
               </ResponsiveContainer>
             ) : (
@@ -208,20 +216,30 @@ export default function AnalyticsPage() {
           <CardContent className="pt-0">
             {daily.length > 0 ? (
               <ResponsiveContainer width="100%" height={240}>
-                <BarChart data={daily}>
-                  <CartesianGrid strokeDasharray="3 3" stroke={GRID_STROKE} opacity={0.5} />
-                  <XAxis dataKey="day" tick={AXIS_TICK} stroke={AXIS_STROKE} />
-                  <YAxis tickFormatter={(v: number) => fmtTokens(v)} tick={AXIS_TICK} stroke={AXIS_STROKE} width={58} />
+                <BarChart data={daily} margin={{ top: 8, right: 8, left: 0, bottom: 0 }} barGap={3}>
+                  <XAxis dataKey="day" tick={AXIS_TICK} axisLine={false} tickLine={false} dy={6} />
+                  <YAxis tickFormatter={(v: number) => fmtTokens(v)} tick={AXIS_TICK} axisLine={false} tickLine={false} width={52} />
                   <Tooltip
                     formatter={(value: unknown, name: unknown) => [fmtTokens(Number(value)), String(name)]}
                     contentStyle={TOOLTIP_STYLE}
+                    cursor={{ fill: "var(--muted)", fillOpacity: 0.35 }}
                   />
-                  <Bar dataKey="input_tokens" name="输入" fill={PRIMARY} radius={[4, 4, 0, 0]} />
-                  <Bar dataKey="output_tokens" name="输出" fill="var(--chart-2)" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="input_tokens" name="输入" fill={PRIMARY} radius={[5, 5, 0, 0]} maxBarSize={26} />
+                  <Bar dataKey="output_tokens" name="输出" fill="var(--chart-2)" radius={[5, 5, 0, 0]} maxBarSize={26} />
                 </BarChart>
               </ResponsiveContainer>
             ) : (
               <div className="flex h-[240px] items-center justify-center text-sm text-muted-foreground">暂无数据</div>
+            )}
+            {daily.length > 0 && (
+              <div className="mt-1.5 flex items-center justify-center gap-4 text-xs text-muted-foreground">
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="size-2 rounded-full" style={{ background: PRIMARY }} /> 输入
+                </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="size-2 rounded-full" style={{ background: "var(--chart-2)" }} /> 输出
+                </span>
+              </div>
             )}
           </CardContent>
         </Card>

@@ -300,9 +300,10 @@ export default function ChatPage() {
         </Card>
       )}
 
-      <Card className="-mx-4 flex flex-col h-[calc(100dvh-17rem)] md:mx-0 md:h-[calc(100vh-12rem)]">
+      {/* Native-app style chat: full-bleed, grey thread background, no card box */}
+      <div className="-mx-4 flex h-[calc(100dvh-17rem)] flex-col overflow-hidden bg-muted/40 md:mx-0 md:h-[calc(100vh-12rem)] md:rounded-xl md:border md:border-border">
         {/* Header bar */}
-        <div className="flex items-center justify-between px-4 pt-3 pb-1 border-b">
+        <div className="flex items-center justify-between bg-background px-4 py-2.5 border-b">
           <div className="flex items-center gap-2">
             <span className="text-sm text-muted-foreground">{messages.length} 条消息</span>
             {connectedSession && (
@@ -355,8 +356,10 @@ export default function ChatPage() {
                 </div>
               )}
               <div
-                className={`rounded-xl px-4 py-2.5 max-w-[85%] text-sm ${
-                  m.role === "user" ? "bg-primary text-primary-foreground whitespace-pre-wrap" : "bg-muted"
+                className={`w-fit max-w-[85%] px-4 py-2.5 text-sm ${
+                  m.role === "user"
+                    ? "rounded-2xl rounded-br-md bg-primary text-primary-foreground whitespace-pre-wrap"
+                    : "rounded-2xl rounded-bl-md border border-border/60 bg-card text-foreground"
                 }`}
               >
                 {m.role === "assistant" && m.thinking ? (
@@ -427,20 +430,10 @@ export default function ChatPage() {
           <div ref={bottomRef} />
         </div>
 
-        {/* Composer — capsule textarea, auto-growing, keyboard-safe */}
-        <div className="p-2.5 pb-safe border-t">
-          <div className="flex w-full min-w-0 items-end gap-1 rounded-[1.4rem] border bg-background py-1 pl-1 pr-1 shadow-sm transition-all focus-within:border-primary/50 focus-within:ring-2 focus-within:ring-primary/15 md:pl-1.5 md:pr-1.5">
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="size-8 shrink-0 rounded-full md:size-9"
-              title="上传附件"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={uploadMut.isPending || chatMut.isPending}
-            >
-              {uploadMut.isPending ? <span className="text-xs">上传中</span> : <Paperclip className="size-4.5" />}
-            </Button>
+        {/* Composer — capsule textarea, auto-growing, keyboard-safe.
+            Buttons live OUTSIDE the input row so the textarea takes full width. */}
+        <div className="bg-background p-2.5 pb-safe border-t">
+          <div className="flex w-full min-w-0 items-end gap-1 rounded-[1.4rem] border bg-background py-1 pl-3 pr-1.5 shadow-sm transition-all focus-within:border-primary/50 focus-within:ring-2 focus-within:ring-primary/15">
             <textarea
               ref={taRef}
               rows={1}
@@ -456,12 +449,33 @@ export default function ChatPage() {
               disabled={chatMut.isPending || !input.trim()}
               size="icon"
               className="size-8 shrink-0 rounded-full md:size-9"
+              aria-label="发送"
             >
               <Send className="size-4" />
             </Button>
           </div>
+          <div className="mt-1 flex items-center gap-1.5">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploadMut.isPending || chatMut.isPending}
+            >
+              <Paperclip className="mr-1 size-3.5" />
+              {uploadMut.isPending ? "上传中…" : "附件"}
+            </Button>
+          </div>
+          <input
+            ref={fileInputRef}
+            type="file"
+            hidden
+            accept=".txt,.md,.pdf,.png,.jpg,.jpeg,.gif,.webp,.csv,.json,.py,.js,.ts,.html,.docx"
+            onChange={handleFileSelected}
+          />
         </div>
-      </Card>
+      </div>
     </>
   );
 }

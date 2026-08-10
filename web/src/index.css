@@ -169,3 +169,13 @@ body {
   }
   .min-touch { min-height: 44px; }
 }
+
+/* Recharts / chart SVGs get a default black focus frame when clicked —
+   kill it (interactive elements keep their shadcn focus ring). */
+svg:focus,
+svg *:focus,
+.recharts-wrapper:focus,
+.recharts-surface:focus,
+.recharts-wrapper *:focus {
+  outline: none;
+}
