@@ -723,6 +723,43 @@ async def api_knowledge_delete(doc_id: str, _admin=Depends(require_role("admin")
         logger.exception()
         return _error_response('Internal error')
 
+# ── Knowledge Graph ──
+
+@app.post('/api/knowledge/graph/extract')
+async def api_knowledge_graph_extract(body: dict = {}, _admin=Depends(require_role("admin"))):
+    """Manually (re)build the knowledge graph. replace defaults to True for a clean rebuild."""
+    try:
+        from .knowledge import knowledge_extract_graph, knowledge_graph_stats
+        result = knowledge_extract_graph(
+            doc_id=body.get('doc_id', ''),
+            limit=body.get('limit', 0),
+            replace=body.get('replace', True),
+        )
+        return {'extract': result, 'stats': knowledge_graph_stats()}
+    except Exception as e:
+        logger.exception()
+        return _error_response('Internal error', extra={'extract': {'status': 'error'}})
+
+@app.get('/api/knowledge/graph')
+async def api_knowledge_graph(entity: str = '', entity_type: str = '', limit: int = 50):
+    """Query knowledge graph entities and their relationships."""
+    try:
+        from .knowledge import knowledge_graph_query
+        return knowledge_graph_query(entity_name=entity, entity_type=entity_type, limit=limit)
+    except Exception as e:
+        logger.exception()
+        return _error_response('Internal error', extra={'entities': [], 'relationships': []})
+
+@app.get('/api/knowledge/graph/stats')
+async def api_knowledge_graph_stats():
+    """Knowledge graph statistics."""
+    try:
+        from .knowledge import knowledge_graph_stats
+        return knowledge_graph_stats()
+    except Exception as e:
+        logger.exception()
+        return _error_response('Internal error', extra={'entities': 0, 'relationships': 0})
+
 @app.post('/api/evolution/pause')
 async def api_evolution_pause(_admin=Depends(require_role("admin"))):
     try:

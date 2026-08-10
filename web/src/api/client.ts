@@ -105,6 +105,35 @@ export interface KnowledgeDoc {
   [key: string]: unknown;
 }
 
+export interface GraphEntity {
+  entity_id: string;
+  name: string;
+  entity_type: string;
+  confidence: number;
+}
+
+export interface GraphRelationship {
+  rel_id: string;
+  source_id: string;
+  target_id: string;
+  rel_type: string;
+  confidence: number;
+  source_name: string;
+  target_name: string;
+}
+
+export interface GraphQueryResult {
+  entities: GraphEntity[];
+  relationships: GraphRelationship[];
+}
+
+export interface GraphStats {
+  entities: number;
+  relationships: number;
+  entity_types: Record<string, number>;
+  relationship_types: Record<string, number>;
+}
+
 export interface CostCircuitState {
   state: "normal" | "warning" | "paused" | "stopped";
   daily_cost: number;

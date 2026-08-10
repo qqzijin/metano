@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import logging
 import math
 import sqlite3
 import time
@@ -11,7 +12,7 @@ from typing import Optional
 KB_DIR = Path.home() / ".claude" / "metano" / "knowledge"
 KB_DB = KB_DIR / "knowledge.db"
 PROJECT_ROOT = Path.home() / ".claude" / "metano"
-ALLOWED_INGEST_PREFIXES = [PROJECT_ROOT]
+ALLOWED_INGEST_PREFIXES = [PROJECT_ROOT, Path.home() / "scrapling-project", Path.home() / "DailyHotApi"]
 
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 200
@@ -358,7 +359,7 @@ def _extract_entities(text: str, chunk_id: str = "", doc_id: str = "") -> list[d
                 })
 
     # File path patterns
-    file_pattern = r'([\w\-/]+\.(?:py|js|ts|jsx|tsx|json|yaml|yml|md|txt|sql|sh|dockerfile))'
+    file_pattern = r'([\w\-/]+\.(?:py|js|ts|jsx|tsx|json|yaml|yml|md|txt|sql|sh|dockerfile))\b'
     for match in re.finditer(file_pattern, text, re.IGNORECASE):
         name = match.group(1)
         key = (name.lower(), 'file')
@@ -370,12 +371,18 @@ def _extract_entities(text: str, chunk_id: str = "", doc_id: str = "") -> list[d
                 'confidence': 0.8,
             })
 
-    # Module/Package patterns (import statements, require)
-    module_pattern = r'(?:from|import)\s+([\w\.]+)'
-    for match in re.finditer(module_pattern, text):
-        name = match.group(1)
+    # Module/Package patterns (import statements).
+    # Anchored to the start of a line so prose or SQL keywords ("in", "IS",
+    # "INTEGER") are not mistaken for modules, and so "from typing import
+    # Optional" only captures the real module ("typing"), not the imported name.
+    module_pattern = re.compile(
+        r'^\s*(?:from\s+([\w\.]+)\s+import|import\s+([\w\.]+))',
+        re.MULTILINE | re.IGNORECASE
+    )
+    for match in module_pattern.finditer(text):
+        name = (match.group(1) or match.group(2) or '').strip('.')
         key = (name.lower(), 'module')
-        if key not in seen:
+        if name and key not in seen:
             seen.add(key)
             entities.append({
                 'name': name,
@@ -434,23 +441,36 @@ def _infer_relationship_type(e1: dict, e2: dict, text: str) -> str:
     return 'related_to'
 
 
-def knowledge_extract_graph(doc_id: str = "", limit: int = 100) -> dict:
+def knowledge_extract_graph(doc_id: str = "", limit: int = 100, replace: bool = False) -> dict:
     """Extract knowledge graph from documents.
 
     Processes chunks and builds entity-relationship graph.
+
+    limit: max chunks to process; 0 or negative means all chunks.
+    replace: if True, wipe the existing graph (entities/relationships)
+             before building, giving a clean rebuild.
     """
     conn = _get_kb_conn()
 
+    if replace:
+        conn.execute("DELETE FROM relationships")
+        conn.execute("DELETE FROM entities")
+
     # Get chunks to process
+    rows = []
     if doc_id:
         rows = conn.execute(
-            "SELECT chunk_id, doc_id, content FROM chunks WHERE doc_id=? LIMIT ?",
-            (doc_id, limit)
+            "SELECT chunk_id, doc_id, content FROM chunks WHERE doc_id=?",
+            (doc_id,)
         ).fetchall()
-    else:
+    elif limit and limit > 0:
         rows = conn.execute(
             "SELECT chunk_id, doc_id, content FROM chunks LIMIT ?",
             (limit,)
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT chunk_id, doc_id, content FROM chunks"
         ).fetchall()
 
     total_entities = 0
@@ -508,8 +528,29 @@ def knowledge_extract_graph(doc_id: str = "", limit: int = 100) -> dict:
     }
 
 
+def _ensure_graph_built() -> bool:
+    """Lazily build the knowledge graph on first access.
+
+    If the entities table is empty but chunks exist, run a full clean rebuild.
+    Best-effort: never raise — callers should keep working even if the build fails.
+    Returns True if a build was triggered.
+    """
+    try:
+        conn = _get_kb_conn()
+        entity_count = conn.execute("SELECT COUNT(*) FROM entities").fetchone()[0]
+        chunk_count = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+        conn.close()
+        if entity_count == 0 and chunk_count > 0:
+            knowledge_extract_graph(limit=0, replace=True)
+            return True
+    except Exception:
+        logging.getLogger(__name__).exception('lazy graph build failed')
+    return False
+
+
 def knowledge_graph_query(entity_name: str = "", entity_type: str = "", limit: int = 20) -> dict:
     """Query the knowledge graph for entities and their relationships."""
+    _ensure_graph_built()
     conn = _get_kb_conn()
 
     results = {"entities": [], "relationships": []}
@@ -555,6 +596,7 @@ def knowledge_graph_query(entity_name: str = "", entity_type: str = "", limit: i
 
 def knowledge_graph_stats() -> dict:
     """Return statistics about the knowledge graph."""
+    _ensure_graph_built()
     conn = _get_kb_conn()
 
     entity_count = conn.execute("SELECT COUNT(*) FROM entities").fetchone()[0]

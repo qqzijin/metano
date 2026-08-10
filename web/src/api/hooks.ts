@@ -27,6 +27,8 @@ import {
   type ApplyResult,
   type Proposal,
   type EffectivenessData,
+  type GraphStats,
+  type GraphQueryResult,
 } from "./client";
 
 /* ---- query key factory ---- */
@@ -482,10 +484,10 @@ export function useProxyProviders() {
 export function useBrowserScreenshot() {
   return useMutation({
     mutationFn: (url: string) =>
-      fetchAPI<{ path: string }>("/browser/screenshot", {
-        method: "POST",
-        body: JSON.stringify({ url }),
-      }),
+      fetchAPI<{ path?: string; image?: string; url?: string; status?: string; error?: string }>(
+        "/browser/screenshot",
+        { method: "POST", body: JSON.stringify({ url }) }
+      ),
   });
 }
 
@@ -650,6 +652,40 @@ export function useProposalsApplyApproved() {
   return useMutation<{ applied: number }, Error, void>({
     mutationFn: () => fetchAPI("/evolution/proposals/apply-approved", { method: "POST" }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["proposals"] }),
+  });
+}
+
+/* ---- knowledge graph ---- */
+
+export function useGraphStats() {
+  return useQuery<GraphStats>({
+    queryKey: ["knowledge", "graph", "stats"],
+    queryFn: () => fetchAPI("/knowledge/graph/stats"),
+    refetchInterval: 15000,
+  });
+}
+
+export function useGraphQuery(entity: string, entityType: string, limit = 100) {
+  const params = new URLSearchParams();
+  if (entity) params.set("entity", entity);
+  if (entityType) params.set("entity_type", entityType);
+  params.set("limit", String(limit));
+  const qs = params.toString();
+  return useQuery<GraphQueryResult>({
+    queryKey: ["knowledge", "graph", "query", entity, entityType],
+    queryFn: () => fetchAPI(`/knowledge/graph?${qs}`),
+  });
+}
+
+export function useGraphExtract() {
+  const qc = useQueryClient();
+  return useMutation<GraphStats, Error, { doc_id?: string; limit?: number; replace?: boolean }>({
+    mutationFn: (data) =>
+      fetchAPI("/knowledge/graph/extract", { method: "POST", body: JSON.stringify(data) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["knowledge", "graph", "stats"] });
+      qc.invalidateQueries({ queryKey: ["knowledge", "graph", "query"] });
+    },
   });
 }
 

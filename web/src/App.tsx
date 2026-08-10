@@ -22,6 +22,7 @@ import AnalyticsPage from "@/pages/AnalyticsPage";
 import SkillsPage from "@/pages/SkillsPage";
 import ModelsPage from "@/pages/ModelsPage";
 import KnowledgePage from "@/pages/KnowledgePage";
+import KnowledgeGraphPage from "@/pages/KnowledgeGraphPage";
 import ConfigPage from "@/pages/ConfigPage";
 import EvolutionPage from "@/pages/EvolutionPage";
 import LogsPage from "@/pages/LogsPage";
@@ -112,6 +113,7 @@ function MainLayout() {
             <Route path="/skills" element={<SkillsPage />} />
             <Route path="/models" element={<ModelsPage />} />
             <Route path="/knowledge" element={<KnowledgePage />} />
+            <Route path="/knowledge-graph" element={<KnowledgeGraphPage />} />
             <Route path="/config" element={<ConfigPage />} />
             <Route path="/evolution" element={<EvolutionPage />} />
             <Route path="/logs" element={<LogsPage />} />

@@ -3,7 +3,7 @@ import { NavLink } from "react-router-dom";
 import {
   Activity, BarChart3, BookOpen, Bot, Brain, Clock, Cpu, Dna,
   FileText, Globe, Home, LayoutDashboard, MessageSquare,
-  Mic, Puzzle, Search, Settings, Shield, User, Zap,
+  Mic, Network, Puzzle, Search, Settings, Shield, User, Zap,
   ChevronsLeft, ChevronsRight, Sun, Moon, Monitor, LogOut, KeyRound,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -27,6 +27,7 @@ const NAV_GROUPS = [
       { to: "/skills", icon: Zap, label: "技能" },
       { to: "/models", icon: Cpu, label: "模型" },
       { to: "/knowledge", icon: BookOpen, label: "知识库" },
+      { to: "/knowledge-graph", icon: Network, label: "知识图谱" },
       { to: "/evolution", icon: Dna, label: "进化系统" },
       { to: "/browser", icon: Globe, label: "浏览器" },
       { to: "/voice", icon: Mic, label: "语音" },
