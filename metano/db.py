@@ -40,13 +40,6 @@ CREATE TABLE IF NOT EXISTS messages (
     duration_ms INTEGER
 );
 
-CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
-    content,
-    content='messages',
-    content_rowid='id',
-    tokenize='trigram'
-);
-
 CREATE TABLE IF NOT EXISTS _index_state (
     file_path TEXT PRIMARY KEY,
     last_byte_offset INTEGER NOT NULL,
@@ -57,23 +50,6 @@ CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
 CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp);
 CREATE INDEX IF NOT EXISTS idx_sessions_last_active ON sessions(last_active);
 """
-
-# FTS5 triggers to keep search index in sync
-FTS_TRIGGERS_SQL = """
-CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
-    INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
-END;
-
-CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
-    INSERT INTO messages_fts(messages_fts, rowid, content) VALUES('delete', old.id, old.content);
-END;
-
-CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON messages BEGIN
-    INSERT INTO messages_fts(messages_fts, rowid, content) VALUES('delete', old.id, old.content);
-    INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
-END;
-"""
-
 
 def get_db(db_path: Optional[Path] = None) -> sqlite3.Connection:
     """Get a WAL-mode SQLite connection."""
@@ -88,10 +64,9 @@ def get_db(db_path: Optional[Path] = None) -> sqlite3.Connection:
 
 
 def init_db(db_path: Optional[Path] = None) -> sqlite3.Connection:
-    """Initialize the database with schema and FTS5 triggers."""
+    """Initialize the database with schema."""
     conn = get_db(db_path)
     conn.executescript(SCHEMA_SQL)
-    conn.executescript(FTS_TRIGGERS_SQL)
     try:
         conn.execute("ALTER TABLE sessions ADD COLUMN user_key TEXT")
         conn.commit()
@@ -224,8 +199,9 @@ def purge_old_sessions(days: int = 180, dry_run: bool = False,
     """Session retention policy for bridge.db.
 
     Deletes chat sessions (and their messages) that have been inactive for more
-    than ``days`` days. The FTS5 triggers keep the trigram search index in sync
-    automatically (messages are deleted first, then the session row).
+    than ``days`` days. Session search is a plain LIKE query over ``messages``
+    (no FTS index), so deletion is a straightforward two-step DML (messages
+    first, then the session row).
 
     Optional size cap: when ``size_limit_mb`` is set and the on-disk DB still
     exceeds that size after the age purge, the oldest remaining sessions are
@@ -315,7 +291,7 @@ def purge_old_sessions(days: int = 180, dry_run: bool = False,
         ids = [r['id'] for r in age_candidates]
         deleted_sessions = len(ids)
         try:
-            # messages first (FTS triggers clean the trigram index), then sessions.
+            # messages first, then sessions.
             conn.execute(f'DELETE FROM messages WHERE session_id IN ({",".join("?" * len(ids))})', ids)
             conn.execute(f'DELETE FROM sessions WHERE id IN ({",".join("?" * len(ids))})', ids)
             conn.commit()

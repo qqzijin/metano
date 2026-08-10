@@ -63,18 +63,10 @@ def _get_conn() -> sqlite3.Connection:
 
 @mcp.tool()
 def session_search(query: str, limit: int=10) -> str:
-    """Full-text search across all Claude Code session messages. Supports Chinese (3+ chars for best results)."""
+    """Search Claude Code session messages by substring. Supports Chinese and partial words."""
     conn = _get_conn()
-    try:
-        rows = conn.execute("SELECT m.session_id, m.role, snippet(messages_fts, -1, '⟨', '⟩', '...', 20) as snippet, m.timestamp, s.title FROM messages_fts JOIN messages m ON m.id = messages_fts.rowid JOIN sessions s ON s.id = m.session_id WHERE messages_fts MATCH ? ORDER BY m.timestamp DESC LIMIT ?", (query, limit)).fetchall()
-        if rows:
-            results = []
-            for r in rows:
-                results.append({'session_id': r['session_id'], 'title': r['title'], 'role': r['role'], 'snippet': r['snippet'], 'timestamp': r['timestamp']})
-            return json.dumps(results, ensure_ascii=False, indent=2)
-    except Exception:
-        logger.exception()
-    rows = conn.execute('SELECT m.session_id, m.role, substr(m.content, 1, 200) as snippet, m.timestamp, s.title FROM messages m JOIN sessions s ON s.id = m.session_id WHERE m.content LIKE ? ORDER BY m.timestamp DESC LIMIT ?', (f'%{query}%', limit)).fetchall()
+    pattern = f'%{query}%'
+    rows = conn.execute('SELECT m.session_id, m.role, substr(m.content, 1, 200) as snippet, m.timestamp, s.title FROM messages m JOIN sessions s ON s.id = m.session_id WHERE m.content LIKE ? ORDER BY m.timestamp DESC LIMIT ?', (pattern, limit)).fetchall()
     results = [{'session_id': r['session_id'], 'title': r['title'], 'role': r['role'], 'snippet': r['snippet'], 'timestamp': r['timestamp']} for r in rows]
     return json.dumps(results, ensure_ascii=False, indent=2)
 

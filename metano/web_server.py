@@ -258,19 +258,37 @@ def list_sessions(limit: int=20, offset: int=0, search: str=''):
     total = conn.execute('SELECT COUNT(*) as c FROM sessions').fetchone()['c']
     return {'items': [dict(r) for r in rows], 'total': total}
 
+def _search_snippet(content: str, q: str, radius: int = 60) -> str:
+    """Context window around the first match of ``q`` in ``content``, with ``<mark>`` highlight."""
+    if not content:
+        return ''
+    idx = content.lower().find(q.lower())
+    if idx < 0:
+        return content[:300]
+    start = max(0, idx - radius)
+    end = min(len(content), idx + len(q) + radius)
+    before = '...' if start > 0 else ''
+    after = '...' if end < len(content) else ''
+    match = content[idx:idx + len(q)]
+    return f"{before}{content[start:idx]}<mark>{match}</mark>{content[idx + len(q):end]}{after}"
+
+
 @app.get('/api/sessions/search')
 def search_sessions(q: str=Query(...), limit: int=20, offset: int=0):
     conn = get_db()
     try:
-        total = conn.execute('SELECT COUNT(*) as c FROM messages_fts WHERE messages_fts MATCH ?', (q,)).fetchone()['c']
-        rows = conn.execute("SELECT m.session_id, m.role, snippet(messages_fts, -1, '<mark>', '</mark>', '...', 30) as snippet, m.timestamp, s.title FROM messages_fts JOIN messages m ON m.id = messages_fts.rowid JOIN sessions s ON s.id = m.session_id WHERE messages_fts MATCH ? ORDER BY m.timestamp DESC LIMIT ? OFFSET ?", (q, limit, offset)).fetchall()
-        if total or rows:
-            return {'query': q, 'results': [dict(r) for r in rows], 'total': total}
+        pattern = f'%{q}%'
+        total = conn.execute('SELECT COUNT(*) as c FROM messages WHERE content LIKE ?', (pattern,)).fetchone()['c']
+        rows = conn.execute('SELECT m.session_id, m.role, m.content AS raw, m.timestamp, s.title FROM messages m JOIN sessions s ON s.id = m.session_id WHERE m.content LIKE ? ORDER BY m.timestamp DESC LIMIT ? OFFSET ?', (pattern, limit, offset)).fetchall()
+        results = []
+        for r in rows:
+            d = dict(r)
+            d['snippet'] = _search_snippet(d.pop('raw'), q)
+            results.append(d)
+        return {'query': q, 'results': results, 'total': total}
     except Exception:
         logger.exception()
-    rows = conn.execute('SELECT m.session_id, m.role, substr(m.content, 1, 300) as snippet, m.timestamp, s.title FROM messages m JOIN sessions s ON s.id = m.session_id WHERE m.content LIKE ? ORDER BY m.timestamp DESC LIMIT ? OFFSET ?', (f'%{q}%', limit, offset)).fetchall()
-    total = conn.execute('SELECT COUNT(*) as c FROM messages m JOIN sessions s ON s.id = m.session_id WHERE m.content LIKE ?', (f'%{q}%',)).fetchone()['c']
-    return {'query': q, 'results': [dict(r) for r in rows], 'total': total}
+        return {'query': q, 'results': [], 'total': 0}
 
 @app.get('/api/search')
 def global_search(q: str=Query(...), limit: int=20, offset: int=0):
