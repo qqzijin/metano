@@ -622,6 +622,7 @@ class MessageRouter:
             '--allowedTools', ','.join(tools),
             '--output-format', 'stream-json',
             '--verbose',
+            '--include-partial-messages',
         ]
         env = os.environ.copy()
         try:
@@ -652,9 +653,19 @@ class MessageRouter:
 
     async def _call_claude_stream_events(self, proc, on_event) -> tuple:
         """Read claude stream-json line-by-line, invoking ``on_event`` with
-        structured events: {'type': 'thinking'|'text'|'tool_use', ...}."""
+        structured events.
+
+        With ``--include-partial-messages`` the CLI emits realtime
+        ``stream_event`` deltas (thinking_delta / text_delta / tool_use
+        input_json_delta); tool args arrive as partial JSON that we accumulate
+        until ``content_block_stop``. Aggregate ``assistant`` blocks are still
+        emitted as a fallback — in delta mode we only use their tool_use
+        (deduped by id on the client) and skip text/thinking to avoid dupes.
+        """
         text_parts: list[str] = []
         usage: dict = {}
+        tool_accum: dict = {}  # content block index -> {id, name, input}
+        self._delta_mode = False
         try:
             while True:
                 line = await asyncio.wait_for(proc.stdout.readline(), timeout=600)
@@ -662,8 +673,33 @@ class MessageRouter:
                     break
                 event, u = self._parse_stream_event(line)
                 if event:
-                    if event['type'] == 'text':
+                    et = event['type']
+                    if et == 'text':
                         text_parts.append(event['text'])
+                    elif et == 'tool_start':
+                        tool_accum[event['index']] = {'id': event['id'], 'name': event['name'], 'input': ''}
+                        try:
+                            on_event({'type': 'tool_use', 'id': event['id'], 'name': event['name'], 'input': {}})
+                        except Exception:
+                            logger.exception('on_event callback failed')
+                        continue
+                    elif et == 'tool_input':
+                        idx = event['index']
+                        if idx in tool_accum:
+                            tool_accum[idx]['input'] += event['partial']
+                        continue
+                    elif et == 'tool_end':
+                        t = tool_accum.pop(event['index'], None)
+                        if t:
+                            try:
+                                inp = json.loads(t['input']) or {}
+                            except Exception:
+                                inp = {'raw': t['input']}
+                            try:
+                                on_event({'type': 'tool_use', 'id': t['id'], 'name': t['name'], 'input': inp})
+                            except Exception:
+                                logger.exception('on_event callback failed')
+                        continue
                     try:
                         on_event(event)
                     except Exception:
@@ -690,10 +726,14 @@ class MessageRouter:
     def _parse_stream_event(self, line: bytes) -> tuple:
         """Parse one stream-json line into a structured event + usage.
 
-        Event types: {'type':'text','text':...} / {'type':'thinking','text':...}
-        / {'type':'tool_use','id':...,'name':...,'input':...} /
-        {'type':'tool_result','id':...,'content':...}. Returns (None, usage)
-        for lines without a sendable event.
+        Realtime deltas (with --include-partial-messages) arrive as
+        ``stream_event`` payloads: content_block_start / content_block_delta
+        (thinking_delta / text_delta / input_json_delta) / content_block_stop
+        / message_delta. Aggregate ``assistant`` / ``user`` / ``result``
+        blocks remain as fallbacks.
+
+        Emitted event types: text / thinking / tool_use (id,name,input) /
+        tool_start / tool_input / tool_end / tool_result.
         """
         line = line.decode(errors='replace').strip()
         if not line:
@@ -703,6 +743,35 @@ class MessageRouter:
         except Exception:
             return None, {}
         usage = {}
+        if obj.get('type') == 'stream_event':
+            self._delta_mode = True
+            ev = obj.get('event', {})
+            if not isinstance(ev, dict):
+                return None, usage
+            etype = ev.get('type')
+            if etype == 'content_block_start':
+                block = ev.get('content_block')
+                if isinstance(block, dict) and block.get('type') == 'tool_use':
+                    return {'type': 'tool_start', 'index': ev.get('index', 0),
+                            'id': block.get('id', ''), 'name': block.get('name', '')}, usage
+            elif etype == 'content_block_delta':
+                delta = ev.get('delta')
+                if isinstance(delta, dict):
+                    dt = delta.get('type')
+                    if dt == 'thinking_delta':
+                        return {'type': 'thinking', 'text': delta.get('thinking', '')}, usage
+                    if dt == 'text_delta':
+                        return {'type': 'text', 'text': delta.get('text', '')}, usage
+                    if dt == 'input_json_delta':
+                        return {'type': 'tool_input', 'index': ev.get('index', 0),
+                                'partial': delta.get('partial_json', '')}, usage
+            elif etype == 'content_block_stop':
+                return {'type': 'tool_end', 'index': ev.get('index', 0)}, usage
+            elif etype == 'message_delta':
+                u = ev.get('usage')
+                if isinstance(u, dict):
+                    usage = u
+            return None, usage
         if obj.get('type') == 'assistant':
             msg = obj.get('message', obj)
             content = msg.get('content')
@@ -712,15 +781,22 @@ class MessageRouter:
                         continue
                     bt = block.get('type')
                     if bt == 'text' and block.get('text'):
+                        if getattr(self, '_delta_mode', False):
+                            continue  # realtime deltas already cover text
                         return {'type': 'text', 'text': block['text']}, usage
                     if bt == 'thinking' and block.get('thinking'):
+                        if getattr(self, '_delta_mode', False):
+                            continue  # realtime deltas already cover thinking
                         return {'type': 'thinking', 'text': block['thinking']}, usage
                     if bt == 'tool_use':
+                        # Fallback: realtime deltas normally provide tool_use;
+                        # emit the aggregate block if not (client dedupes by id).
                         return {'type': 'tool_use', 'id': block.get('id', ''),
                                 'name': block.get('name', ''),
                                 'input': block.get('input', {})}, usage
             elif isinstance(content, str):
-                return {'type': 'text', 'text': content}, usage
+                if not getattr(self, '_delta_mode', False):
+                    return {'type': 'text', 'text': content}, usage
             u = msg.get('usage') if isinstance(msg.get('usage'), dict) else obj.get('usage')
             if isinstance(u, dict):
                 usage = u

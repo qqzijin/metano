@@ -178,8 +178,17 @@ export default function ChatPage() {
           } else if (ev.type === "text") {
             patchLast((a) => { a.content += ev.text; });
           } else if (ev.type === "tool_use") {
+            // Tool use fires twice: once on content_block_start (empty input)
+            // and again on stop (full args). Dedupe by id and update in place.
             patchLast((a) => {
-              a.tool_calls = [...(a.tool_calls ?? []), { id: ev.id || "", name: ev.name, input: JSON.stringify(ev.input ?? {}) }];
+              const calls = a.tool_calls ?? [];
+              const idx = calls.findIndex((tc) => tc.id && tc.id === ev.id);
+              const item = { id: ev.id || "", name: ev.name, input: JSON.stringify(ev.input ?? {}) };
+              if (idx >= 0) {
+                a.tool_calls = [...calls.slice(0, idx), { ...calls[idx], input: item.input }, ...calls.slice(idx + 1)];
+              } else {
+                a.tool_calls = [...calls, item];
+              }
             });
           } else if (ev.type === "tool_result") {
             // Attach tool output to the matching tool_use by id.
