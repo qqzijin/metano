@@ -68,11 +68,11 @@ export function useStatus() {
   });
 }
 
-export function useSessions(search?: string, limit = 20) {
+export function useSessions(search?: string, limit = 20, refetchInterval: number | false = 10000) {
   return useQuery<{ sessions: Session[] }>({
     queryKey: qk.sessions({ search, limit }),
     queryFn: () => fetchAPI(`/sessions?limit=${limit}${search ? `&search=${encodeURIComponent(search)}` : ""}`).then((d: any) => ({ sessions: d.items ?? [] })),
-    refetchInterval: 10000,
+    refetchInterval,
   });
 }
 

@@ -6,6 +6,7 @@ and provides semantic search over accumulated knowledge.
 import contextlib
 import json
 import os
+import re
 import sqlite3
 import hashlib
 from datetime import datetime, timedelta
@@ -25,12 +26,57 @@ _SCHEMA_SQL = """
         created_at TEXT DEFAULT (datetime('now')),
         last_accessed TEXT DEFAULT (datetime('now')),
         access_count INTEGER DEFAULT 0,
-        hash TEXT
+        hash TEXT,
+        tags TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(category);
     CREATE INDEX IF NOT EXISTS idx_memories_importance ON memories(importance DESC);
     CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(content, category, tokenize='trigram');
 """
+
+
+def _migrate(conn):
+    """Add new columns to pre-existing databases (idempotent)."""
+    cols = {r['name'] for r in conn.execute('PRAGMA table_info(memories)')}
+    if 'tags' not in cols:
+        conn.execute("ALTER TABLE memories ADD COLUMN tags TEXT")
+
+
+def _normalize_tags(tags) -> str:
+    """Normalize tags into a canonical comma-separated lowercase string.
+
+    Accepts a list/tuple of tag strings, a single tag string, or a comma/space
+    (incl. full-width comma) separated string. Empty/None -> ''.
+    """
+    if not tags:
+        return ''
+    if isinstance(tags, str):
+        items = re.split(r'[,，\s]+', tags)
+    else:
+        items = tags
+    seen: list[str] = []
+    for t in items:
+        t = str(t).strip().lower()
+        if t and t not in seen:
+            seen.append(t)
+    return ','.join(seen)
+
+
+def _tag_filter_clause(tag):
+    """Build a SQL WHERE fragment that matches memories whose tags contain the
+    given tag(s). Multiple tags (comma/space separated) are AND-ed — a row must
+    carry every tag. Returns ('', []) when no tag is given.
+
+    Exact-tag matching uses `instr(',' || m.tags || ',', ',' || ? || ',')` so
+    that 'front' never matches a tag 'frontend'.
+    """
+    if not tag:
+        return '', []
+    tags = [t.strip().lower() for t in re.split(r'[,，\s]+', tag) if t.strip()]
+    if not tags:
+        return '', []
+    conds = ["instr(',' || m.tags || ',', ',' || ? || ',') > 0" for _ in tags]
+    return 'AND ' + ' AND '.join(conds), tags
 
 
 def _fts_sync(conn, row_id: int, content: str, category: str):
@@ -51,6 +97,7 @@ def _get_conn():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.executescript(_SCHEMA_SQL)
+    _migrate(conn)
     conn.commit()
     try:
         yield conn
@@ -58,7 +105,14 @@ def _get_conn():
         conn.close()
 
 
-def add_memory(content: str, category: str='general', importance: float=0.5) -> dict:
+def add_memory(content: str, category: str='general', importance: float=0.5, tags=None) -> dict:
+    """Add a memory observation.
+
+    tags: list of scenario keywords (or comma/space separated string) that gate
+    when this memory is relevant, e.g. ['backend', 'frontend', 'sync']. Stored
+    normalized as a comma-separated lowercase string. Empty -> no tags.
+    """
+    tags_str = _normalize_tags(tags)
     with _get_conn() as conn:
         content_hash = hashlib.sha256(content.encode()).hexdigest()[:16]
         existing = conn.execute('SELECT id FROM memories WHERE hash = ?', (content_hash,)).fetchone()
@@ -66,38 +120,63 @@ def add_memory(content: str, category: str='general', importance: float=0.5) -> 
             conn.execute("UPDATE memories SET access_count = access_count + 1, last_accessed = datetime('now') WHERE id = ?", (existing['id'],))
             conn.commit()
             return {'status': 'duplicate', 'id': existing['id']}
-        conn.execute('INSERT INTO memories (content, category, importance, hash) VALUES (?, ?, ?, ?)', (content, category, importance, content_hash))
+        conn.execute('INSERT INTO memories (content, category, importance, hash, tags) VALUES (?, ?, ?, ?, ?)',
+                     (content, category, importance, content_hash, tags_str or None))
         conn.commit()
         mid = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
         _fts_sync(conn, mid, content, category)
         conn.commit()
-        return {'status': 'added', 'id': mid}
+        return {'status': 'added', 'id': mid, 'tags': tags_str}
 
 
-def search_memories(query: str, limit: int=10) -> dict:
+def search_memories(query: str, limit: int=10, tag: Optional[str]=None) -> dict:
+    """Search memories by content (FTS5 with LIKE fallback).
+
+    tag: optional scenario keyword to filter by. Pass one tag, or a comma/space
+    separated list for AND semantics (row must carry every tag). When omitted
+    behaviour is identical to before (backward compatible). When query is empty
+    but tag is given, returns all rows carrying that tag (scenario browsing).
+    """
+    tag_clause, tag_params = _tag_filter_clause(tag)
     with _get_conn() as conn:
-        try:
+        if query:
+            try:
+                rows = conn.execute(
+                    "SELECT m.id, m.content, m.category, m.importance, m.created_at, m.tags "
+                    "FROM memories m JOIN memories_fts fts ON m.id = fts.rowid "
+                    "WHERE memories_fts MATCH ? " + tag_clause + " "
+                    "ORDER BY m.importance DESC, m.last_accessed DESC LIMIT ?",
+                    (query, *tag_params, limit)
+                ).fetchall()
+                if rows:
+                    for r in rows:
+                        conn.execute("UPDATE memories SET last_accessed = datetime('now') WHERE id = ?", (r['id'],))
+                    conn.commit()
+                    return {'query': query, 'tag': tag, 'results': [dict(r) for r in rows], 'count': len(rows), 'method': 'fts5'}
+            except Exception:
+                logger.debug("search_memories: FTS5 query failed, falling back to LIKE")
+            words = query.lower().split()
+            if not words:
+                return {'query': query, 'tag': tag, 'results': [], 'count': 0, 'method': 'none'}
+            conditions = ' AND '.join(['LOWER(m.content) LIKE ?' for _ in words])
+            params = [f'%{w}%' for w in words]
             rows = conn.execute(
-                "SELECT m.id, m.content, m.category, m.importance, m.created_at "
-                "FROM memories m JOIN memories_fts fts ON m.id = fts.rowid "
-                "WHERE memories_fts MATCH ? "
-                "ORDER BY m.importance DESC, m.last_accessed DESC LIMIT ?",
-                (query, limit)
+                f'SELECT m.id, m.content, m.category, m.importance, m.created_at, m.tags '
+                f'FROM memories m WHERE {conditions} {tag_clause} '
+                f'ORDER BY m.importance DESC, m.last_accessed DESC LIMIT ?',
+                (*params, *tag_params, limit)
             ).fetchall()
-            if rows:
-                for r in rows:
-                    conn.execute("UPDATE memories SET last_accessed = datetime('now') WHERE id = ?", (r['id'],))
-                conn.commit()
-                return {'query': query, 'results': [dict(r) for r in rows], 'count': len(rows), 'method': 'fts5'}
-        except Exception:
-            logger.debug("search_memories: FTS5 query failed, falling back to LIKE")
-        words = query.lower().split()
-        if not words:
-            return {'query': query, 'results': [], 'count': 0, 'method': 'none'}
-        conditions = ' AND '.join(['LOWER(content) LIKE ?' for _ in words])
-        params = [f'%{w}%' for w in words] + [limit]
-        rows = conn.execute(f'SELECT id, content, category, importance, created_at FROM memories WHERE {conditions} ORDER BY importance DESC, last_accessed DESC LIMIT ?', params).fetchall()
-        return {'query': query, 'results': [dict(r) for r in rows], 'count': len(rows), 'method': 'like'}
+            return {'query': query, 'tag': tag, 'results': [dict(r) for r in rows], 'count': len(rows), 'method': 'like'}
+        # No query: tag-only browsing or empty result (original behaviour)
+        if not tag_params:
+            return {'query': query, 'tag': tag, 'results': [], 'count': 0, 'method': 'none'}
+        rows = conn.execute(
+            f'SELECT m.id, m.content, m.category, m.importance, m.created_at, m.tags '
+            f'FROM memories m WHERE {tag_clause[4:]} '
+            f'ORDER BY m.importance DESC, m.last_accessed DESC LIMIT ?',
+            (*tag_params, limit)
+        ).fetchall()
+        return {'query': query, 'tag': tag, 'results': [dict(r) for r in rows], 'count': len(rows), 'method': 'tag'}
 
 
 def get_memory_stats() -> dict:
@@ -106,14 +185,27 @@ def get_memory_stats() -> dict:
         by_category = conn.execute('SELECT category, COUNT(*) as cnt FROM memories GROUP BY category').fetchall()
         avg_importance = conn.execute('SELECT AVG(importance) FROM memories').fetchone()[0] or 0
         oldest = conn.execute('SELECT MIN(created_at) FROM memories').fetchone()[0]
-        return {'total_memories': total, 'by_category': {r['category']: r['cnt'] for r in by_category}, 'avg_importance': round(avg_importance, 3), 'oldest_memory': oldest}
+        tagged = conn.execute("SELECT COUNT(*) FROM memories WHERE tags IS NOT NULL AND tags != ''").fetchone()[0]
+        tag_rows = conn.execute("SELECT tags FROM memories WHERE tags IS NOT NULL AND tags != ''").fetchall()
+        tag_counts: dict[str, int] = {}
+        for r in tag_rows:
+            for t in r['tags'].split(','):
+                t = t.strip()
+                if t:
+                    tag_counts[t] = tag_counts.get(t, 0) + 1
+        return {'total_memories': total,
+                'by_category': {r['category']: r['cnt'] for r in by_category},
+                'avg_importance': round(avg_importance, 3),
+                'oldest_memory': oldest,
+                'tagged_memories': tagged,
+                'tag_counts': dict(sorted(tag_counts.items(), key=lambda kv: kv[1], reverse=True))}
 
 
 def compress_memories() -> dict:
     """Compress old, low-importance memories by merging similar ones."""
     with _get_conn() as conn:
         cutoff = (datetime.now() - timedelta(days=30)).isoformat()
-        old = conn.execute('SELECT id, content, category, importance FROM memories WHERE created_at < ? AND importance < 0.3 AND compressed_from IS NULL', (cutoff,)).fetchall()
+        old = conn.execute('SELECT id, content, category, importance, tags FROM memories WHERE created_at < ? AND importance < 0.3 AND compressed_from IS NULL', (cutoff,)).fetchall()
         if not old:
             return {'status': 'nothing_to_compress', 'compressed': 0}
         by_category: dict[str, list] = {}
@@ -129,8 +221,9 @@ def compress_memories() -> dict:
             existing = conn.execute('SELECT id FROM memories WHERE hash = ?', (content_hash,)).fetchone()
             if existing:
                 continue
-            conn.execute('INSERT INTO memories (content, category, importance, hash, compressed_from) VALUES (?, ?, ?, ?, ?)',
-                         (merged, f'compressed_{cat}', 0.6, content_hash, items[0]['id']))
+            merged_tags = _normalize_tags(','.join([r['tags'] or '' for r in items[:5]]))
+            conn.execute('INSERT INTO memories (content, category, importance, hash, compressed_from, tags) VALUES (?, ?, ?, ?, ?, ?)',
+                         (merged, f'compressed_{cat}', 0.6, content_hash, items[0]['id'], merged_tags or None))
             new_id = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
             _fts_sync(conn, new_id, merged, f'compressed_{cat}')
             for item in items:
@@ -145,7 +238,7 @@ def compress_memories() -> dict:
 def export_memories(format: str='json') -> dict:
     """Export all memories to JSON for migration."""
     with _get_conn() as conn:
-        rows = conn.execute('SELECT id, content, category, importance, created_at, last_accessed, access_count FROM memories ORDER BY importance DESC').fetchall()
+        rows = conn.execute('SELECT id, content, category, importance, created_at, last_accessed, access_count, tags FROM memories ORDER BY importance DESC').fetchall()
         memories = [dict(r) for r in rows]
         return {'format': format, 'count': len(memories), 'memories': memories, 'exported_at': datetime.now().isoformat()}
 
@@ -165,7 +258,9 @@ def import_memories(data: dict, merge: bool=True) -> dict:
                 if existing:
                     skipped += 1
                     continue
-            conn.execute('INSERT INTO memories (content, category, importance, hash) VALUES (?, ?, ?, ?)', (content, m.get('category', 'general'), m.get('importance', 0.5), content_hash))
+            conn.execute('INSERT INTO memories (content, category, importance, hash, tags) VALUES (?, ?, ?, ?, ?)',
+                         (content, m.get('category', 'general'), m.get('importance', 0.5), content_hash,
+                          _normalize_tags(m.get('tags')) or None))
             mid = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
             _fts_sync(conn, mid, content, m.get('category', 'general'))
             imported += 1

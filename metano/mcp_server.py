@@ -605,15 +605,18 @@ def home_status(entity_id: str='') -> str:
 
 @mcp.tool()
 @track_action('memory_add')
-def memory_add(content: str, category: str='general', importance: float=0.5) -> str:
-    """Add a memory observation. Categories: preference, knowledge, habit, goal, general. Importance: 0.0-1.0."""
-    result = add_memory(content, category=category, importance=importance)
+def memory_add(content: str, category: str='general', importance: float=0.5, tags: str='') -> str:
+    """Add a memory observation. Categories: preference, knowledge, habit, goal, general. Importance: 0.0-1.0.
+    tags: optional scenario keywords (comma or space separated, e.g. 'backend,frontend,sync') that gate when this memory is relevant."""
+    result = add_memory(content, category=category, importance=importance, tags=tags or None)
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 @mcp.tool()
-def memory_search(query: str, limit: int=10) -> str:
-    """Search accumulated memories for relevant information."""
-    result = search_memories(query, limit=limit)
+def memory_search(query: str='', limit: int=10, tag: str='') -> str:
+    """Search accumulated memories for relevant information.
+    query: content keywords (empty string returns nothing unless tag is given).
+    tag: optional scenario keyword to filter by (e.g. 'backend', 'test,verify'). Omit for full-text search."""
+    result = search_memories(query, limit=limit, tag=tag or None)
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 @mcp.tool()

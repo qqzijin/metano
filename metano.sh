@@ -86,6 +86,17 @@ status() {
 
 case "${1:-start}" in
     start)
+        # Optional per-service start: `metano.sh start web|cron|gateway|cocoindex`
+        if [ -n "${2:-}" ]; then
+            case "$2" in
+                web)       start_web ;;
+                cron)      start_cron ;;
+                gateway)   start_gateway ;;
+                cocoindex) start_ccc_daemon ;;
+                *) echo "Unknown service: $2 (web|cron|gateway|cocoindex)"; exit 1 ;;
+            esac
+            exit 0
+        fi
         start_backup
         start_web
         start_ccc_daemon

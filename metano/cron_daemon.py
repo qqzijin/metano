@@ -23,20 +23,6 @@ OUTPUT_DIR = CRON_DIR / 'output'
 # Action registry: maps action strings to Python functions
 ACTIONS = {}
 
-# Default evolution schedules, auto-seeded on first run (when cron/jobs.json
-# does not exist yet) so the self-evolving engine works out of the box.
-DEFAULT_JOBS = [
-    {"name": "harvest", "action": "evolution.harvest", "schedule": {"kind": "interval", "expr": "30"}, "enabled": True, "timeout": 180},
-    {"name": "introspect", "action": "evolution.introspect", "schedule": {"kind": "cron", "expr": "0 */2 * * *"}, "enabled": True, "timeout": 120},
-    {"name": "reflect", "action": "evolution.reflect", "schedule": {"kind": "cron", "expr": "0 4 * * *"}, "enabled": True, "timeout": 600},
-    {"name": "adapt", "action": "evolution.adapt", "schedule": {"kind": "cron", "expr": "0 3 * * *"}, "enabled": True, "timeout": 300},
-    {"name": "maintain", "action": "evolution.maintain", "schedule": {"kind": "cron", "expr": "0 4 * * *"}, "enabled": True, "timeout": 300},
-    {"name": "architect", "action": "evolution.architect", "schedule": {"kind": "cron", "expr": "0 5 * * 0"}, "enabled": True, "timeout": 600},
-    {"name": "explore", "action": "evolution.explore", "schedule": {"kind": "cron", "expr": "0 3 * * 0"}, "enabled": True, "timeout": 600},
-    {"name": "evaluate", "action": "evolution.evaluate", "schedule": {"kind": "interval", "expr": "360"}, "enabled": True, "timeout": 300},
-]
-
-
 def register_action(name: str, fn):
     """Register a named action function for cron execution."""
     ACTIONS[name] = fn
@@ -47,6 +33,7 @@ def _register_default_actions():
         cron_harvest, cron_reflect, cron_adapt, cron_maintain,
         cron_explore, cron_architect, cron_introspect, cron_evaluate,
     )
+    from .db import cron_purge_sessions
     register_action('evolution.harvest', cron_harvest)
     register_action('evolution.reflect', cron_reflect)
     register_action('evolution.adapt', cron_adapt)
@@ -55,6 +42,7 @@ def _register_default_actions():
     register_action('evolution.architect', cron_architect)
     register_action('evolution.introspect', cron_introspect)
     register_action('evolution.evaluate', cron_evaluate)
+    register_action('retention.purge_sessions', cron_purge_sessions)
 
 def load_jobs() -> list[dict]:
     if JOBS_FILE.exists():
@@ -62,10 +50,7 @@ def load_jobs() -> list[dict]:
         if isinstance(data, dict):
             return data.get('jobs', [])
         return data
-    # First run: seed the default evolution schedules so the self-evolving
-    # engine is active immediately. Persist them for user editing.
-    save_jobs(DEFAULT_JOBS)
-    return list(DEFAULT_JOBS)
+    return []
 
 def save_jobs(jobs: list[dict]):
     CRON_DIR.mkdir(parents=True, exist_ok=True)
@@ -155,7 +140,7 @@ def tick():
                                     if danger:
                                         result_holder[0] = danger
                                     else:
-                                        sp = subprocess.run(['bash', '-c', prompt], capture_output=True, text=True, timeout=job_timeout, cwd=str(CRON_DIR.parent), env={'PATH': '/usr/local/bin:/usr/bin:/bin:/usr/local/bin', 'HOME': str(Path.home())})
+                                        sp = subprocess.run(['bash', '-c', prompt], capture_output=True, text=True, timeout=job_timeout, cwd=str(CRON_DIR.parent), env={'PATH': '/usr/local/bin:/usr/bin:/bin:/home/dk/local/node/bin', 'HOME': str(Path.home())})
                                         result_holder[0] = sp.stdout or sp.stderr or '(no output)'
                             elif prompt:
                                 sp = subprocess.run(['claude', '-p', prompt], capture_output=True, text=True, timeout=job_timeout)

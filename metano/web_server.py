@@ -1031,10 +1031,10 @@ async def api_memory_stats():
         return _error_response('Internal error')
 
 @app.get('/api/memory/search')
-async def api_memory_search(q: str=Query(...), limit: int=10):
+async def api_memory_search(q: str=Query(...), limit: int=10, tag: str=''):
     try:
         from .memory import search_memories
-        return search_memories(q, limit=limit)
+        return search_memories(q, limit=limit, tag=tag or None)
     except Exception as e:
         logger.exception()
         return _error_response('Internal error', extra={'results': []})

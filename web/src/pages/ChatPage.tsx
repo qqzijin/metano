@@ -53,7 +53,9 @@ export default function ChatPage() {
   const clearedRef = useRef(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const chatMut = useChatMutation();
-  const { data: sessionsData, isError: sessionsError } = useSessions("", 20);
+  // Only poll the session list while the picker is open; when closed, stop polling
+  // (the initial fetch on mount is still performed by useQuery).
+  const { data: sessionsData, isError: sessionsError } = useSessions("", 20, showSessionPicker ? 10000 : false);
   const { data: msgData, isLoading: msgLoading, isError: msgError } = useMessages(connectedSession ?? "");
 
   const sessions = sessionsData?.sessions ?? [];
