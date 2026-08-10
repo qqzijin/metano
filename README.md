@@ -113,51 +113,52 @@ Maintain (维护)     信念衰减、合并、归档、时间趋势抽象、成�
 > 📖 **完整部署指南见 [`DEPLOYMENT.md`](DEPLOYMENT.md)**（含精确命令、验证清单、故障排查，AI 可直接执行）
 
 ```bash
-# 1. Python 依赖
-pip install -r requirements.txt
+# 1. 克隆仓库
+git clone <仓库地址> metano && cd metano
 
-# 2. 环境变量（LLM key 等，详见「环境变量」节）
-cp .env.example .env && vim .env
+# 2. 一键安装（环境检测 → venv 装依赖 → 前端构建 → 生成配置 → 初始化 DB → 启动 + 健康检查）
+./install.sh
 
-# 3. 配置（可选，网关/认证等）
-cp gateway_config.example.yaml gateway_config.yaml
-
-# 4. 前端（Web 面板 UI，必需：dist 不在仓库，API 可用但面板需此步）
-cd web && npm install && npm run build && cd ..
-
-# 5. 一键启动全部服务（Web 面板 + Cron + 消息网关 + CocoIndex）
-./metano.sh start
-
-#    按服务启动 / 状态查看
-./metano.sh start web        # Web 面板 (http://0.0.0.0:9120)
-./metano.sh start cron       # 定时任务守护进程
-./metano.sh start gateway    # 多平台消息网关
-./metano.sh start cocoindex  # CocoIndex 离线向量守护进程
-./metano.sh status           # 查看各服务状态
-./metano.sh stop / restart   # 停止 / 重启全部服务
-
-# 6. 健康检查（web/gateway/cron/cocoindex）
-bash healthcheck.sh              # 仅报告
-bash healthcheck.sh --repair     # 自动重启 DOWN 的服务
-
-# 7. Claude Code 集成（进化引擎依赖，详见 DEPLOYMENT.md 第 6 节）
-#    配置 hooks.example.json 到 ~/.claude/settings.local.json
+#    可选参数：
+#    --with-embedding   额外安装本地向量嵌入（sentence-transformers + torch）
+#    --with-browser     额外安装 Playwright 浏览器自动化
+#    --skip-frontend    跳过前端构建（已构建过 / 无网络时）
+#    --skip-start       只安装不启动，之后可运行 bash metano.sh start
 ```
+
+安装脚本最后会输出**访问地址**（`http://localhost:9120`）与**初始 admin 密码**（admin / 随机密码，同时写入 `$METANO_HOME/initial_admin_password.txt`，权限 600）。首次登录后请立即在 Web 面板修改密码。
+
+数据目录由 `METANO_HOME` 控制（默认 `~/.claude/metano`），可部署到任意目录：`METANO_HOME=/srv/metano ./install.sh`。
+
+**日常运行管理**（`metano.sh`）：
+
+```bash
+./metano.sh start                # 一键启动全部服务（Web 面板 + Cron + 消息网关 + CocoIndex）
+./metano.sh start web            # 按服务启动：web / cron / gateway / cocoindex
+./metano.sh status               # 查看各服务状态
+./metano.sh stop / restart       # 停止 / 重启全部服务
+./metano.sh setup                # 重新运行 gen_config.py 并启动
+
+bash healthcheck.sh              # 健康检查（web/gateway/cron/cocoindex），--repair 自动重启 DOWN 的服务
+```
+
+> Claude Code 集成（进化引擎依赖）：配置 `hooks.example.json` 到 `~/.claude/settings.local.json`，详见 DEPLOYMENT.md 第 6 节。
 
 > 生产部署：`ecosystem.config.js` 为 PM2 进程管理配置（metano-web/cron/gateway 等）。
 
-> 💡 首次启动会自动创建 admin 账号：设了 `HERMES_DEFAULT_PASSWORD` 用它，否则生成随机密码（见启动日志）。部署后请立即改密码。
-
 ## ⚙️ 环境变量
 
-代码通过 `os.environ` 读取以下变量（详见 `.env.example`）：
+代码通过 `os.environ` 读取以下变量（仓库提供模板 `.env.example`，复制到 `$METANO_HOME/.env` 后填写）：
 
 | 变量 | 用途 |
 |------|------|
+| `METANO_HOME` | 运行时数据目录（DB/配置/备份/venv 根目录），默认 `~/.claude/metano`；可部署到任意目录 |
 | `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` / `ANTHROPIC_MODEL` | 进化引擎/反思器/行为分析的 LLM |
 | `HONCHO_MODEL` | 用户建模/反思模型 |
-| `HERMES_JWT_SECRET` | Web 面板 JWT 密钥（不设则自动生成） |
-| `HERMES_DEFAULT_PASSWORD` | 管理员初始密码（不设则随机生成） |
+| `HERMES_JWT_SECRET` | Web 面板 JWT 密钥（不设则 `gen_config.py` 自动生成并写入 gateway_config.yaml） |
+| `HERMES_DEFAULT_PASSWORD` | 管理员初始密码（不设则 `gen_config.py` 随机生成） |
+| `METANO_EMBED_PYTHON` | 本地向量嵌入所用解释器路径（装有 sentence-transformers+torch，如 cocoindex venv）；未设自动探测 |
+| `METANO_EMBED_MODEL` | 本地向量嵌入模型（默认 `Snowflake/snowflake-arctic-embed-xs`） |
 | `FEISHU_APP_ID` / `FEISHU_APP_SECRET` / ... | 飞书网关（可选，也可放 gateway_config.yaml） |
 | `OPENAI_API_KEY` / `OPENAI_BASE_URL` | 其他模型提供商（可选） |
 | `HA_URL` / `HA_TOKEN` | 智能家居 Home Assistant（可选） |
@@ -188,13 +189,17 @@ bash healthcheck.sh --repair     # 自动重启 DOWN 的服务
 
 ## ⚙️ 配置
 
-`gateway_config.yaml` 管理模型提供商、消息网关、智能家居、语音（TTS）等。仓库只提供**脱敏示例** `gateway_config.example.yaml`，真实密钥请自行填写，且**不要提交到 Git**。
+`gateway_config.yaml`（位于 `$METANO_HOME/`）管理模型提供商、消息网关、智能家居、语音（TTS）等。首次运行由 `gen_config.py` 自动生成：随机 JWT secret + 初始 admin 密码（bcrypt），各消息网关默认 disabled；可用 `metano.sh setup` 重新运行。仓库另提供**脱敏示例** `gateway_config.example.yaml`，真实密钥请自行填写，且**不要提交到 Git**。
 
 ## 📁 项目结构
 
 ```
 metano/
-├── metano.sh                # 服务启动脚本（start/stop/status/restart + 按服务）
+├── install.sh               # 一键安装脚本（环境检测 → venv 依赖 → 前端构建 → 生成配置 → DB 初始化 → 启动）
+├── gen_config.py            # 首次运行生成 gateway_config.yaml（随机 JWT secret + admin 密码 → initial_admin_password.txt）
+├── .env.example             # 环境变量模板（METANO_HOME / LLM key / embedding 等）
+├── requirements-embedding.txt # 可选依赖：本地向量嵌入（sentence-transformers + torch）
+├── metano.sh                # 服务启动脚本（start/stop/status/restart/setup + 按服务）
 ├── healthcheck.sh           # 健康检查（web/gateway/cron/cocoindex，支持 --repair）
 ├── backup.sh                # 数据库自动备份（5 DB + 配置，7 天保留）
 ├── hook_inject_memory.py    # SessionStart hook：按 tag 注入记忆
@@ -202,6 +207,7 @@ metano/
 ├── backfill_memory_tags.py  # 为存量记忆回填场景 tag
 │
 ├── metano/                  # Python 后端包
+│   ├── paths.py             #   集中路径解析（METANO_HOME 支持，DB/日志/数据目录）
 │   ├── web_server.py        #   FastAPI Web 面板 + REST API + WebSocket
 │   ├── serve.py             #   Web 服务 CLI 入口（uvicorn :9120）
 │   ├── mcp_server.py        #   MCP 工具服务器（60+ 工具）
