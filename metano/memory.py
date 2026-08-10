@@ -11,6 +11,7 @@ import sqlite3
 import hashlib
 from datetime import datetime, timedelta
 from typing import Optional
+from pathlib import Path
 from metano.log import logger
 from .paths import home_dir
 

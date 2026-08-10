@@ -5,6 +5,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
+from pathlib import Path
 
 from .log import logger
 from .paths import DB_DIR, DB_PATH
