@@ -1177,12 +1177,22 @@ async def ws_endpoint(ws: WebSocket):
         auth_msg = await ws.receive_text()
         auth_data = json.loads(auth_msg)
         token = auth_data.get('token', '')
-        if not token or not decode_token(token):
-            await ws.send_json({'error': 'Authentication required'})
-            await ws.close(code=4001)
+        payload = decode_token(token) if token else None
+        # Only an access token (not refresh/MCP/A2A) may open the WS.
+        if not payload or payload.get('type') != 'access':
+            try:
+                await ws.send_json({'error': 'Authentication required'})
+                await ws.close(code=4001)
+            except Exception:
+                # Client may have already disconnected — a second close here
+                # triggers the ASGI 'Unexpected websocket.close' race.
+                pass
             return
     except Exception:
-        await ws.close(code=4001)
+        try:
+            await ws.close(code=4001)
+        except Exception:
+            pass
         return
 
     _ws_clients.append(ws)
