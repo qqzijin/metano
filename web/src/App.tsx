@@ -60,7 +60,7 @@ function MainLayout() {
   };
 
   return (
-    <div className="flex h-screen overflow-hidden">
+    <div className="flex h-dvh overflow-hidden">
       {/* Desktop sidebar */}
       <div className="hidden md:block shrink-0">
         <Sidebar
@@ -83,7 +83,7 @@ function MainLayout() {
         </SheetContent>
       </Sheet>
 
-      <div className="flex flex-1 flex-col min-w-0">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         {/* Mobile top bar */}
         <header className="md:hidden flex items-center gap-2.5 h-14 px-3 border-b border-border bg-sidebar shrink-0">
           <Button
@@ -103,7 +103,7 @@ function MainLayout() {
           </div>
         </header>
 
-      <main className="relative flex-1 overflow-auto p-4 md:p-6">
+      <main className="relative min-h-0 min-w-0 flex-1 overflow-auto p-4 md:p-6">
         <AuthGuard>
           <ErrorBoundary>
             <Routes>

@@ -60,6 +60,7 @@ export default function ChatPage() {
   const [dirty, setDirty] = useState<boolean>(loadDirty);
   const failedSendRef = useRef(false);
   const clearedRef = useRef(false);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
@@ -79,9 +80,20 @@ export default function ChatPage() {
 
   const sessions = sessionsData?.sessions ?? [];
 
+  // Keep streaming responses pinned only while the user is already at the
+  // bottom. A smooth scroll on every token fights manual scrolling (notably
+  // when expanding the thinking details) and makes the viewport jerk.
+  const autoScrollRef = useRef(true);
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (!autoScrollRef.current) return;
+    bottomRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
   }, [messages]);
+
+  const handleMessagesScroll = () => {
+    const container = messagesContainerRef.current;
+    if (!container) return;
+    autoScrollRef.current = container.scrollHeight - container.scrollTop - container.clientHeight < 80;
+  };
 
   useEffect(() => {
     saveHistory(messages);
@@ -303,7 +315,7 @@ export default function ChatPage() {
       {/* Native-app style chat: absolutely fills the <main> area on mobile
           (top bar → screen bottom, edge to edge, no gaps). Desktop keeps a
           normal-flow card with margins. */}
-      <div className="absolute inset-x-0 bottom-0 top-0 z-0 flex flex-col overflow-hidden bg-muted/40 md:static md:z-auto md:h-[calc(100vh-12rem)] md:rounded-xl md:border md:border-border">
+      <div className="absolute inset-x-0 bottom-0 top-0 z-0 flex min-h-0 min-w-0 flex-col overflow-hidden bg-muted/40 md:static md:z-auto md:h-[calc(100dvh-12rem)] md:rounded-xl md:border md:border-border">
         {/* Header bar — blends into the grey thread on mobile (icon buttons),
             full labels + white bar on desktop. */}
         <div className="flex items-center justify-between bg-muted/40 px-3 py-2 border-b md:bg-background md:px-4 md:py-2.5">
@@ -340,7 +352,11 @@ export default function ChatPage() {
         </div>
 
         {/* Messages */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        <div
+          ref={messagesContainerRef}
+          onScroll={handleMessagesScroll}
+          className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4 space-y-4"
+        >
           {messages.length === 0 && !msgLoading && (
             <div className="flex flex-col items-center justify-center h-full gap-3">
               <p className="text-sm text-muted-foreground">输入消息开始对话</p>
