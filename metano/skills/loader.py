@@ -1,4 +1,5 @@
 """Skill loader: discovers, parses, and caches skills from filesystem."""
+import re
 import time
 import yaml
 from pathlib import Path
@@ -8,6 +9,59 @@ from metano.log import logger
 from ..paths import SKILLS_DIR
 
 BUNDLED_SKILLS_DIR = Path(__file__).parent.parent / 'skills_data'
+
+# ---------------------------------------------------------------------------
+# Hermes / Claude-Code -> metano tool contract mapping.
+#
+# Many bundled SKILL.md bodies were authored for Hermes Agent / Claude Code and
+# reference tool names metano does not expose (terminal, read_file, web_extract,
+# delegate_task, browser_vision, ...). Rather than editing every skill body, we
+# detect those tool names at load time and prepend a short mapping note so the
+# model reaches for metano's real tools. Kept in this module so both the loader
+# and the gateway router get the same behaviour.
+# ---------------------------------------------------------------------------
+
+HERMES_TOOL_MAPPING = """## 工具映射：本技能部分指令基于 Hermes/Claude-Code 工具名，metano 中请使用以下替代
+
+| 技能正文中的工具 | metano 中的替代 |
+|---|---|
+| `terminal` / `terminal(...)` | `code_run(language="shell", code=...)` |
+| `execute_code` | `code_run(language="python", code=...)` |
+| `read_file` / `write_file` / `patch` / `search_files` | 无直接等价工具；用 `code_run(language="shell", code=...)` 执行 `cat` / `printf` / `sed` / `grep` / `find` 完成文件读写与搜索 |
+| `web_extract(urls=[...])` | `web_search_tavily(query=...)`（搜索）或 `browser_get_content(url=...)`（抓取指定 URL 正文） |
+| `delegate_task(...)` | `agent_spawn(task=..., model=..., timeout=...)`（异步子任务；用 `agent_status(task_id=...)` / `agent_result(task_id=...)` 获取结果） |
+| `browser_vision` | 无直接等价；用 `browser_screenshot(...)` 截图后 `image_describe(...)` 描述，或用 `browser_get_content(url=...)` 读取页面文本 |
+
+注意：`code_run` 运行在沙箱中（禁网络代理、禁危险命令），shell 模式禁止 `rm -rf /`、`curl ... | sh` 等操作。
+"""
+
+# Tool-name -> detection regex. `patch` is matched only in call form `patch(`
+# so common prose ("apply a patch") does not trigger the note.
+_HERMES_TOOL_PATTERNS = {
+    'terminal': re.compile(r'\bterminal\b'),
+    'execute_code': re.compile(r'\bexecute_code\b'),
+    'read_file': re.compile(r'\bread_file\b'),
+    'write_file': re.compile(r'\bwrite_file\b'),
+    'patch': re.compile(r'\bpatch\s*\('),
+    'search_files': re.compile(r'\bsearch_files\b'),
+    'web_extract': re.compile(r'\bweb_extract\b'),
+    'delegate_task': re.compile(r'\bdelegate_task\b'),
+    'browser_vision': re.compile(r'\bbrowser_vision\b'),
+}
+
+
+def tool_mapping_note(body: str) -> str:
+    """Return the metano tool-mapping note if the body references Hermes tools.
+
+    Empty string when the body is already metano-native — the mapping note is
+    only prepended to keep prompts lean for skills that need it.
+    """
+    if not body:
+        return ''
+    for pattern in _HERMES_TOOL_PATTERNS.values():
+        if pattern.search(body):
+            return HERMES_TOOL_MAPPING
+    return ''
 
 @dataclass
 class SkillRecord:
@@ -105,7 +159,11 @@ class SkillLoader:
         vars_ = {'SKILL_DIR': str(rec.path.parent)}
         if variables:
             vars_.update(variables)
-        return substitute(rec.body, vars_)
+        content = substitute(rec.body, vars_)
+        note = tool_mapping_note(content)
+        if note:
+            content = f'{note}\n\n{content}'
+        return content
 
     def list_by_category(self) -> dict[str, list[SkillRecord]]:
         self.discover_all()

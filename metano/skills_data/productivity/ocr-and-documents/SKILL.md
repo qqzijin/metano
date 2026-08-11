@@ -19,16 +19,18 @@ This skill covers **PDFs and scanned documents**.
 
 ## Step 1: Remote URL Available?
 
-If the document has a URL, **always try `web_extract` first**:
+If the document has a URL, **try fetching it first**:
 
 ```
-web_extract(urls=["https://arxiv.org/pdf/2402.03300"])
-web_extract(urls=["https://example.com/report.pdf"])
+browser_get_content(url="https://arxiv.org/abs/2402.03300")   # 网页正文
+code_run(language="shell", code="curl -sL -o paper.pdf 'https://arxiv.org/pdf/2402.03300'")
 ```
 
-This handles PDF-to-markdown conversion via Firecrawl with no local dependencies.
+metano 无 `web_extract`/Firecrawl 等价工具：网页正文用 `browser_get_content`，
+PDF 用 `code_run` 下载到本地后再走下面的本地提取流程（pymupdf/marker）。
+网页搜索用 `web_search_tavily(query=...)`。
 
-Only use local extraction when: the file is local, web_extract fails, or you need batch processing.
+Only use local extraction when: the file is local, download fails, or you need batch processing.
 
 ## Step 2: Choose Local Extractor
 
@@ -62,17 +64,7 @@ If the user needs marker capabilities but the system lacks ~5GB free disk:
 pip install pymupdf pymupdf4llm
 ```
 
-**Via helper script**:
-```bash
-python scripts/extract_pymupdf.py document.pdf              # Plain text
-python scripts/extract_pymupdf.py document.pdf --markdown    # Markdown
-python scripts/extract_pymupdf.py document.pdf --tables      # Tables
-python scripts/extract_pymupdf.py document.pdf --images out/ # Extract images
-python scripts/extract_pymupdf.py document.pdf --metadata    # Title, author, pages
-python scripts/extract_pymupdf.py document.pdf --pages 0-4   # Specific pages
-```
-
-**Inline**:
+**Inline** (metano 不内置 `scripts/extract_pymupdf.py`，直接用 `code_run(language="python")`)：
 ```bash
 python3 -c "
 import pymupdf
@@ -87,20 +79,10 @@ for page in doc:
 ## marker-pdf (high-quality OCR)
 
 ```bash
-# Check disk space first
-python scripts/extract_marker.py --check
-
 pip install marker-pdf
 ```
 
-**Via helper script**:
-```bash
-python scripts/extract_marker.py document.pdf                # Markdown
-python scripts/extract_marker.py document.pdf --json         # JSON with metadata
-python scripts/extract_marker.py document.pdf --output_dir out/  # Save images
-python scripts/extract_marker.py scanned.pdf                 # Scanned PDF (OCR)
-python scripts/extract_marker.py document.pdf --use_llm      # LLM-boosted accuracy
-```
+metano 不内置 `scripts/extract_marker.py`，直接用 marker 官方 CLI（随包安装）：
 
 **CLI** (installed with marker-pdf):
 ```bash
@@ -114,18 +96,18 @@ marker /path/to/folder --workers 4    # Batch
 
 ```
 # Abstract only (fast)
-web_extract(urls=["https://arxiv.org/abs/2402.03300"])
+browser_get_content(url="https://arxiv.org/abs/2402.03300")
 
 # Full paper
-web_extract(urls=["https://arxiv.org/pdf/2402.03300"])
+code_run(language="shell", code="curl -sL -o paper.pdf 'https://arxiv.org/pdf/2402.03300'")
 
 # Search
-web_search(query="arxiv GRPO reinforcement learning 2026")
+web_search_tavily(query="arxiv GRPO reinforcement learning 2026")
 ```
 
 ## Split, Merge & Search
 
-pymupdf handles these natively — use `execute_code` or inline Python:
+pymupdf handles these natively — use `code_run(language="python")` with inline Python:
 
 ```python
 # Split: extract pages 1-5 to a new PDF
@@ -163,10 +145,9 @@ No extra dependencies needed — pymupdf covers split, merge, search, and text e
 
 ## Notes
 
-- `web_extract` is always first choice for URLs
+- For URLs: 网页正文用 `browser_get_content`，PDF 用 `code_run` 下载后本地提取；搜索用 `web_search_tavily`
 - pymupdf is the safe default — instant, no models, works everywhere
 - marker-pdf is for OCR, scanned docs, equations, complex layouts — install only when needed
-- Both helper scripts accept `--help` for full usage
 - marker-pdf downloads ~2.5GB of models to `~/.cache/huggingface/` on first use
 - For Word docs: `pip install python-docx` (better than OCR — parses actual structure)
 - For PowerPoint: see the `powerpoint` skill (uses python-pptx)

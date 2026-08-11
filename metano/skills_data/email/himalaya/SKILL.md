@@ -17,10 +17,10 @@ prerequisites:
 
 Himalaya is a CLI email client that lets you manage emails from the terminal using IMAP, SMTP, Notmuch, or Sendmail backends.
 
-## References
-
-- `references/configuration.md` (config file setup + IMAP/SMTP authentication)
-- `references/message-composition.md` (MML syntax for composing emails)
+> **metano 说明：** 本技能不内置 `references/configuration.md` /
+> `references/message-composition.md`。配置方法在下方「Configuration Setup」小节
+> 已有完整 TOML 示例；邮件撰写直接用下方「非交互式管道」方式（`cat << EOF | himalaya template send`），
+> 不依赖 MML 参考文档。
 
 ## Prerequisites
 
@@ -75,8 +75,8 @@ message.send.backend.auth.cmd = "pass show email/smtp"
 
 # Folder aliases (himalaya v1.2.0+ syntax). Required whenever the
 # server's folder names don't match himalaya's canonical names
-# (inbox/sent/drafts/trash). Gmail is the common case — see
-# `references/configuration.md` for the `[Gmail]/Sent Mail` mapping.
+# (inbox/sent/drafts/trash). Gmail is the common case — map Gmail's
+# `[Gmail]/Sent Mail`, `[Gmail]/Drafts`, `[Gmail]/Trash` folders here.
 folder.aliases.inbox = "INBOX"
 folder.aliases.sent = "Sent"
 folder.aliases.drafts = "Drafts"
@@ -94,12 +94,12 @@ folder.aliases.trash = "Trash"
 > emails to recipients. Always use `folder.aliases.X` (plural, dotted
 > keys, directly under `[accounts.NAME]`).
 
-## Hermes Integration Notes
+## metano Integration Notes
 
-- **Reading, listing, searching, moving, deleting** all work directly through the terminal tool
-- **Composing/replying/forwarding** — piped input (`cat << EOF | himalaya template send`) is recommended for reliability. Interactive `$EDITOR` mode works with `pty=true` + background + process tool, but requires knowing the editor and its commands
+- **Reading, listing, searching, moving, deleting** all work directly through `code_run(language="shell")`
+- **Composing/replying/forwarding** — piped input (`cat << EOF | himalaya template send`) is recommended for reliability. Interactive `$EDITOR` mode is NOT supported (metano 的 `code_run` 无 PTY)
 - Use `--output json` for structured output that's easier to parse programmatically
-- The `himalaya account configure` wizard requires interactive input — use PTY mode: `terminal(command="himalaya account configure", pty=true)`
+- The `himalaya account configure` wizard requires interactive input and won't work in `code_run`'s non-PTY sandbox — instead write `~/.config/himalaya/config.toml` directly using the template in "Configuration Setup" below
 
 ## Common Operations
 
@@ -295,5 +295,5 @@ RUST_LOG=trace RUST_BACKTRACE=1 himalaya envelope list
 
 - Use `himalaya --help` or `himalaya <command> --help` for detailed usage.
 - Message IDs are relative to the current folder; re-list after folder changes.
-- For composing rich emails with attachments, use MML syntax (see `references/message-composition.md`).
+- For composing rich emails with attachments, pipe a full RFC822 message (with `From:`/`To:`/`Subject:`/`In-Reply-To:` headers) into `himalaya template send` as shown above; MML syntax 参考文档未随 metano 内置。
 - Store passwords securely using `pass`, system keyring, or a command that outputs the password.

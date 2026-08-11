@@ -20,7 +20,7 @@ Manage Linear issues, projects, and teams directly via the GraphQL API using `cu
 ## Setup
 
 1. Get a personal API key from **Linear Settings > Account > Security & access > Personal API keys** (URL: https://linear.app/settings/account/security). Note: the org-level *Settings > API* page only shows OAuth apps and workspace-member keys, not personal keys.
-2. Set `LINEAR_API_KEY` in your environment (via `hermes setup` or your env config)
+2. Set `LINEAR_API_KEY` in your environment（在 `~/.bashrc` 或 metano 的 `.env` 中配置）
 
 ## API Basics
 
@@ -36,24 +36,6 @@ curl -s -X POST https://api.linear.app/graphql \
   -H "Content-Type: application/json" \
   -d '{"query": "{ viewer { id name } }"}' | python3 -m json.tool
 ```
-
-## Python helper script (ergonomic alternative)
-
-For faster one-liners that don't need hand-written GraphQL, this skill ships a stdlib Python CLI at `scripts/linear_api.py`. Zero dependencies. Same auth (reads `LINEAR_API_KEY`).
-
-```bash
-SCRIPT=$(dirname "$(find ~/.hermes -path '*skills/productivity/linear/scripts/linear_api.py' 2>/dev/null | head -1)")/linear_api.py
-
-python3 "$SCRIPT" whoami
-python3 "$SCRIPT" list-teams
-python3 "$SCRIPT" get-issue ENG-42
-python3 "$SCRIPT" get-document 38359beef67c      # fetch a doc by slugId from the URL
-python3 "$SCRIPT" raw 'query { viewer { name } }'
-```
-
-All subcommands: `whoami`, `list-teams`, `list-projects`, `list-states`, `list-issues`, `get-issue`, `search-issues`, `create-issue`, `update-issue`, `update-status`, `add-comment`, `list-documents`, `get-document`, `search-documents`, `raw`. Run with `--help` for flags.
-
-Use the script when: you want a quick answer without crafting GraphQL. Use curl when: you need a query the script doesn't wrap, or you want to compose filters inline.
 
 ## Workflow States
 
@@ -291,11 +273,6 @@ curl -s -X POST https://api.linear.app/graphql \
   | python3 -m json.tool
 ```
 
-Or via the Python helper:
-```bash
-python3 scripts/linear_api.py get-document 38359beef67c
-```
-
 ### Fetch a document by UUID
 
 ```bash
@@ -373,7 +350,7 @@ Combine filters with `or: [...]` for OR logic (default is AND within a filter ob
 
 ## Important Notes
 
-- Always use `terminal` tool with `curl` for API calls — do NOT use `web_extract` or `browser`
+- 用 `code_run(language="shell")` 里的 `curl` 发 API 请求 — 不要用 `browser_get_content`/`browser_navigate` 调 GraphQL
 - Always check the `errors` array in GraphQL responses — HTTP 200 can still contain errors
 - If `stateId` is omitted when creating issues, Linear defaults to the first backlog state
 - The `description` field supports Markdown

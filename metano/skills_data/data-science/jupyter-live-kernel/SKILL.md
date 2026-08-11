@@ -14,16 +14,21 @@ metadata:
 # Jupyter Live Kernel (hamelnb)
 
 Gives you a **stateful Python REPL** via a live Jupyter kernel. Variables persist
-across executions. Use this instead of `execute_code` when you need to build up
+across executions. Use this instead of `code_run` when you need to build up
 state incrementally, explore APIs, inspect DataFrames, or iterate on complex code.
+
+> **metano 说明：** 本技能依赖外部工具 **hamelnb**（`~/.agent-skills/hamelnb`），
+> **不随 metano 发行版内置**，需按下文 Setup 先 `git clone`。若用户环境不允许
+> 安装 hamelnb / JupyterLab，退化为用 `code_run(language="python")` 做一次性
+> 脚本执行（无跨调用状态；需要保留状态时把多个语句放在同一次 `code_run` 里）。
 
 ## When to Use This vs Other Tools
 
 | Tool | Use When |
 |------|----------|
 | **This skill** | Iterative exploration, state across steps, data science, ML, "let me try this and check" |
-| `execute_code` | One-shot scripts needing hermes tool access (web_search, file ops). Stateless. |
-| `terminal` | Shell commands, builds, installs, git, process management |
+| `code_run(language="python")` | One-shot scripts. Stateless between calls. |
+| `code_run(language="shell")` | Shell commands, builds, installs, git, process management |
 
 **Rule of thumb:** If you'd want a Jupyter notebook for the task, use this skill.
 

@@ -353,11 +353,23 @@ def skills_list(category: str='') -> str:
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 @mcp.tool()
-def skill_view(name: str, full: bool=False) -> str:
-    """View a skill's details. full=False returns frontmatter only; full=True returns the complete skill content."""
+def skill_view(name: str, full: bool=False, file_path: str='') -> str:
+    """View a skill's details. full=False returns frontmatter only; full=True returns the complete skill content. file_path optionally loads a supporting file (e.g. references/*.md, templates/*.html) from inside the skill's directory; path traversal outside the skill directory is rejected."""
     rec = _skill_loader.find_by_name(name)
     if not rec:
         return json.dumps({'error': f"Skill '{name}' not found"})
+    if file_path:
+        base = rec.path.parent.resolve()
+        target = (base / file_path).resolve()
+        if not target.is_relative_to(base):
+            return json.dumps({'error': f'file_path must stay inside the skill directory: {file_path}'})
+        if not target.is_file():
+            return json.dumps({'error': f'Supporting file not found: {file_path}'})
+        try:
+            content = target.read_text(encoding='utf-8', errors='replace')
+        except Exception as e:
+            return json.dumps({'error': f'Failed to read {file_path}: {e}'})
+        return json.dumps({'name': rec.name, 'file_path': file_path, 'content': content}, ensure_ascii=False, indent=2)
     result = {'name': rec.name, 'description': rec.description, 'version': rec.version, 'author': rec.author, 'trigger': rec.trigger, 'category': rec.category, 'source': rec.source}
     if full:
         result['content'] = rec.body

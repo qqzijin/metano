@@ -139,10 +139,13 @@ The generated HTML file follows a four-part layout:
 
 ## Template Reference
 
-Load the full HTML template for the exact structure, CSS, and SVG component examples:
+> **metano 说明：** 本技能不内置 `templates/template.html`。请直接依据本页
+> 「Document Structure」「Design System & Visual Language」「Technical Implementation
+> Details」三节生成 HTML —— 结构上依次是 header、main SVG、summary cards、footer；
+> 每种组件类型（frontend / backend / database / cloud / security）、箭头样式
+> （standard / dashed / curved）、安全组、区域边界和 legend 的写法都在上述小节中给出。
 
-```
-skill_view(name="architecture-diagram", file_path="templates/template.html")
-```
-
-The template contains working examples of every component type (frontend, backend, database, cloud, security), arrow styles (standard, dashed, curved), security groups, region boundaries, and the legend — use it as your structural reference when generating diagrams.
+Follow the Document Structure above (Header → Main SVG → Summary Cards → Footer) and the
+Design System below; the inline SVG mechanics in "Technical Implementation Details" cover
+every component type and arrow style you need. Use the info-card pattern and the
+`pattern id="grid"` snippet verbatim from the sections above.

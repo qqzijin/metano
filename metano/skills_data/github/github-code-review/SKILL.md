@@ -28,8 +28,8 @@ if command -v gh &>/dev/null && gh auth status &>/dev/null; then
 else
   AUTH="git"
   if [ -z "$GITHUB_TOKEN" ]; then
-    if [ -f ~/.hermes/.env ] && grep -q "^GITHUB_TOKEN=" ~/.hermes/.env; then
-      GITHUB_TOKEN=$(grep "^GITHUB_TOKEN=" ~/.hermes/.env | head -1 | cut -d= -f2 | tr -d '\n\r')
+    if [ -f ~/.claude/metano/.env ] && grep -q "^GITHUB_TOKEN=" ~/.claude/metano/.env; then
+      GITHUB_TOKEN=$(grep "^GITHUB_TOKEN=" ~/.claude/metano/.env | head -1 | cut -d= -f2 | tr -d '\n\r')
     elif grep -q "github.com" ~/.git-credentials 2>/dev/null; then
       GITHUB_TOKEN=$(grep "github.com" ~/.git-credentials 2>/dev/null | head -1 | sed 's|https://[^:]*:\([^@]*\)@.*|\1|')
     fi
@@ -334,10 +334,9 @@ When the user asks you to "review PR #N", "look at this PR", or gives you a PR U
 
 ### Step 1: Set up environment
 
-```bash
-source "${HERMES_HOME:-$HOME/.hermes}/skills/github/github-auth/scripts/gh-env.sh"
-# Or run the inline setup block from the top of this skill
-```
+Run the inline setup block from the top of this skill (auto-detects `gh` vs
+`GITHUB_TOKEN`, parses OWNER/REPO from the remote URL). metano 不内置
+`github-auth/scripts/gh-env.sh`，请直接使用上面的内联 setup。
 
 ### Step 2: Gather PR context
 
@@ -439,7 +438,7 @@ curl -s -X POST \
 
 ### Step 8: Also post a summary comment
 
-In addition to inline comments, leave a top-level summary so the PR author gets the full picture at a glance. Use the review output format from `references/review-output-template.md`.
+In addition to inline comments, leave a top-level summary so the PR author gets the full picture at a glance. Use the review output format shown in "Review Output Format" above (Critical / Warnings / Suggestions / Looks Good). metano 不内置 `references/review-output-template.md`，以上文的格式为准。
 
 **With gh:**
 ```bash

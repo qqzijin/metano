@@ -342,11 +342,16 @@ Catch issues early
 
 **Quality is not an accident. It's the result of systematic process.**
 
-## Further reading (load when relevant)
+## Context budget & review gates (brief)
 
-When the orchestration involves significant context usage, long review loops, or complex validation checkpoints, load these references for the specific discipline:
+> metano 不内置 `references/context-budget-discipline.md` / `references/gates-taxonomy.md`，
+> 以下是两条核心纪律的内联摘要：
 
-- **`references/context-budget-discipline.md`** — Four-tier context degradation model (PEAK / GOOD / DEGRADING / POOR), read-depth rules that scale with context window size, and early warning signs of silent degradation. Load when a run will clearly consume significant context (multi-phase plans, many subagents, large artifacts).
-- **`references/gates-taxonomy.md`** — The four canonical gate types (Pre-flight, Revision, Escalation, Abort) with behavior, recovery, and examples. Load when designing or reviewing any workflow that has validation checkpoints — use the vocabulary explicitly so each gate has defined entry, failure behavior, and resumption rules.
+- **Context budget** — 按四档（PEAK / GOOD / DEGRADING / POOR）监控自身上下文占用；
+  上下文越紧张，读文件的深度越浅（摘要 → 关键段 → 关键行）。长任务（多阶段计划、
+  大量子代理、大文件）开始前先评估消耗，出现检索变慢/遗忘早期结论时立即降级策略。
+- **Review gates** — 任何有验收点的流程都显式定义门（gate）：Pre-flight（开始前校验前提）、
+  Revision（返工后必须重新过审）、Escalation（阻塞问题升级）、Abort（止损终止）。
+  每个门要有明确的进入条件、失败行为和恢复规则，不要把"差不多"当成通过。
 
-Both references adapted from gsd-build/get-shit-done (MIT © 2025 Lex Christopherson).
+(Adapted from gsd-build/get-shit-done, MIT © 2025 Lex Christopherson.)

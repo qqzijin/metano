@@ -26,6 +26,19 @@ Auth: every non-public request must carry a Bearer JWT with
 :mod:`metano.mcp_gateway` for the identical MCP pattern).  Token issuance is
 exposed through :func:`create_a2a_token`.
 
+SECURITY — holding a valid A2A bearer token is equivalent to having local
+command execution (RCE) on this host: a token bearer can spawn arbitrary
+``claude -p`` sub-agents (i.e. run code) and SIGKILL their process groups via
+``tasks/cancel``.  A2A tokens are therefore issued ONLY to admins
+(:func:`create_a2a_token`, and the web server's ``POST /api/a2a/token`` which
+requires the ``admin`` role) and must never be logged, shared, embedded in
+frontend code, or leaked.  Scopes are enforced per method: ``a2a:read`` grants
+read-only access (``tasks/get``, ``tasks/list``, SSE subscribe), while
+``a2a:task`` grants full task delegation (``message/send``, ``message:stream``,
+``tasks/cancel``) in addition to everything ``a2a:read`` allows.  A token whose
+scope does not cover a method is rejected with HTTP 403 (REST) or an A2A
+``FORBIDDEN`` error (JSON-RPC).
+
 Task-state mapping (AgentDelegator status -> A2A ``TaskState``)::
 
     pending   -> submitted
@@ -61,7 +74,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from .auth import JWT_ALGORITHM, _audit, get_jwt_secret
 from .log import logger
-from .sub_agent import delegator
+from .sub_agent import ConcurrencyLimitError, delegator
 
 __all__ = ["create_a2a_app", "create_a2a_token", "verify_a2a_token", "A2A_AUDIENCE"]
 
@@ -82,12 +95,79 @@ PUBLIC_PATHS = {
 }
 
 
+# ── A2A scope model ─────────────────────────────────────────────────────────
+#
+# SECURITY: see the module docstring — a valid A2A token is a local-RCE trust
+# boundary.  Scopes are enforced at every handler entry; the value recorded in
+# request.state.a2a_scope by A2AAuthMiddleware is checked per method below.
+#
+# Scope tiers (least-privilege upward); a token whose scope list contains a
+# tier implicitly holds every lower tier:
+_SCOPE_TIERS: dict[str, int] = {
+    "a2a:read": 1,   # read-only: tasks/get, tasks/list, SSE subscribe
+    "a2a:task": 2,   # full delegation: message/send, message:stream, tasks/cancel + reads
+}
+# Minimum scope tier required to invoke each method / REST binding.
+_METHOD_MIN_SCOPE: dict[str, str] = {
+    "message/send":    "a2a:task",
+    "message:stream":  "a2a:task",   # REST-only binding (send + subscribe)
+    "tasks/cancel":    "a2a:task",
+    "tasks/get":       "a2a:read",
+    "tasks/list":      "a2a:read",
+    "tasks/subscribe": "a2a:read",   # REST-only SSE binding
+}
+
+
+def _scope_tier(scopes: Optional[list[str]]) -> int:
+    """Highest scope tier granted by a token's scope list; 0 for none/unknown."""
+    tiers = [_SCOPE_TIERS.get(s, 0) for s in (scopes or [])]
+    return max(tiers) if tiers else 0
+
+
+def _scope_allows(scopes: Optional[list[str]], required_scope: str) -> bool:
+    """True when ``scopes`` grants at least the tier of ``required_scope``."""
+    return _scope_tier(scopes) >= _SCOPE_TIERS.get(required_scope, 1 << 30)
+
+
+def _scope_denied(scopes: Optional[list[str]], method: str) -> bool:
+    """True when a token's scope is insufficient for ``method``.
+
+    Unknown methods are NOT denied here — the dispatcher reports
+    ``METHOD_NOT_FOUND`` for those.
+    """
+    required = _METHOD_MIN_SCOPE.get(method)
+    if required is None:
+        return False
+    return not _scope_allows(scopes, required)
+
+
+def _scope_response(request: Request, method: str) -> Optional[JSONResponse]:
+    """Return a 403 ``JSONResponse`` when the request's A2A token scope forbids
+    ``method``; return ``None`` when the call may proceed."""
+    scopes = getattr(request.state, "a2a_scope", []) or []
+    if not _scope_denied(scopes, method):
+        return None
+    user = getattr(request.state, "a2a_user", "a2a") or "a2a"
+    _audit("a2a_scope_denied", user, {
+        "method": method,
+        "path": request.url.path,
+        "scope": scopes,
+    })
+    return JSONResponse(status_code=403, content={
+        "detail": "Forbidden: A2A token scope does not permit this operation",
+        "method": method,
+        "required_scope": _METHOD_MIN_SCOPE.get(method),
+    })
+
+
 # ── A2A JSON-RPC error codes (spec-defined) ────────────────────────────────
 
 class A2AErrorCode:
     TASK_NOT_FOUND = -32001
     TASK_NOT_CANCELABLE = -32002
+    FORBIDDEN = -32003            # token scope does not permit this method
     UNSUPPORTED_OPERATION = -32004
+    CONCURRENCY_LIMIT = -32005    # too many concurrent sub-agents running
     METHOD_NOT_FOUND = -32601
     INVALID_PARAMS = -32602
     INTERNAL_ERROR = -32603
@@ -98,7 +178,9 @@ class A2AErrorCode:
 A2A_ERRORS: dict[int, str] = {
     A2AErrorCode.TASK_NOT_FOUND: "Task not found",
     A2AErrorCode.TASK_NOT_CANCELABLE: "Task cannot be canceled",
+    A2AErrorCode.FORBIDDEN: "Forbidden: insufficient A2A scope",
     A2AErrorCode.UNSUPPORTED_OPERATION: "Unsupported operation",
+    A2AErrorCode.CONCURRENCY_LIMIT: "Concurrency limit reached",
     A2AErrorCode.METHOD_NOT_FOUND: "Method not found",
     A2AErrorCode.INVALID_PARAMS: "Invalid params",
     A2AErrorCode.INTERNAL_ERROR: "Internal error",
@@ -146,12 +228,21 @@ def create_a2a_token(
     Reuses metano's HS256 secret so :func:`verify_a2a_token` (and the auth
     middleware) can check it with the same key.  Raises ``RuntimeError`` if the
     JWT secret is not configured.
+
+    ``scope`` defaults to ``["a2a:task"]`` (full task delegation).  Pass
+    ``scope=["a2a:read"]`` to mint a read-only token.
+
+    SECURITY: an A2A token is a local-RCE trust boundary (it can spawn and
+    SIGKILL ``claude -p`` sub-processes on this host).  Only ever issue it to
+    admins, keep it server-side, and never log or share it.
     """
     now = datetime.now(timezone.utc)
     payload = {
         "sub": username,
         "aud": A2A_AUDIENCE,
-        "scope": scope or ["a2a:task"],
+        # Default to full delegation ONLY when the caller passes None; an empty
+        # list explicitly mints a no-permission token (deny-by-default).
+        "scope": scope if scope is not None else ["a2a:task"],
         "type": "a2a",
         "jti": secrets.token_urlsafe(16),
         "iat": now,
@@ -361,13 +452,35 @@ async def _handle_message_send(params: dict) -> dict:
     timeout = max(1, min(timeout, 3600))
     context_id = msg.get("contextId") or msg.get("context_id") or ""
 
+    # Concurrency gate: wait up to delegator._acquire_timeout for a free
+    # sub-agent slot.  When the limit is reached we reject with a clear
+    # "concurrency limit" error instead of forking an unbounded number of
+    # claude processes (DoS / fork-bomb).  The slot is released by
+    # delegator._spawn_async_impl when the background sub-agent finishes,
+    # times out, errors, or is cancelled.
+    if not await delegator.acquire_async():
+        raise _RPCError(
+            A2AErrorCode.CONCURRENCY_LIMIT,
+            f"Concurrency limit reached ({delegator.active_count()}/"
+            f"{delegator._max_concurrent} sub-agents running); retry later",
+            data={"max_concurrent": delegator._max_concurrent,
+                  "active": delegator.active_count()},
+        )
+
     # Launch the sub-agent in the background.  The delegator registers the
-    # task synchronously at the start of spawn_async, so we discover its id by
-    # diffing delegator._tasks right after yielding to the loop once.  The
-    # lock serializes this section against concurrent message/send calls.
+    # task synchronously at the start of _spawn_async_impl, so we discover its
+    # id by diffing delegator._tasks right after yielding to the loop once.
+    # The lock serializes this section against concurrent message/send calls.
     async with _launch_lock:
         before = set(delegator._tasks.keys())
-        bg = asyncio.create_task(delegator.spawn_async(text, model=model, timeout=timeout))
+        try:
+            bg = asyncio.create_task(
+                delegator._spawn_async_impl(text, model=model, timeout=timeout))
+        except BaseException:
+            # create_task failing is essentially impossible outside loop
+            # shutdown; release the slot we pre-acquired above.
+            delegator.release()
+            raise
         task_id: Optional[str] = None
         for _ in range(100):
             await asyncio.sleep(0.01)
@@ -377,6 +490,12 @@ async def _handle_message_send(params: dict) -> dict:
                 break
     if task_id is None:
         bg.cancel()
+        try:
+            await bg
+        except asyncio.CancelledError:
+            pass
+        # Guarded release: no-op if _spawn_async_impl already released it.
+        delegator.release()
         raise _RPCError(A2AErrorCode.INTERNAL_ERROR, "Failed to register delegated task")
 
     _background_tasks[task_id] = bg
@@ -408,13 +527,14 @@ async def _handle_tasks_cancel(params: dict) -> dict:
         raise _RPCError(A2AErrorCode.TASK_NOT_CANCELABLE,
                         f"Task '{task_id}' is in terminal state '{t.status}'")
 
-    # Best-effort cancel: mark the record canceled, stop the background
-    # asyncio.Task so spawn_async can't later overwrite the status, and
-    # persist.  (The delegator itself has no kill; the claude subprocess is
-    # left to finish detached — an acceptable MVP limitation.)
+    # Cancel = kill the process tree.  First SIGKILL the claude process group
+    # (sub-agents are spawned with start_new_session=True, so os.killpg reaches
+    # every descendant), then cancel the background asyncio.Task so
+    # _spawn_async_impl can't later overwrite the status, then persist.
     t.status = "canceled"
     t.error = "Canceled via A2A tasks/cancel"
     t.completed_at = time.time()
+    killed = delegator.cancel_task(task_id)
     bg = _background_tasks.pop(task_id, None)
     if bg is not None:
         bg.cancel()
@@ -426,6 +546,7 @@ async def _handle_tasks_cancel(params: dict) -> dict:
         delegator._save_task(t)
     except Exception:
         logger.exception("Failed to persist canceled task %s", task_id)
+    logger.info("A2A task %s canceled (process group SIGKILLed=%s)", task_id, killed)
     return _build_task(t)
 
 
@@ -459,12 +580,21 @@ _METHODS: dict[str, Any] = {
 }
 
 
-async def _dispatch_one(body: Any) -> dict:
+async def _dispatch_one(body: Any, scopes: Optional[list[str]] = None) -> dict:
     if not isinstance(body, dict) or not body.get("method"):
         return _rpc_error(A2AErrorCode.INVALID_REQUEST)
     method = body["method"]
     params = body.get("params") or {}
     rpc_id = body.get("id")
+
+    # Scope enforcement (deny-by-default): a token whose scope does not cover
+    # this method gets an A2A FORBIDDEN error.  The REST bindings surface the
+    # same denial as HTTP 403 via _scope_response before reaching here.
+    if _scope_denied(scopes, method):
+        return _rpc_error(A2AErrorCode.FORBIDDEN, rpc_id,
+                          data={"method": method,
+                                "required_scope": _METHOD_MIN_SCOPE.get(method)})
+
     handler = _METHODS.get(method)
     if handler is None:
         return _rpc_error(A2AErrorCode.METHOD_NOT_FOUND, rpc_id)
@@ -475,6 +605,8 @@ async def _dispatch_one(body: Any) -> dict:
         return _rpc_error(e.code, rpc_id, data=e.data)
     except KeyError as e:
         return _rpc_error(A2AErrorCode.TASK_NOT_FOUND, rpc_id, data=str(e))
+    except ConcurrencyLimitError as e:
+        return _rpc_error(A2AErrorCode.CONCURRENCY_LIMIT, rpc_id, data=str(e))
     except ValueError as e:
         return _rpc_error(A2AErrorCode.INVALID_PARAMS, rpc_id, data=str(e))
     except Exception as e:
@@ -620,23 +752,31 @@ def create_a2a_app() -> FastAPI:
     # ── JSON-RPC 2.0 endpoint ──────────────────────────────────────────
     @app.post("/rpc")
     async def rpc_endpoint(request: Request):
+        scopes = getattr(request.state, "a2a_scope", []) or []
         try:
             body = await request.json()
         except Exception:
             return JSONResponse(content=_rpc_error(A2AErrorCode.PARSE_ERROR))
         if isinstance(body, list):
-            return JSONResponse(content=[await _dispatch_one(b) for b in body])
-        return JSONResponse(content=await _dispatch_one(body))
+            return JSONResponse(content=[await _dispatch_one(b, scopes) for b in body])
+        return JSONResponse(content=await _dispatch_one(body, scopes))
 
     # ── REST bindings ──────────────────────────────────────────────────
     @app.post("/message:send")
     async def rest_message_send(request: Request):
+        denied = _scope_response(request, "message/send")
+        if denied is not None:
+            return denied
+        scopes = getattr(request.state, "a2a_scope", []) or []
         body = await request.json()
         rpc = {"method": "message/send", "params": body, "id": _next_id()}
-        return JSONResponse(content=await _dispatch_one(rpc))
+        return JSONResponse(content=await _dispatch_one(rpc, scopes))
 
     @app.post("/message:stream")
     async def rest_message_stream(request: Request):
+        denied = _scope_response(request, "message/send")
+        if denied is not None:
+            return denied
         try:
             body = await request.json()
             send_result = await _handle_message_send(body)
@@ -650,10 +790,15 @@ def create_a2a_app() -> FastAPI:
 
     @app.get("/tasks")
     async def rest_list_tasks(
+        request: Request,
         context_id: str | None = None,
         status: str | None = None,
         page_size: int | None = None,
     ):
+        denied = _scope_response(request, "tasks/list")
+        if denied is not None:
+            return denied
+        scopes = getattr(request.state, "a2a_scope", []) or []
         params: dict[str, Any] = {}
         if context_id:
             params["contextId"] = context_id
@@ -662,7 +807,7 @@ def create_a2a_app() -> FastAPI:
         if page_size:
             params["pageSize"] = page_size
         rpc = {"method": "tasks/list", "params": params, "id": _next_id()}
-        return JSONResponse(content=await _dispatch_one(rpc))
+        return JSONResponse(content=await _dispatch_one(rpc, scopes))
 
     # NOTE: the `:subscribe` / `:cancel` routes MUST be registered before the
     # bare `/{task_id}` route — Starlette stops at the first full match (path +
@@ -670,20 +815,35 @@ def create_a2a_app() -> FastAPI:
     # `/tasks/{id}:subscribe` (and 405 the POST cancel via the partial-match
     # fallback).  Registering the more specific suffixed routes first wins.
     @app.get("/tasks/{task_id}:subscribe")
-    async def rest_subscribe_task(task_id: str):
+    async def rest_subscribe_task(request: Request, task_id: str):
+        denied = _scope_response(request, "tasks/subscribe")
+        if denied is not None:
+            return denied
         return EventSourceResponse(_subscribe_events(task_id))
 
     @app.post("/tasks/{task_id}:cancel")
-    async def rest_cancel_task(task_id: str):
+    async def rest_cancel_task(request: Request, task_id: str):
+        denied = _scope_response(request, "tasks/cancel")
+        if denied is not None:
+            return denied
+        scopes = getattr(request.state, "a2a_scope", []) or []
         rpc = {"method": "tasks/cancel", "params": {"id": task_id}, "id": _next_id()}
-        return JSONResponse(content=await _dispatch_one(rpc))
+        return JSONResponse(content=await _dispatch_one(rpc, scopes))
 
     @app.get("/tasks/{task_id}")
-    async def rest_get_task(task_id: str, history_length: int | None = None):
+    async def rest_get_task(
+        request: Request,
+        task_id: str,
+        history_length: int | None = None,
+    ):
+        denied = _scope_response(request, "tasks/get")
+        if denied is not None:
+            return denied
+        scopes = getattr(request.state, "a2a_scope", []) or []
         params: dict[str, Any] = {"id": task_id}
         if history_length is not None:
             params["historyLength"] = history_length
         rpc = {"method": "tasks/get", "params": params, "id": _next_id()}
-        return JSONResponse(content=await _dispatch_one(rpc))
+        return JSONResponse(content=await _dispatch_one(rpc, scopes))
 
     return app

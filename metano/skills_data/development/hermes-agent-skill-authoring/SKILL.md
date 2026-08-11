@@ -1,165 +1,115 @@
 ---
 name: hermes-agent-skill-authoring
-description: "Author in-repo SKILL.md: frontmatter, validator, structure."
-version: 1.0.0
-author: Hermes Agent
+description: "Author metano SKILL.md: frontmatter, validator, structure, skill_manage."
+version: 1.1.0
+author: ""
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
   hermes:
-    tags: [skills, authoring, hermes-agent, conventions, skill-md]
+    tags: [skills, authoring, metano, conventions, skill-md]
     related_skills: [writing-plans, requesting-code-review]
 ---
 
-# Authoring Hermes-Agent Skills (in-repo)
+
+# 编写 metano 技能（SKILL.md）
 
 ## Overview
 
-There are two places a SKILL.md can live:
+metano 的技能就是一个带 YAML frontmatter 的 `SKILL.md` 文件。技能有两个存放位置：
 
-1. **User-local:** `~/.hermes/skills/<maybe-category>/<name>/SKILL.md` — personal, not shared. Created via `skill_manage(action='create')`.
-2. **In-repo (this skill is about this case):** `/home/bb/hermes-agent/skills/<category>/<name>/SKILL.md` — committed, shipped with the package. Use `write_file` + `git add`. `skill_manage(action='create')` does NOT target this tree.
+1. **内置技能（bundled）**：`metano/skills_data/<category>/<name>/SKILL.md` —— 随仓库/发行版提供，只读保护（`source='bundled'`），autonomous 后台进程不能修改。
+2. **用户技能（user）**：`~/.claude/metano/skills/<category>/<name>/SKILL.md`（`METANO_HOME` 环境变量可覆盖根目录）—— 个人使用，用 `skill_manage(action='create')` 创建。
 
-## When to Use
+本技能面向 **用户技能** 的编写。
 
-- User asks you to add a skill "in this branch / repo / commit"
-- You're committing a reusable workflow that should ship with hermes-agent
-- You're editing an existing skill under `/home/bb/hermes-agent/skills/` (use `patch` for small edits, `write_file` for rewrites; `skill_manage` still works for patch on in-repo skills, but not for `create`)
+## 何时使用
+
+- 用户要求"新建一个技能 / 保存这个工作流"
+- 把可复用的工作流固化成一个 slash 命令（`/<name>`）
+- 修改已有技能内容
 
 ## Required Frontmatter
 
-Source of truth: `tools/skill_manager_tool.py::_validate_frontmatter`. Hard requirements:
+校验入口：`metano/skills/validator.py`（`validate_frontmatter` / `validate_content`）。硬性要求：
 
-- Starts with `---` as the first bytes (no leading blank line).
-- Closes with `\n---\n` before the body.
-- Parses as a YAML mapping.
-- `name` field present.
-- `description` field present, ≤ **1024 chars** (`MAX_DESCRIPTION_LENGTH`).
-- Non-empty body after the closing `---`.
+- 以 `---` 开头（首字节，无前导空行）
+- 以 `\n---\n` 闭合
+- 解析为合法 YAML mapping
+- 必须有 `name` 字段
+- 必须有 `description` 字段
+- 闭合 `---` 之后必须非空正文
 
-Peer-matched shape used by every skill under `skills/software-development/`:
+标准模板：
 
 ```yaml
 ---
-name: my-skill-name               # lowercase, hyphens, ≤64 chars (MAX_NAME_LENGTH)
-description: Use when <trigger>. <one-line behavior>.
+name: my-skill-name               # 小写 + 连字符
+description: 何时触发用 <trigger>。一句话行为描述。
 version: 1.0.0
-author: Hermes Agent
-license: MIT
-metadata:
-  hermes:
-    tags: [short, descriptive, tags]
-    related_skills: [other-skill, another-skill]
+author: ""
+trigger: /my-skill-name
+category: productivity            # 归入 skills_data 下的某个分类
 ---
 ```
 
-`version` / `author` / `license` / `metadata` are NOT enforced by the validator, but every peer has them — omit and your skill sticks out.
+## 常用操作（skill_manage MCP 工具）
 
-## Size Limits
+| 动作 | 命令 | 说明 |
+|------|------|------|
+| 创建 | `skill_manage(action="create", name=..., category=..., description=..., content=...)` | 写入 `~/.claude/metano/skills/<category>/<name>/SKILL.md` |
+| 修改 | `skill_manage(action="edit", name=..., content=...)` | 整体替换正文 |
+| 局部改 | `skill_manage(action="patch", name=..., old_string=..., new_string=...)` | 查找替换正文片段 |
+| 删除 | `skill_manage(action="delete", name=...)` | 删除用户技能（内置技能受保护不可删） |
+| 查看 | `skill_view(name=..., full=True)` | 查看完整内容 |
 
-- Description: ≤ 1024 chars (enforced).
-- Full SKILL.md: ≤ 100,000 chars (enforced as `MAX_SKILL_CONTENT_CHARS`, ~36k tokens).
-- Peer skills in `software-development/` sit at **8-14k chars**. Aim for that range. If you're pushing past 20k, split into `references/*.md` and reference them from SKILL.md.
+内置（bundled）技能受保护，`edit/patch/delete` 会被拒绝，除非带 `force=True`（仅用于用户已同意的提案）。
 
-## Peer-Matched Structure
-
-Every in-repo skill follows roughly:
+## 结构约定
 
 ```
 # <Title>
 
-## Overview
-One or two paragraphs: what and why.
+## 概述 / When to Use
+- 何时触发的要点
+- 反例：何时不要用
 
-## When to Use
-- Bulleted triggers
-- "Don't use for:" counter-triggers
-
-## <Topic sections specific to the skill>
-- Quick-reference tables are common
-- Code blocks with exact commands
-- Hermes-specific recipes (tests via scripts/run_tests.sh, ui-tui paths, etc.)
+## 正文小节
+- 快速参考表格
+- 代码块给出精确命令
 
 ## Common Pitfalls
-Numbered list of mistakes and their fixes.
+编号列出易错点与修复
 
-## Verification Checklist
-- [ ] Checkbox list of post-action verifications
-
-## One-Shot Recipes (optional)
-Named scenarios → concrete command sequences.
+## 验证清单
+- [ ] 发布后的自查项
 ```
 
-Not every section is mandatory, but `Overview` + `When to Use` + actionable body + pitfalls are the minimum for the skill to feel like a peer.
+不是每节都必须，但「触发条件 + 可执行正文 + 易错点」是底线。
 
-## Directory Placement
+## 验证
 
-```
-skills/<category>/<skill-name>/SKILL.md
-```
+创建后用 `skills_list` 确认出现，用 `skill_view(name=..., full=True)` 检查渲染结果。
+注意：当前会话的技能加载器有缓存（TTL 约 60s）——新建技能后稍等再查，或重开会话；这不是 bug。
 
-Categories currently in repo (confirm with `ls skills/`): `autonomous-ai-agents`, `creative`, `data-science`, `devops`, `dogfood`, `email`, `gaming`, `github`, `leisure`, `mcp`, `media`, `mlops/*`, `note-taking`, `productivity`, `red-teaming`, `research`, `smart-home`, `social-media`, `software-development`.
+## 跨技能引用
 
-Pick the closest existing category. Don't invent new top-level categories casually.
-
-## Workflow
-
-1. **Survey peers** in the target category:
-   ```
-   ls skills/<category>/
-   ```
-   Read 2-3 peer SKILL.md files to match tone and structure.
-2. **Check validator constraints** in `tools/skill_manager_tool.py` if unsure.
-3. **Draft** with `write_file` to `skills/<category>/<name>/SKILL.md`.
-4. **Validate locally**:
-   ```python
-   import yaml, re, pathlib
-   content = pathlib.Path("skills/<category>/<name>/SKILL.md").read_text()
-   assert content.startswith("---")
-   m = re.search(r'\n---\s*\n', content[3:])
-   fm = yaml.safe_load(content[3:m.start()+3])
-   assert "name" in fm and "description" in fm
-   assert len(fm["description"]) <= 1024
-   assert len(content) <= 100_000
-   ```
-5. **Git add + commit** on the active branch.
-6. **Note:** the CURRENT session's skill loader is cached — `skill_view` / `skills_list` will not see the new skill until a new session. This is expected, not a bug.
-
-## Cross-Referencing Other Skills
-
-`metadata.hermes.related_skills` unions both trees (`skills/` in-repo and `~/.hermes/skills/`) at load time. You CAN reference a user-local skill from an in-repo skill, but it won't resolve for other users who clone the repo fresh. Prefer referencing only in-repo skills from in-repo skills. If a frequently-referenced skill lives only in `~/.hermes/skills/`, consider promoting it to the repo.
-
-## Editing Existing In-Repo Skills
-
-- **Small fix (typo, added pitfall, tightened trigger):** `skill_manage(action='patch', name=..., old_string=..., new_string=...)` works fine on in-repo skills.
-- **Major rewrite:** `write_file` the whole SKILL.md. `skill_manage(action='edit')` also works but requires supplying the full new content.
-- **Adding supporting files:** `write_file` to `skills/<category>/<name>/references/<file>.md`, `templates/<file>`, or `scripts/<file>`. `skill_manage(action='write_file')` also works and enforces the references/templates/scripts/assets subdir allowlist.
-- **Always commit** the edit — in-repo skills are source, not runtime state.
+`description` 里可用 `related` 思路提及相邻技能名，但不要依赖不存在的技能。
 
 ## Common Pitfalls
 
-1. **Using `skill_manage(action='create')` for an in-repo skill.** It writes to `~/.hermes/skills/`, not the repo tree. Use `write_file` for in-repo creation.
-
-2. **Leading whitespace before `---`.** The validator checks `content.startswith("---")`; any leading blank line or BOM fails validation.
-
-3. **Description too generic.** Peer descriptions start with "Use when ..." and describe the *trigger class*, not the one task. "Use when debugging X" > "Debug X".
-
-4. **Forgetting the author/license/metadata block.** Not validator-enforced, but every peer has it; omitting makes the skill look half-finished.
-
-5. **Writing a skill that duplicates a peer.** Before creating, `ls skills/<category>/` and open 2-3 peers. Prefer extending an existing skill to creating a narrow sibling.
-
-6. **Expecting the current session to see the new skill.** It won't. The skill loader is initialized at session start. Verify in a fresh session or via `skill_view` using the exact path.
-
-7. **Linking to skills that don't exist in-repo.** `related_skills: [some-user-local-skill]` works for you but breaks for other clones. Prefer only in-repo links.
+1. **用 `skill_manage(action='create')` 想写内置技能** —— create 只会写用户目录，内置技能要改仓库文件（`metano/skills_data/`），并且受保护。
+2. **frontmatter 前有空白** —— 校验要求 `---` 是首字节；前导空行/BOM 直接失败。
+3. **description 太泛** —— 以"何时触发"开头，描述触发类别而非单个任务。
+4. **正文缺失** —— 闭合 `---` 后必须有内容。
+5. **写完立刻断言可见** —— 加载器有缓存，需等 TTL 或重开。
+6. **引用不存在的辅助文件** —— 正文里 `scripts/`、`references/`、`templates/` 若文件不存在会误导模型；要么补文件，要么从正文删除引用。
 
 ## Verification Checklist
 
-- [ ] File is at `skills/<category>/<name>/SKILL.md` (not in `~/.hermes/skills/`)
-- [ ] Frontmatter starts at byte 0 with `---`, closes with `\n---\n`
-- [ ] `name`, `description`, `version`, `author`, `license`, `metadata.hermes.{tags, related_skills}` all present
-- [ ] Name ≤ 64 chars, lowercase + hyphens
-- [ ] Description ≤ 1024 chars and starts with "Use when ..."
-- [ ] Total file ≤ 100,000 chars (aim for 8-15k)
-- [ ] Structure: `# Title` → `## Overview` → `## When to Use` → body → `## Common Pitfalls` → `## Verification Checklist`
-- [ ] `related_skills` references resolve in-repo (or are explicitly OK to be user-local)
-- [ ] `git add skills/<category>/<name>/ && git commit` completed on the intended branch
+- [ ] 文件位于用户技能目录 `~/.claude/metano/skills/<category>/<name>/SKILL.md`
+- [ ] frontmatter 从字节 0 开始 `---`，`\n---\n` 闭合
+- [ ] `name` / `description` / `version` / `author` / `trigger` / `category` 齐全
+- [ ] description 以触发条件开头，≤ 1024 字符
+- [ ] 正文非空，结构：标题 → 触发条件 → 正文 → pitfalls
+- [ ] 无指向不存在 `scripts/` / `references/` / `templates/` 文件的引用

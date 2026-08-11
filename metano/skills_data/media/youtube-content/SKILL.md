@@ -18,23 +18,29 @@ Extract transcripts from YouTube videos and convert them into useful formats.
 pip install youtube-transcript-api
 ```
 
-## Helper Script
+## Fetching the Transcript
 
-`SKILL_DIR` is the directory containing this SKILL.md file. The script accepts any standard YouTube URL format, short links (youtu.be), shorts, embeds, live links, or a raw 11-character video ID.
+metano 不内置 `scripts/fetch_transcript.py`；用 `code_run(language="python")` 内联调用
+`youtube-transcript-api`（兼容任何标准 YouTube URL、youtu.be 短链、shorts、embed、直播链接或裸 11 位 video ID）：
 
-```bash
-# JSON output with metadata
-python3 SKILL_DIR/scripts/fetch_transcript.py "https://youtube.com/watch?v=VIDEO_ID"
+```python
+from youtube_transcript_api import YouTubeTranscriptApi
+from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound
 
-# Plain text (good for piping into further processing)
-python3 SKILL_DIR/scripts/fetch_transcript.py "URL" --text-only
-
-# With timestamps
-python3 SKILL_DIR/scripts/fetch_transcript.py "URL" --timestamps
-
-# Specific language with fallback chain
-python3 SKILL_DIR/scripts/fetch_transcript.py "URL" --language tr,en
+video_id = "VIDEO_ID"          # 或从 URL 解析出 11 位 ID
+try:
+    transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=["tr", "en"])
+    for seg in transcript:
+        t = int(seg["start"])
+        print(f"{t//60:02d}:{t%60:02d} {seg['text']}")
+except TranscriptsDisabled:
+    print("TRANSCRIPT_DISABLED")
+except NoTranscriptFound:
+    print("NO_LANGUAGE_MATCH")
 ```
+
+`transcript` 每项形如 `{"text": "...", "start": 0.0, "duration": 5.0}`；
+需要纯文本时只输出 `seg["text"]`，需要时间戳时格式化 `seg["start"]`。
 
 ## Output Formats
 
@@ -59,7 +65,7 @@ After fetching the transcript, format it based on what the user asks for:
 
 ## Workflow
 
-1. **Fetch** the transcript using the helper script with `--text-only --timestamps`.
+1. **Fetch** the transcript with the inline `youtube-transcript-api` snippet above (text + timestamps).
 2. **Validate**: confirm the output is non-empty and in the expected language. If empty, retry without `--language` to get any available transcript. If still empty, tell the user the video likely has transcripts disabled.
 3. **Chunk if needed**: if the transcript exceeds ~50K characters, split into overlapping chunks (~40K with 2K overlap) and summarize each chunk before merging.
 4. **Transform** into the requested output format. If the user did not specify a format, default to a summary.

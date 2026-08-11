@@ -26,7 +26,10 @@ Generate `.excalidraw` files for architecture diagrams, flowcharts, sequence dia
 1. **Load this skill** (you already did)
 2. **Write the elements JSON** -- an array of Excalidraw element objects
 3. **Save the file** using `write_file` to create a `.excalidraw` file
-4. **Optionally upload** for a shareable link using `scripts/upload.py` via `terminal`
+4. **Share it** -- the `.excalidraw` file can be opened directly at
+   [excalidraw.com](https://excalidraw.com) (drag-and-drop) or sent to the user;
+   metano 不内置上传脚本，如需可分享链接请用 `web_search_tavily`/`browser_navigate`
+   走 excalidraw.com 的在线保存流程，或直接把文件交给用户。
 
 ### Saving a Diagram
 
@@ -46,15 +49,13 @@ Wrap your elements array in the standard `.excalidraw` envelope and save with `w
 
 Save to any path, e.g. `~/diagrams/my_diagram.excalidraw`.
 
-### Uploading for a Shareable Link
+### Sharing the File
 
-Run the upload script (located in this skill's `scripts/` directory) via terminal:
-
-```bash
-python skills/diagramming/excalidraw/scripts/upload.py ~/diagrams/my_diagram.excalidraw
-```
-
-This uploads to excalidraw.com (no account needed) and prints a shareable URL. Requires the `cryptography` pip package (`pip install cryptography`).
+Save the `.excalidraw` file (e.g. `~/diagrams/my_diagram.excalidraw`) and give it to the
+user, or open it at [excalidraw.com](https://excalidraw.com) via drag-and-drop. No upload
+script is bundled with this skill in metano; if the user wants a shareable hosted link,
+guide them through excalidraw.com's online save/share flow in the browser
+(`browser_navigate("https://excalidraw.com")`).
 
 ---
 
@@ -177,7 +178,7 @@ The shape needs `boundElements` listing the text, and the text needs `containerI
 
 ### Color Palette
 
-See `references/colors.md` for full color tables. Quick reference:
+Quick reference (full palette follows in the table):
 
 | Use | Fill Color | Hex |
 |-----|-----------|-----|
@@ -193,7 +194,6 @@ See `references/colors.md` for full color tables. Quick reference:
 - Use the color palette consistently across the diagram
 - **Text contrast is CRITICAL** -- never use light gray on white backgrounds. Minimum text color on white: `#757575`
 - Do NOT use emoji in text -- they don't render in Excalidraw's font
-- For dark mode diagrams, see `references/dark-mode.md`
-- For larger examples, see `references/examples.md`
+- For dark mode diagrams, invert the palette (dark background `#1e1e1e`, light strokes/`backgroundColor`) consistently across all elements
 
 

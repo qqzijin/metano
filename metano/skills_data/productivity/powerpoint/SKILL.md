@@ -26,13 +26,19 @@ Use this skill any time a .pptx file is involved in any way — as input, output
 ```bash
 # Text extraction
 python -m markitdown presentation.pptx
-
-# Visual overview
-python scripts/thumbnail.py presentation.pptx
-
-# Raw XML
-python scripts/office/unpack.py presentation.pptx unpacked/
 ```
+
+> **metano 说明：** 本技能不内置 `scripts/thumbnail.py` / `scripts/office/unpack.py`。
+> 需要视觉概览时用 LibreOffice 转图片：
+> ```bash
+> soffice --headless --convert-to pdf presentation.pptx && pdftoppm -jpeg -r 100 presentation.pdf slide
+> ```
+> 需要查看原始 XML 时直接解包（.pptx 即 zip）：
+> ```python
+> import zipfile, pathlib
+> with zipfile.ZipFile("presentation.pptx") as z:
+>     z.extractall("unpacked/")
+> ```
 
 ---
 
@@ -40,8 +46,8 @@ python scripts/office/unpack.py presentation.pptx unpacked/
 
 **Read [editing.md](editing.md) for full details.**
 
-1. Analyze template with `thumbnail.py`
-2. Unpack → manipulate slides → edit content → clean → pack
+1. Analyze template: convert to images (soffice + pdftoppm) or extract text (`python -m markitdown`)
+2. Unpack (zipfile) → manipulate slides → edit content → clean → pack
 
 ---
 
@@ -214,7 +220,7 @@ Report ALL issues found, including minor ones.
 Convert presentations to individual slide images for visual inspection:
 
 ```bash
-python scripts/office/soffice.py --headless --convert-to pdf output.pptx
+soffice --headless --convert-to pdf output.pptx
 pdftoppm -jpeg -r 150 output.pdf slide
 ```
 
@@ -233,5 +239,5 @@ pdftoppm -jpeg -r 150 -f N -l N output.pdf slide-fixed
 - `pip install "markitdown[pptx]"` - text extraction
 - `pip install Pillow` - thumbnail grids
 - `npm install -g pptxgenjs` - creating from scratch
-- LibreOffice (`soffice`) - PDF conversion (auto-configured for sandboxed environments via `scripts/office/soffice.py`)
+- LibreOffice (`soffice`) - PDF conversion (`soffice --headless --convert-to pdf`)
 - Poppler (`pdftoppm`) - PDF to images

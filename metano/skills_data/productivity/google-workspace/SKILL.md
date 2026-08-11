@@ -17,319 +17,133 @@ metadata:
     related_skills: [himalaya]
 ---
 
+
 # Google Workspace
 
-Gmail, Calendar, Drive, Contacts, Sheets, and Docs — through Hermes-managed OAuth and a thin CLI wrapper. When `gws` is installed, the skill uses it as the execution backend for broader Google Workspace coverage; otherwise it falls back to the bundled Python client implementation.
+Gmail, Calendar, Drive, Contacts, Sheets, and Docs via Google REST APIs.
 
-## References
+> **metano 说明：** 本技能最初依赖 Hermes 自带的 `scripts/setup.py` /
+> `scripts/google_api.py` CLI 辅助脚本，metano 发行版**不包含**这些脚本，
+> 因此需要手动配置 Google API 访问（OAuth 凭据）。配置完成后，用
+> `code_run(language="shell")` 调用 curl 或 Python（`google-api-python-client`）
+> 访问各服务 REST API。所有写操作（发邮件、删日历事件、改文档等）必须先与用户确认。
 
-- `references/gmail-search-syntax.md` — Gmail search operators (is:unread, from:, newer_than:, etc.)
+## 手动配置（一次性）
 
-## Scripts
+1. 打开 Google Cloud Console：https://console.cloud.google.com/projectselector2/home/dashboard
+2. 启用所需 API（API Library → 启用）：
+   Gmail API、Google Calendar API、Google Drive API、Google Sheets API、Google Docs API、People API
+3. 创建 OAuth 客户端凭据：
+   https://console.cloud.google.com/apis/credentials
+   Credentials → Create Credentials → OAuth 2.0 Client ID → Application type: "Desktop app"
+4. 若应用处于 Testing 状态，把用户账号加为测试用户：
+   https://console.cloud.google.com/auth/audience
+5. 下载 `client_secret.json`，告知用户保存路径（建议 `~/.claude/metano/credentials/google_client_secret.json`）。
 
-- `scripts/setup.py` — OAuth2 setup (run once to authorize)
-- `scripts/google_api.py` — compatibility wrapper CLI. It prefers `gws` for operations when available, while preserving Hermes' existing JSON output contract.
+## 获取访问令牌（code_run）
 
-## First-Time Setup
+安装依赖并用 Python 完成 OAuth 授权（首次会输出授权 URL，需用户浏览器打开并回贴 code）：
 
-The setup is fully non-interactive — you drive it step by step so it works
-on CLI, Telegram, Discord, or any platform.
+```python
+# pip install google-auth-oauthlib google-auth-httplib2 google-api-python-client
+import os, json
+from pathlib import Path
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request
 
-Define a shorthand first:
+SCOPES = [
+  "https://www.googleapis.com/auth/gmail.send",
+  "https://www.googleapis.com/auth/calendar",
+  "https://www.googleapis.com/auth/drive",
+  "https://www.googleapis.com/auth/spreadsheets",
+  "https://www.googleapis.com/auth/documents",
+]
+cred_dir = Path(os.environ.get("METANO_HOME", str(Path.home()/".claude"/"metano")))/"credentials"
+cred_dir.mkdir(parents=True, exist_ok=True)
+secret = cred_dir/"google_client_secret.json"
+token = cred_dir/"google_token.json"
 
-```bash
-GSETUP="python ${HERMES_HOME:-$HOME/.hermes}/skills/productivity/google-workspace/scripts/setup.py"
+creds = None
+if token.exists():
+    from google.oauth2.credentials import Credentials
+    creds = Credentials.from_authorized_user_file(str(token), SCOPES)
+if not creds or not creds.valid:
+    if creds and creds.expired and creds.refresh_token:
+        creds.refresh(Request())
+    else:
+        flow = InstalledAppFlow.from_client_secrets_file(str(secret), SCOPES)
+        creds = flow.run_local_server(port=0)
+    token.write_text(creds.to_json())
+print("AUTHENTICATED")
+print("ACCESS_TOKEN=" + creds.token)
 ```
 
-### Step 0: Check if already set up
+## 服务调用
+
+拿到 access token 后，用 `code_run(language="shell")` 直接调 REST API：
 
 ```bash
-$GSETUP --check
+TOKEN="<access_token>"
+
+# Gmail：搜索（返回 JSON 数组）
+curl -s -H "Authorization: Bearer $TOKEN"   "https://gmail.googleapis.com/gmail/v1/users/me/messages?q=is:unread&maxResults=10"
+
+# Gmail：读取单封邮件
+curl -s -H "Authorization: Bearer $TOKEN"   "https://gmail.googleapis.com/gmail/v1/users/me/messages/<MESSAGE_ID>?format=full"
+
+# Calendar：列出未来 7 天事件
+curl -s -H "Authorization: Bearer $TOKEN"   "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=$(date -u -Iseconds)&maxResults=25"
+
+# Drive：搜索文件
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "https://www.googleapis.com/drive/v3/files?q=name contains 'report'&fields=files(id,name,mimeType)"
+
+# Sheets：读取单元格
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "https://sheets.googleapis.com/v4/spreadsheets/<SHEET_ID>/values/Sheet1!A1:D10"
+
+# Docs：读取文档正文
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "https://docs.googleapis.com/v1/documents/<DOC_ID>"
 ```
 
-If it prints `AUTHENTICATED`, skip to Usage — setup is already done.
-
-### Step 1: Triage — ask the user what they need
-
-Before starting OAuth setup, ask the user TWO questions:
-
-**Question 1: "What Google services do you need? Just email, or also
-Calendar/Drive/Sheets/Docs?"**
-
-- **Email only** → They don't need this skill at all. Use the `himalaya` skill
-  instead — it works with a Gmail App Password (Settings → Security → App
-  Passwords) and takes 2 minutes to set up. No Google Cloud project needed.
-  Load the himalaya skill and follow its setup instructions.
-
-- **Email + Calendar** → Continue with this skill, but use
-  `--services email,calendar` during auth so the consent screen only asks for
-  the scopes they actually need.
-
-- **Calendar/Drive/Sheets/Docs only** → Continue with this skill and use a
-  narrower `--services` set like `calendar,drive,sheets,docs`.
-
-- **Full Workspace access** → Continue with this skill and use the default
-  `all` service set.
-
-**Question 2: "Does your Google account use Advanced Protection (hardware
-security keys required to sign in)? If you're not sure, you probably don't
-— it's something you would have explicitly enrolled in."**
-
-- **No / Not sure** → Normal setup. Continue below.
-- **Yes** → Their Workspace admin must add the OAuth client ID to the org's
-  allowed apps list before Step 4 will work. Let them know upfront.
-
-### Step 2: Create OAuth credentials (one-time, ~5 minutes)
-
-Tell the user:
-
-> You need a Google Cloud OAuth client. This is a one-time setup:
->
-> 1. Create or select a project:
->    https://console.cloud.google.com/projectselector2/home/dashboard
-> 2. Enable the required APIs from the API Library:
->    https://console.cloud.google.com/apis/library
->    Enable: Gmail API, Google Calendar API, Google Drive API,
->    Google Sheets API, Google Docs API, People API
-> 3. Create the OAuth client here:
->    https://console.cloud.google.com/apis/credentials
->    Credentials → Create Credentials → OAuth 2.0 Client ID
-> 4. Application type: "Desktop app" → Create
-> 5. If the app is still in Testing, add the user's Google account as a test user here:
->    https://console.cloud.google.com/auth/audience
->    Audience → Test users → Add users
-> 6. Download the JSON file and tell me the file path
->
-> Important Hermes CLI note: if the file path starts with `/`, do NOT send only the bare path as its own message in the CLI, because it can be mistaken for a slash command. Send it in a sentence instead, like:
-> `The JSON file path is: /home/user/Downloads/client_secret_....json`
-
-Once they provide the path:
-
-```bash
-$GSETUP --client-secret /path/to/client_secret.json
-```
-
-If they paste the raw client ID / client secret values instead of a file path,
-write a valid Desktop OAuth JSON file for them yourself, save it somewhere
-explicit (for example `~/Downloads/hermes-google-client-secret.json`), then run
-`--client-secret` against that file.
-
-### Step 3: Get authorization URL
-
-Use the service set chosen in Step 1. Examples:
-
-```bash
-$GSETUP --auth-url --services email,calendar --format json
-$GSETUP --auth-url --services calendar,drive,sheets,docs --format json
-$GSETUP --auth-url --services all --format json
-```
-
-This returns JSON with an `auth_url` field and also saves the exact URL to
-`~/.hermes/google_oauth_last_url.txt`.
-
-Agent rules for this step:
-- Extract the `auth_url` field and send that exact URL to the user as a single line.
-- Tell the user that the browser will likely fail on `http://localhost:1` after approval, and that this is expected.
-- Tell them to copy the ENTIRE redirected URL from the browser address bar.
-- If the user gets `Error 403: access_denied`, send them directly to `https://console.cloud.google.com/auth/audience` to add themselves as a test user.
-
-### Step 4: Exchange the code
-
-The user will paste back either a URL like `http://localhost:1/?code=4/0A...&scope=...`
-or just the code string. Either works. The `--auth-url` step stores a temporary
-pending OAuth session locally so `--auth-code` can complete the PKCE exchange
-later, even on headless systems:
-
-```bash
-$GSETUP --auth-code "THE_URL_OR_CODE_THE_USER_PASTED" --format json
-```
-
-If `--auth-code` fails because the code expired, was already used, or came from
-an older browser tab, it now returns a fresh `fresh_auth_url`. In that case,
-immediately send the new URL to the user and have them retry with the newest
-browser redirect only.
-
-### Step 5: Verify
-
-```bash
-$GSETUP --check
-```
-
-Should print `AUTHENTICATED`. Setup is complete — token refreshes automatically from now on.
-
-### Notes
-
-- Token is stored at `~/.hermes/google_token.json` and auto-refreshes.
-- Pending OAuth session state/verifier are stored temporarily at `~/.hermes/google_oauth_pending.json` until exchange completes.
-- If `gws` is installed, `google_api.py` points it at the same `~/.hermes/google_token.json` credentials file. Users do not need to run a separate `gws auth login` flow.
-- To revoke: `$GSETUP --revoke`
-
-## Usage
-
-All commands go through the API script. Set `GAPI` as a shorthand:
-
-```bash
-GAPI="python ${HERMES_HOME:-$HOME/.hermes}/skills/productivity/google-workspace/scripts/google_api.py"
-```
-
-### Gmail
-
-```bash
-# Search (returns JSON array with id, from, subject, date, snippet)
-$GAPI gmail search "is:unread" --max 10
-$GAPI gmail search "from:boss@company.com newer_than:1d"
-$GAPI gmail search "has:attachment filename:pdf newer_than:7d"
-
-# Read full message (returns JSON with body text)
-$GAPI gmail get MESSAGE_ID
-
-# Send
-$GAPI gmail send --to user@example.com --subject "Hello" --body "Message text"
-$GAPI gmail send --to user@example.com --subject "Report" --body "<h1>Q4</h1><p>Details...</p>" --html
-$GAPI gmail send --to user@example.com --subject "Hello" --from '"Research Agent" <user@example.com>' --body "Message text"
-
-# Reply (automatically threads and sets In-Reply-To)
-$GAPI gmail reply MESSAGE_ID --body "Thanks, that works for me."
-$GAPI gmail reply MESSAGE_ID --from '"Support Bot" <user@example.com>' --body "Thanks"
-
-# Labels
-$GAPI gmail labels
-$GAPI gmail modify MESSAGE_ID --add-labels LABEL_ID
-$GAPI gmail modify MESSAGE_ID --remove-labels UNREAD
-```
-
-### Calendar
-
-```bash
-# List events (defaults to next 7 days)
-$GAPI calendar list
-$GAPI calendar list --start 2026-03-01T00:00:00Z --end 2026-03-07T23:59:59Z
-
-# Create event (ISO 8601 with timezone required)
-$GAPI calendar create --summary "Team Standup" --start 2026-03-01T10:00:00-06:00 --end 2026-03-01T10:30:00-06:00
-$GAPI calendar create --summary "Lunch" --start 2026-03-01T12:00:00Z --end 2026-03-01T13:00:00Z --location "Cafe"
-$GAPI calendar create --summary "Review" --start 2026-03-01T14:00:00Z --end 2026-03-01T15:00:00Z --attendees "alice@co.com,bob@co.com"
-
-# Delete event
-$GAPI calendar delete EVENT_ID
-```
-
-### Drive
-
-```bash
-# Search existing files
-$GAPI drive search "quarterly report" --max 10
-$GAPI drive search "mimeType='application/pdf'" --raw-query --max 5
-
-# Get metadata for a single file
-$GAPI drive get FILE_ID
-
-# Upload a local file (auto-detects MIME type)
-$GAPI drive upload /path/to/report.pdf
-$GAPI drive upload /path/to/image.png --name "Logo.png" --parent FOLDER_ID
-
-# Download (binary files download as-is; Google-native files export to a
-# sensible default — Docs→pdf, Sheets→csv, Slides→pdf, Drawings→png)
-$GAPI drive download FILE_ID
-$GAPI drive download DOC_ID --output ~/doc.pdf
-$GAPI drive download DOC_ID --export-mime text/plain --output ~/doc.txt
-
-# Create a folder
-$GAPI drive create-folder "Reports"
-$GAPI drive create-folder "Q4" --parent FOLDER_ID
-
-# Share
-$GAPI drive share FILE_ID --email alice@example.com --role reader
-$GAPI drive share FILE_ID --email alice@example.com --role writer --notify
-$GAPI drive share FILE_ID --type anyone --role reader        # anyone with link
-$GAPI drive share FILE_ID --type domain --domain example.com --role reader
-
-# Delete — defaults to trash (reversible). Use --permanent to skip the trash.
-$GAPI drive delete FILE_ID
-$GAPI drive delete FILE_ID --permanent
-```
-
-### Contacts
-
-```bash
-$GAPI contacts list --max 20
-```
-
-### Sheets
-
-```bash
-# Create a new spreadsheet
-$GAPI sheets create --title "Q4 Budget"
-$GAPI sheets create --title "Inventory" --sheet-name "Stock"
-
-# Read
-$GAPI sheets get SHEET_ID "Sheet1!A1:D10"
-
-# Write
-$GAPI sheets update SHEET_ID "Sheet1!A1:B2" --values '[["Name","Score"],["Alice","95"]]'
-
-# Append rows
-$GAPI sheets append SHEET_ID "Sheet1!A:C" --values '[["new","row","data"]]'
-```
-
-### Docs
-
-```bash
-# Read
-$GAPI docs get DOC_ID
-
-# Create a new Doc (optionally seeded with body text)
-$GAPI docs create --title "Meeting Notes"
-$GAPI docs create --title "Draft" --body "First paragraph..."
-
-# Append text to the end of an existing Doc
-$GAPI docs append DOC_ID --text "Additional content to append"
-```
-
-## Output Format
-
-All commands return JSON. Parse with `jq` or read directly. Key fields:
-
-- **Gmail search**: `[{id, threadId, from, to, subject, date, snippet, labels}]`
-- **Gmail get**: `{id, threadId, from, to, subject, date, labels, body}`
-- **Gmail send/reply**: `{status: "sent", id, threadId}`
-- **Calendar list**: `[{id, summary, start, end, location, description, htmlLink}]`
-- **Calendar create**: `{status: "created", id, summary, htmlLink}`
-- **Drive search**: `[{id, name, mimeType, modifiedTime, webViewLink}]`
-- **Drive get**: `{id, name, mimeType, modifiedTime, size, webViewLink, parents, owners}`
-- **Drive upload**: `{status: "uploaded", id, name, mimeType, webViewLink}`
-- **Drive download**: `{status: "downloaded", id, name, path, mimeType}`
-- **Drive create-folder**: `{status: "created", id, name, webViewLink}`
-- **Drive share**: `{status: "shared", permissionId, fileId, role, type}`
-- **Drive delete**: `{status: "trashed" | "deleted", fileId, permanent}`
-- **Contacts list**: `[{name, emails: [...], phones: [...]}]`
-- **Sheets get**: `[[cell, cell, ...], ...]`
-- **Sheets create**: `{status: "created", spreadsheetId, title, spreadsheetUrl}`
-- **Docs create**: `{status: "created", documentId, title, url}`
-- **Docs append**: `{status: "appended", documentId, inserted_at, characters}`
+写操作（发邮件 / 建日历事件 / 上传文件 / 改表格 / 改文档）通过 POST 到对应端点，
+但**必须先向用户展示收件人、内容、文件等并取得确认**。
+
+## Gmail 搜索语法速查
+
+| 操作符 | 含义 | 示例 |
+|---|---|---|
+| `is:unread` | 未读 | `is:unread` |
+| `from:` | 发件人 | `from:boss@example.com` |
+| `to:` / `cc:` / `bcc:` | 收件人 | `to:me` |
+| `subject:` | 主题 | `subject:report` |
+| `after:` / `before:` | 日期（YYYY/MM/DD） | `after:2026/01/01` |
+| `newer_than:` / `older_than:` | 相对时间 | `newer_than:7d` |
+| `has:attachment` | 含附件 | `has:attachment filename:pdf` |
+| `in:` | 标签/文件夹 | `in:trash in:spam` |
+
+复杂查询可组合：`from:a@gmail.com has:attachment newer_than:3d`。
 
 ## Rules
 
-1. **Never send email, create/delete calendar events, delete Drive files, share files, or modify Docs/Sheets without confirming with the user first.** Show what will be done (recipients, file IDs, content, share role) and ask for approval. For `drive delete`, prefer the default trash (reversible) over `--permanent`.
-2. **Check auth before first use** — run `setup.py --check`. If it fails, guide the user through setup.
-3. **Use the Gmail search syntax reference** for complex queries — load it with `skill_view("google-workspace", file_path="references/gmail-search-syntax.md")`.
-4. **Calendar times must include timezone** — always use ISO 8601 with offset (e.g., `2026-03-01T10:00:00-06:00`) or UTC (`Z`).
-5. **Respect rate limits** — avoid rapid-fire sequential API calls. Batch reads when possible.
+1. **禁止未经确认执行写操作**：发邮件、创建/删除日历事件、删除 Drive 文件、分享文件、
+   修改 Docs/Sheets 前，先展示将执行的内容（收件人、文件 ID、内容、分享角色）并请求批准。
+   Drive 删除默认走回收站（可恢复），勿直接 `--permanent`。
+2. 首次使用前检查 `~/.claude/metano/credentials/google_token.json` 是否存在；缺失则引导用户完成上面的手动配置。
+3. 日历时间必须带时区（ISO 8601 偏移或 UTC `Z`）。
+4. 尊重速率限制，批量读取、避免连续快速调用。
 
 ## Troubleshooting
 
-| Problem | Fix |
-|---------|-----|
-| `NOT_AUTHENTICATED` | Run setup Steps 2-5 above |
-| `REFRESH_FAILED` | Token revoked or expired — redo Steps 3-5 |
-| `HttpError 403: Insufficient Permission` | Missing API scope — `$GSETUP --revoke` then redo Steps 3-5 |
-| `AUTHENTICATED (partial)` or "Token missing scopes" | New write capabilities (Drive write/delete, Docs create/edit) require re-authorization. `$GSETUP --revoke` then redo Steps 3-5 to grant the upgraded scopes. |
-| `HttpError 403: Access Not Configured` | API not enabled — user needs to enable it in Google Cloud Console |
-| `ModuleNotFoundError` | Run `$GSETUP --install-deps` |
-| Advanced Protection blocks auth | Workspace admin must allowlist the OAuth client ID |
+| 问题 | 处理 |
+|------|------|
+| 403 `insufficient permissions` | 缺少 scope，重新授权（删除 token 文件后重跑授权流程） |
+| 403 `Access Not Configured` | 对应 Google API 未在 Console 启用 |
+| 401 `Invalid Credentials` | token 过期，重新授权 |
+| `ModuleNotFoundError` | `code_run` 里先 `pip install google-auth-oauthlib google-api-python-client` |
 
-## Revoking Access
+## 撤销访问
 
-```bash
-$GSETUP --revoke
-```
+删除 `~/.claude/metano/credentials/google_token.json`，再到 Google 账号的
+「第三方应用访问权限」页撤销授权即可。

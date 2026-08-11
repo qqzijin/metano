@@ -21,8 +21,8 @@ Search and retrieve academic papers from arXiv via their free REST API. No API k
 |--------|---------|
 | Search papers | `curl "https://export.arxiv.org/api/query?search_query=all:QUERY&max_results=5"` |
 | Get specific paper | `curl "https://export.arxiv.org/api/query?id_list=2402.03300"` |
-| Read abstract (web) | `web_extract(urls=["https://arxiv.org/abs/2402.03300"])` |
-| Read full paper (PDF) | `web_extract(urls=["https://arxiv.org/pdf/2402.03300"])` |
+| Read abstract (web) | `browser_get_content(url="https://arxiv.org/abs/2402.03300")` |
+| Read full paper (PDF) | `code_run(language="shell", code="curl -sL -o paper.pdf 'https://arxiv.org/pdf/2402.03300'")` |
 
 ## Searching Papers
 
@@ -149,10 +149,10 @@ After finding a paper, read it:
 
 ```
 # Abstract page (fast, metadata + abstract)
-web_extract(urls=["https://arxiv.org/abs/2402.03300"])
+browser_get_content(url="https://arxiv.org/abs/2402.03300")
 
-# Full paper (PDF → markdown via Firecrawl)
-web_extract(urls=["https://arxiv.org/pdf/2402.03300"])
+# Full paper (download then extract locally — metano 无 web_extract/Firecrawl)
+code_run(language="shell", code="curl -sL -o paper.pdf 'https://arxiv.org/pdf/2402.03300'")
 ```
 
 For local PDF processing, see the `ocr-and-documents` skill.
@@ -172,20 +172,23 @@ For local PDF processing, see the `ocr-and-documents` skill.
 
 Full list: https://arxiv.org/category_taxonomy
 
-## Helper Script
+## Parsing the API Response
 
-The `scripts/search_arxiv.py` script handles XML parsing and provides clean output:
+metano 不内置 `scripts/search_arxiv.py`。arXiv 返回 Atom XML，直接用上面的
+「Clean output」内联 Python 片段解析（Python stdlib 的 `xml.etree.ElementTree`，
+无需任何依赖）；搜索示例：
 
 ```bash
-python scripts/search_arxiv.py "GRPO reinforcement learning"
-python scripts/search_arxiv.py "transformer attention" --max 10 --sort date
-python scripts/search_arxiv.py --author "Yann LeCun" --max 5
-python scripts/search_arxiv.py --category cs.AI --sort date
-python scripts/search_arxiv.py --id 2402.03300
-python scripts/search_arxiv.py --id 2402.03300,2401.12345
+curl -s "https://export.arxiv.org/api/query?search_query=all:GRPO+reinforcement+learning&max_results=5&sortBy=submittedDate&sortOrder=descending" | python3 -c "
+import sys, xml.etree.ElementTree as ET
+ns = {'a': 'http://www.w3.org/2005/Atom'}
+root = ET.parse(sys.stdin).getroot()
+for i, entry in enumerate(root.findall('a:entry', ns)):
+    title = entry.find('a:title', ns).text.strip().replace('\n', ' ')
+    arxiv_id = entry.find('a:id', ns).text.strip().split('/abs/')[-1]
+    print(f'{i+1}. [{arxiv_id}] {title}')
+"
 ```
-
-No dependencies — uses only Python stdlib.
 
 ---
 
@@ -243,10 +246,10 @@ curl -s "https://api.semanticscholar.org/graph/v1/author/search?query=Yann+LeCun
 
 ## Complete Research Workflow
 
-1. **Discover**: `python scripts/search_arxiv.py "your topic" --sort date --max 10`
+1. **Discover**: `curl -s "https://export.arxiv.org/api/query?search_query=all:TOPIC&max_results=10"` + 内联 XML 解析
 2. **Assess impact**: `curl -s "https://api.semanticscholar.org/graph/v1/paper/arXiv:ID?fields=citationCount,influentialCitationCount"`
-3. **Read abstract**: `web_extract(urls=["https://arxiv.org/abs/ID"])`
-4. **Read full paper**: `web_extract(urls=["https://arxiv.org/pdf/ID"])`
+3. **Read abstract**: `browser_get_content(url="https://arxiv.org/abs/ID")`
+4. **Read full paper**: `code_run(language="shell", code="curl -sL -o paper.pdf 'https://arxiv.org/pdf/ID'")`
 5. **Find related work**: `curl -s "https://api.semanticscholar.org/graph/v1/paper/arXiv:ID/references?fields=title,citationCount&limit=20"`
 6. **Get recommendations**: POST to Semantic Scholar recommendations endpoint
 7. **Track authors**: `curl -s "https://api.semanticscholar.org/graph/v1/author/search?query=NAME"`

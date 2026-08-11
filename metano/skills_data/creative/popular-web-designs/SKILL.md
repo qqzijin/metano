@@ -37,14 +37,18 @@ system, shadows, responsive behavior, and practical agent prompts with exact CSS
 ## How to Use
 
 1. Pick a design from the catalog below
-2. Load it: `skill_view(name="popular-web-designs", file_path="templates/<site>.md")`
+2. Reconstruct the site's visual language from its catalog style note + the font
+   substitution table below + your knowledge of that brand's design (palette,
+   typography hierarchy, spacing, shadows, component styles)
 3. Use the design tokens and component specs when generating HTML
 4. Pair with the `generative-widgets` skill to serve the result via cloudflared tunnel
 
-Each template includes a **Hermes Implementation Notes** block at the top with:
-- CDN font substitute and Google Fonts `<link>` tag (ready to paste)
-- CSS font-family stacks for primary and monospace
-- Reminders to use `write_file` for HTML creation and `browser_vision` for verification
+> **metano 说明：** 本技能不内置 `templates/<site>.md`（54 套模板文件均未随 metano
+> 发行），因此无法用 `skill_view(name="popular-web-designs", file_path=...)` 加载。
+> 用上方「Font Substitution Reference」+ 目录中的风格描述，并结合你对该品牌设计语言
+> 的了解来还原；重点保留字体替换表里的 weight / size / letter-spacing 等数值——
+> 它们承载的视觉身份比具体字体更多。HTML 用 `write_file` 创建，视觉校验用
+> `browser_screenshot` + `image_describe`（或 `browser_get_content` 读页面文本）。
 
 ## HTML Generation Pattern
 
