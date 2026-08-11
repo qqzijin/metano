@@ -121,6 +121,20 @@ class MessageRouter:
         if message.startswith('/'):
             skill_prefix, remaining_message = self._resolve_skill_command(message)
         prompt = self._build_prompt(session, remaining_message)
+        # Plan A: experience memory + routing feedback (opt-in via config; see
+        # metano.route_events). begin_route may rewrite the prompt with a DO:/AVOID:
+        # experience block and pick a model provider for this task.
+        exp_ctx = None
+        _route_started = time.time()
+        try:
+            from ..route_events import begin_route
+            exp_ctx = begin_route(remaining_message, prompt, platform, user_id,
+                                  session.db_session_id or '')
+            if exp_ctx and exp_ctx.get('prompt'):
+                prompt = exp_ctx['prompt']
+        except Exception:
+            logger.exception('route_events: begin_route failed')
+            exp_ctx = None
         # Per-user authorization: revoked tools dropped from the default allowlist,
         # explicitly granted tools re-added, and permission prompts skipped only in
         # free mode.
@@ -129,13 +143,23 @@ class MessageRouter:
         tools = base_tools + [t for t in auth['granted'] if t not in base_tools]
         skip = (auth['mode'] == 'free')
         response, in_tok, out_tok, cache_tok = await self._call_claude(
-            prompt, session, skill_prefix=skill_prefix, allowed_tools=tools, skip_permissions=skip, on_event=on_event)
+            prompt, session, skill_prefix=skill_prefix, allowed_tools=tools, skip_permissions=skip, on_event=on_event,
+            provider_name=exp_ctx.get('strategy', '') if exp_ctx else '')
         session.last_active = time.time()
         session.message_count += 1
         session.history.append({'role': 'user', 'content': message})
         session.history.append({'role': 'assistant', 'content': response})
         if len(session.history) > self.max_history * 2:
             session.history = session.history[-self.max_history * 2:]
+        try:
+            if exp_ctx:
+                from ..route_events import end_route
+                end_route(exp_ctx, response=response,
+                          latency_ms=(time.time() - _route_started) * 1000,
+                          usage={'input_tokens': in_tok, 'output_tokens': out_tok,
+                                 'cache_read_tokens': cache_tok})
+        except Exception:
+            logger.exception('route_events: end_route failed')
         try:
             from ..evolution import track_rule_adherence
             track_rule_adherence(session.history)
@@ -592,7 +616,7 @@ class MessageRouter:
 
     async def _call_claude(self, prompt: str, session: GatewaySession, skill_prefix: str='',
                            allowed_tools=None, skip_permissions: bool=True,
-                           on_event=None) -> tuple:
+                           on_event=None, provider_name: str='') -> tuple:
         """Call Claude Code CLI with the prompt (async, non-blocking).
 
         Gateway sessions are non-interactive (no TTY), so by default we
@@ -605,8 +629,11 @@ class MessageRouter:
         granted/revoked tools are resolved by the caller).
 
         The subprocess inherits os.environ but is overridden with the
-        ModelRouter default provider so chat honours the model selected in
-        the Models page (falls back to process env when no provider set).
+        ModelRouter provider (``provider_name`` if given, else the default) so
+        chat honours the model selected in the Models page (falls back to
+        process env when no provider set). The route-events feedback loop
+        (``metano.route_events``) passes ``provider_name`` to route a task to
+        the bandit's chosen strategy.
 
         Returns (response, input_tokens, output_tokens, cache_read_tokens)
         parsed from ``--output-format stream-json --verbose``.
@@ -636,7 +663,7 @@ class MessageRouter:
         env = os.environ.copy()
         try:
             from ..model_router import model_router
-            provider = model_router.get_provider()
+            provider = model_router.get_provider(provider_name)
             if provider:
                 if provider.base_url:
                     env['ANTHROPIC_BASE_URL'] = provider.base_url
