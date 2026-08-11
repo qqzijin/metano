@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Markdown } from "@/components/Markdown";
 import { useChatMutation, useSessions, useMessages, useUploadFile } from "@/api/hooks";
+import { subscribeChatStream, getStreamMessages, isChatStreamRunning } from "@/lib/chatStream";
 import { fmtTime } from "@/api/client";
 
 interface ToolCall {
@@ -53,6 +54,15 @@ export default function ChatPage() {
   const [input, setInput] = useState("");
   const [showSessionPicker, setShowSessionPicker] = useState(false);
   const [connectedSession, setConnectedSession] = useState<string | null>(null);
+  // Ref mirror of connectedSession. handleSend reads this instead of the state
+  // value: setConnectedSession is async, so a send fired right after selecting
+  // a history session could otherwise capture the stale (null/old) id and open
+  // a brand-new DB session instead of resuming the picked one.
+  const connectedSessionRef = useRef<string | null>(null);
+  const setSession = (sid: string | null) => {
+    connectedSessionRef.current = sid;
+    setConnectedSession(sid);
+  };
   // dirty = local state contains messages not (yet) confirmed persisted to DB.
   // Covers: failed sends (route_message threw -> _persist_chat never ran) and
   // in-flight requests. Survives page reloads via localStorage so disconnect
@@ -112,7 +122,7 @@ export default function ChatPage() {
 
   const handleConnectSession = (sessionId: string) => {
     setShowSessionPicker(false);
-    setConnectedSession(sessionId);
+    setSession(sessionId);
     clearedRef.current = false;
     failedSendRef.current = false;
     freshRef.current = false; // explicitly resumed a past session, not a fresh one
@@ -141,7 +151,7 @@ export default function ChatPage() {
     failedSendRef.current = false;
     freshRef.current = true;
     setDirty(false);
-    setConnectedSession(null);
+    setSession(null);
     setMessages([]);
     localStorage.removeItem(STORAGE_KEY);
   };
@@ -149,6 +159,7 @@ export default function ChatPage() {
   const handleSend = async () => {
     const text = input.trim();
     if (!text) return;
+    if (chatMut.isPending) return; // a stream is already running
 
     const userMsg: ChatMsg = { role: "user", content: text, ts: Date.now() };
     setMessages((prev) => [...prev, userMsg]);
@@ -157,87 +168,80 @@ export default function ChatPage() {
     clearedRef.current = false;
     setDirty(true); // new user message is local-only until /api/chat persists it
 
-    // Placeholder assistant message, updated via the SSE stream.
+    // Placeholder assistant message, updated via the stream subscription.
     const assistantMsg: ChatMsg = { role: "assistant", content: "", thinking: "", tool_calls: [], ts: Date.now() };
     setMessages((prev) => [...prev, assistantMsg]);
 
-    const patchLast = (fn: (a: ChatMsg) => void) =>
-      setMessages((prev) => {
-        if (!prev.length) return prev;
-        const next = [...prev];
-        const last = { ...next[next.length - 1] };
-        fn(last);
-        next[next.length - 1] = last;
-        return next;
-      });
+    // The SSE stream is owned by the module-level chatStream manager, so
+    // navigating away (unmounting ChatPage) does NOT kill the in-flight reply.
+    chatMut.mutate({
+      message: text,
+      session_id: connectedSessionRef.current || undefined,
+      reset: !connectedSessionRef.current && freshRef.current ? true : undefined,
+      context: messages.slice(-10).map((m) => ({ role: m.role, content: m.content })),
+    });
+  };
 
-    try {
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({
-          message: text,
-          user_id: "web_user",
-          session_id: connectedSession || undefined,
-          reset: !connectedSession && freshRef.current ? true : undefined,
-          context: messages.slice(-10).map((m) => ({ role: m.role, content: m.content })),
-        }),
+  // Consume the module-level chat stream. The subscription lives outside the
+  // component lifecycle: navigating away unmounts ChatPage but the stream keeps
+  // running (chatStream.ts), and re-mounting re-subscribes and restores the
+  // in-flight reply from getStreamMessages().
+  const patchLast = (fn: (a: ChatMsg) => void) =>
+    setMessages((prev) => {
+      if (!prev.length) return prev;
+      const next = [...prev];
+      const last = { ...next[next.length - 1] };
+      fn(last);
+      next[next.length - 1] = last;
+      return next;
+    });
+  useEffect(() => {
+    // Re-mount mid-stream: restore the accumulated user+assistant messages so
+    // the partially-generated reply is not lost when navigating back.
+    if (isChatStreamRunning() && getStreamMessages().length) {
+      const acc = getStreamMessages();
+      setMessages((prev) => {
+        // Only seed when we have nothing newer (e.g. no picked history loaded).
+        if (prev.length === 0) {
+          return acc.map((m) => ({ role: m.role, content: m.content, thinking: m.thinking, tool_calls: m.tool_calls, ts: Date.now() }));
+        }
+        return prev;
       });
-      if (!res.ok || !res.body) throw new Error(`请求失败 (${res.status})`);
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const parts = buffer.split("\n\n");
-        buffer = parts.pop() ?? "";
-        for (const part of parts) {
-          const line = part.split("\n").find((l) => l.startsWith("data: "));
-          if (!line) continue;
-          let ev: any;
-          try { ev = JSON.parse(line.slice(6)); } catch { continue; }
-          if (ev.type === "thinking") {
-            patchLast((a) => { a.thinking = (a.thinking ?? "") + ev.text; });
-          } else if (ev.type === "text") {
-            patchLast((a) => { a.content += ev.text; });
-          } else if (ev.type === "tool_use") {
-            // Tool use fires twice: once on content_block_start (empty input)
-            // and again on stop (full args). Dedupe by id and update in place.
-            patchLast((a) => {
-              const calls = a.tool_calls ?? [];
-              const idx = calls.findIndex((tc) => tc.id && tc.id === ev.id);
-              const item = { id: ev.id || "", name: ev.name, input: JSON.stringify(ev.input ?? {}) };
-              if (idx >= 0) {
-                a.tool_calls = [...calls.slice(0, idx), { ...calls[idx], input: item.input }, ...calls.slice(idx + 1)];
-              } else {
-                a.tool_calls = [...calls, item];
-              }
-            });
-          } else if (ev.type === "tool_result") {
-            // Attach tool output to the matching tool_use by id.
-            patchLast((a) => {
-              a.tool_calls = (a.tool_calls ?? []).map((tc) =>
-                tc.id && ev.id && tc.id === ev.id ? { ...tc, result: ev.content } : tc
-              );
-            });
-          } else if (ev.type === "done") {
-            setConnectedSession(ev.session_id || null);
-            freshRef.current = false;
-            setDirty(failedSendRef.current);
-          }
+    }
+    const unsub = subscribeChatStream((ev) => {
+      if (ev.type === "thinking") {
+        patchLast((a) => { a.thinking = (a.thinking ?? "") + (ev.text ?? ""); });
+      } else if (ev.type === "text") {
+        patchLast((a) => { a.content += ev.text ?? ""; });
+      } else if (ev.type === "tool_use") {
+        patchLast((a) => {
+          const calls = a.tool_calls ?? [];
+          const idx = calls.findIndex((tc) => tc.id && tc.id === ev.id);
+          const item = { id: ev.id || "", name: ev.name || "", input: JSON.stringify(ev.input ?? {}) };
+          if (idx >= 0) a.tool_calls = [...calls.slice(0, idx), { ...calls[idx], input: item.input }, ...calls.slice(idx + 1)];
+          else a.tool_calls = [...calls, item];
+        });
+      } else if (ev.type === "tool_result") {
+        patchLast((a) => {
+          a.tool_calls = (a.tool_calls ?? []).map((tc) =>
+            tc.id && ev.id && tc.id === ev.id ? { ...tc, result: ev.content } : tc
+          );
+        });
+      } else if (ev.type === "done") {
+        setSession(ev.session_id || null);
+        freshRef.current = false;
+        setDirty(failedSendRef.current);
+      } else if (ev.type === "error") {
+        failedSendRef.current = true;
+        setDirty(true);
+        if (!clearedRef.current) {
+          patchLast((a) => { a.content = `错误: ${ev.message ?? "请求失败"}`; });
         }
       }
-    } catch (err: any) {
-      failedSendRef.current = true;
-      setDirty(true);
-      if (!clearedRef.current) {
-        patchLast((a) => { a.content = `错误: ${err.message ?? "请求失败"}`; });
-      }
-    }
-  };
+    });
+    return unsub;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleClear = () => {
     if (dirty && !window.confirm("当前有未成功保存到历史的消息，清空后将丢失这些消息。仍要清空吗？")) return;
@@ -246,7 +250,7 @@ export default function ChatPage() {
     freshRef.current = true;
     setDirty(false);
     setMessages([]);
-    setConnectedSession(null);
+    setSession(null);
     localStorage.removeItem(STORAGE_KEY);
   };
 
@@ -257,7 +261,7 @@ export default function ChatPage() {
     loadedSessionRef.current = null;
     setShowSessionPicker(false);
     setDirty(false);
-    setConnectedSession(null);
+    setSession(null);
     setMessages([]);
     localStorage.removeItem(STORAGE_KEY);
     toast.success("已开启新对话");
@@ -338,23 +342,23 @@ export default function ChatPage() {
             )}
           </div>
           <div className="flex items-center gap-0.5 md:gap-1">
-            <Button size="icon" variant="ghost" className="size-8 rounded-full md:size-9" title="新对话" onClick={handleNewChat}>
+            <Button variant="ghost" className="size-8 rounded-full md:h-auto md:w-auto md:rounded-lg md:px-3 md:py-1.5" title="新对话" onClick={handleNewChat}>
               <Plus className="size-4" />
               <span className="hidden md:inline md:ml-1.5 md:text-sm">新对话</span>
             </Button>
             {!connectedSession && (
-              <Button size="icon" variant="ghost" className="size-8 rounded-full md:size-9" title="接入历史" onClick={() => setShowSessionPicker(!showSessionPicker)}>
+              <Button variant="ghost" className="size-8 rounded-full md:h-auto md:w-auto md:rounded-lg md:px-3 md:py-1.5" title="接入历史" onClick={() => setShowSessionPicker(!showSessionPicker)}>
                 <History className="size-4" />
                 <span className="hidden md:inline md:ml-1.5 md:text-sm">接入历史</span>
               </Button>
             )}
             {connectedSession && (
-              <Button size="icon" variant="ghost" className="size-8 rounded-full md:size-9" title="断开" onClick={handleDisconnect}>
+              <Button variant="ghost" className="size-8 rounded-full md:h-auto md:w-auto md:rounded-lg md:px-3 md:py-1.5" title="断开" onClick={handleDisconnect}>
                 <X className="size-4" />
                 <span className="hidden md:inline md:ml-1.5 md:text-sm">断开</span>
               </Button>
             )}
-            <Button size="icon" variant="ghost" className="size-8 rounded-full md:size-9" title="清空" onClick={handleClear}>
+            <Button variant="ghost" className="size-8 rounded-full md:h-auto md:w-auto md:rounded-lg md:px-3 md:py-1.5" title="清空" onClick={handleClear}>
               <Trash2 className="size-4" />
               <span className="hidden md:inline md:ml-1.5 md:text-sm">清空</span>
             </Button>

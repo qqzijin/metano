@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { startChatStream } from "@/lib/chatStream";
 import {
   fetchAPI,
   type Session,
@@ -187,10 +188,15 @@ export function useChatMutation() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (req: ChatRequest) =>
-      fetchAPI<{ response: string }>("/chat", {
-        method: "POST",
-        body: JSON.stringify(req),
-      }),
+      // Streamed via the module-level chatStream manager so the reply keeps
+      // flowing even if the page is unmounted mid-generation (route switch).
+      startChatStream({
+        message: req.message,
+        user_id: req.user_id ?? "web_user",
+        session_id: req.session_id,
+        reset: req.reset,
+        context: req.context,
+      }).then(() => undefined),
     onSuccess: () => qc.invalidateQueries({ queryKey: qk.sessions() }),
   });
 }

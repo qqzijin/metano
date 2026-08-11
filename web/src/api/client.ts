@@ -368,6 +368,8 @@ export interface ChatRequest {
   platform?: string;
   session_id?: string;
   context?: unknown[];
+  /** true = open a brand-new DB session (新对话); undefined/null = resume */
+  reset?: boolean;
 }
 
 export interface Proposal {
