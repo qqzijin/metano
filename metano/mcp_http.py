@@ -11,9 +11,15 @@ is registered. Authentication/authorization is NOT handled here — it is the
 responsibility of the layer that mounts this Starlette app.
 """
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 from . import mcp_server
 from . import mcp_policy
+
+# FastMCP's default transport security only accepts localhost Host headers.
+# To let other machines on the LAN (e.g. the remote NAS) reach this MCP server,
+# allow the local machine's LAN IP (and loopback) explicitly.
+_ALLOWED_HOSTS = ["localhost:*", "127.0.0.1:*", "[::1]:*", "HOST_LOCAL_PLACEHOLDER:*"]
 
 
 def create_http_app():
@@ -24,7 +30,11 @@ def create_http_app():
     starlette.applications.Starlette
         The HTTP app to be mounted by the web server / gateway layer.
     """
-    mcp = FastMCP("metano-remote", stateless_http=True)
+    mcp = FastMCP(
+        "metano-remote",
+        stateless_http=True,
+        transport_security=TransportSecuritySettings(allowed_hosts=_ALLOWED_HOSTS),
+    )
     # Register only the read-only whitelist, reusing mcp_server's function
     # objects (FastMCP introspects the function signature to build the schema).
     for name in mcp_policy.READ_TOOLS:
