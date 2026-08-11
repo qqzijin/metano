@@ -34,7 +34,7 @@
 | 🧭 **经验记忆 + 路由反馈** | 任务签名分类 + ε-greedy bandit 路由 + Reflexion 反思经验注入（`DO:/AVOID:`），让 AI 越用越聪明 |
 | 🤝 **多设备协作** | A2A v1.0 AgentCard（JWS 签名）+ 跨设备协同页（CollabPage） |
 | 🧪 **Be-ACTIVE 即时学习** | 检测到用户纠正后立即生成规则/技能提案，不等定时任务 |
-| 🛠️ **运维** | `healthcheck.sh` 健康检查 · `backup.sh` 数据库备份 · 会话保留（180天/512MB）· 每周知识主动探索 |
+| 🛠️ **运维** | `healthcheck.sh` 健康检查 · `backup.sh` 数据库备份 · `maintain_daily.sh` 每日维护 · 会话保留（180天/512MB）· 每周知识主动探索 |
 
 ## 🧬 自我进化系统
 
@@ -58,7 +58,7 @@ Maintain (维护)     信念衰减、合并、归档、时间趋势抽象、成�
 
 **Be-ACTIVE 即时学习**：SessionEnd 检测到纠正信号（"不对/错了/重复/必须验证..."）→ 立即在后台分析并生成行为规则 + 技能改进提案，无需等待每日 cron。
 
-**内置定时任务**（`cron/jobs.json`）：harvest（每 30min）· introspect（每 2h）· adapt（每日 03:00）· reflect / maintain（每日 04:00）· evaluate（每 6h）· architect（周日 05:00）· **explore** 知识主动探索（周日 03:00）· **db-backup** 数据库备份（每日 02:00）· **healthcheck** 健康检查（每小时）· **session-retention** 会话保留清理（周日 06:00）。
+**内置定时任务**（`cron/jobs.json`）：harvest（每 30min）· introspect（每 2h）· adapt（每日 03:00）· reflect / maintain（每日 04:00）· evaluate（每 6h）· architect（周日 05:00）· **explore** 知识主动探索（周日 03:00）· **db-backup** 数据库备份（每日 02:00）· **healthcheck** 健康检查（每小时）· **maintain-daily** 每日维护（每日 02:30，健康检查+DB VACUUM+清理）· **session-retention** 会话保留清理（周日 06:00）。
 
 **安全机制**：
 - CLAUDE.md 注入用 `<!-- LEARNED-PREFS-START/END -->` 标记隔离，可原子回滚
@@ -272,6 +272,7 @@ metano/
 ├── metano.sh                # 服务启动脚本（start/stop/status/restart/setup + 按服务）
 ├── healthcheck.sh           # 健康检查（web/gateway/cron/cocoindex，支持 --repair）
 ├── backup.sh                # 数据库自动备份（5 DB + 配置，7 天保留）
+├── maintain_daily.sh        # 每日维护（健康检查--repair + DB VACUUM + 清理）
 ├── hook_inject_memory.py    # SessionStart hook：按 tag 注入记忆
 ├── sink_claude_prefs.py     # 低频 CLAUDE.md 经验下沉到记忆库（带 tag）
 ├── backfill_memory_tags.py  # 为存量记忆回填场景 tag
