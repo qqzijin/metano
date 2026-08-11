@@ -22,6 +22,7 @@ MVP protection = signature + ``aud`` + ``exp``.
 from __future__ import annotations
 
 import json
+import os
 import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -36,7 +37,9 @@ from starlette.routing import Route
 from .auth import JWT_ALGORITHM, _audit, get_jwt_secret
 
 MCP_AUDIENCE = "metano-mcp"
-MCP_TOKEN_TTL_SECONDS = 3600  # 1h
+# Configurable via MCP_TOKEN_TTL env (seconds); default 24h for cross-device
+# collaboration (a short 1h token forces frequent re-issuing on the remote side).
+MCP_TOKEN_TTL_SECONDS = int(os.environ.get("MCP_TOKEN_TTL", "86400"))
 MCP_READ_SCOPE = ["mcp:read"]  # the only scope issued for now
 
 # Path prefix on the FastAPI app that this middleware guards.
