@@ -119,6 +119,22 @@ CREATE TABLE IF NOT EXISTS cron_jobs (
     next_run_at REAL,
     last_error TEXT
 );
+
+-- Self-modification events: every code mutation the evolution system proposes /
+-- applies is recorded here (the "mutation log") so any change can be inspected
+-- and reverted via git. This is the species-level safety net: a bad mutation is
+-- recorded, rejected, and can be reverted — the system always survives.
+CREATE TABLE IF NOT EXISTS self_modify_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    issue TEXT NOT NULL,                 -- what problem the mutation addresses
+    file TEXT NOT NULL,                  -- file the diff touches
+    diff TEXT NOT NULL,                  -- full unified diff
+    verify_result TEXT DEFAULT 'pending',-- pending / verified / failed
+    applied_at REAL,                     -- when applied to runtime (epoch)
+    commit_hash TEXT,                    -- git commit hash (rollback point)
+    status TEXT DEFAULT 'candidate',     -- candidate/verified/applied/rejected/reverted
+    created_at REAL
+);
 """
 
 
@@ -587,3 +603,62 @@ def update_cron_job(job_id: str, **kwargs) -> bool:
         conn.commit()
     conn.close()
     return True
+
+
+# ── self_modify_events CRUD ──
+
+def add_self_modify_event(issue: str, file: str, diff: str) -> int:
+    """Record a new self-modification candidate (mutation) into the log."""
+    conn = _get_conn()
+    now = time.time()
+    cur = conn.execute(
+        "INSERT INTO self_modify_events (issue, file, diff, status, created_at) "
+        "VALUES (?, ?, ?, 'candidate', ?)",
+        (issue, file, diff, now),
+    )
+    conn.commit()
+    eid = cur.lastrowid
+    conn.close()
+    return eid
+
+
+def update_self_modify_event(event_id: int, **fields) -> None:
+    """Update a self-modification event (verify_result / status / commit_hash /
+    applied_at). Field names are validated against a whitelist."""
+    allowed = {'verify_result', 'status', 'commit_hash', 'applied_at'}
+    sets, vals = [], []
+    for k, v in fields.items():
+        if k in allowed:
+            sets.append(f"{k} = ?")
+            vals.append(v)
+    if not sets:
+        return
+    conn = _get_conn()
+    conn.execute(f"UPDATE self_modify_events SET {', '.join(sets)} WHERE id = ?", vals + [event_id])
+    conn.commit()
+    conn.close()
+
+
+def get_self_modify_events(limit: int = 50, status: str = None) -> list[dict]:
+    """List self-modification events, newest first."""
+    conn = _get_conn()
+    if status:
+        rows = conn.execute(
+            "SELECT * FROM self_modify_events WHERE status = ? ORDER BY id DESC LIMIT ?",
+            (status, limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM self_modify_events ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+    result = [dict(r) for r in rows]
+    conn.close()
+    return result
+
+
+def get_self_modify_event(event_id: int) -> dict | None:
+    """Fetch a single self-modification event by id."""
+    conn = _get_conn()
+    row = conn.execute("SELECT * FROM self_modify_events WHERE id = ?", (event_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None

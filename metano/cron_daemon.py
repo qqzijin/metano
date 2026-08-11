@@ -34,6 +34,7 @@ def _register_default_actions():
         cron_explore, cron_architect, cron_introspect, cron_evaluate,
     )
     from .db import cron_purge_sessions
+    from .self_modify import self_modify_daily
     register_action('evolution.harvest', cron_harvest)
     register_action('evolution.reflect', cron_reflect)
     register_action('evolution.adapt', cron_adapt)
@@ -43,6 +44,7 @@ def _register_default_actions():
     register_action('evolution.introspect', cron_introspect)
     register_action('evolution.evaluate', cron_evaluate)
     register_action('retention.purge_sessions', cron_purge_sessions)
+    register_action('self_modify.daily', self_modify_daily)
 
 def load_jobs() -> list[dict]:
     if JOBS_FILE.exists():

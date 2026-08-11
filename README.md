@@ -34,11 +34,35 @@
 | 🧭 **经验记忆 + 路由反馈** | 任务签名分类 + ε-greedy bandit 路由 + Reflexion 反思经验注入（`DO:/AVOID:`），让 AI 越用越聪明 |
 | 🤝 **多设备协作** | A2A v1.0 AgentCard（JWS 签名）+ 跨设备协同页（CollabPage） |
 | 🧪 **Be-ACTIVE 即时学习** | 检测到用户纠正后立即生成规则/技能提案，不等定时任务 |
+| 🔬 **自我进化（Self-Modify）** | 进化系统自主修改自己的代码：扫描反模式 → LLM 生成修复 → 隔离验证（全量测试）→ 应用 → git 回滚；每次变异有记录，验证门 + 回滚保障系统永不写死 |
 | 🛠️ **运维** | `healthcheck.sh` 健康检查 · `backup.sh` 数据库备份 · `maintain_daily.sh` 每日维护 · 会话保留（180天/512MB）· 每周知识主动探索 |
 
 ## 🧬 自我进化系统
 
 这是本项目区别于一般"记忆工具"的核心：
+
+**第三层：自我代码修改（Self-Modify）** —— 进化系统不仅能维护数据/规则，还能修改自己的 Python 代码。这是"AI 自举"（self-improvement）的落地：
+
+```
+SCAN      发现自身反模式（silent-except/sql-concat 等）与结构问题
+  ↓
+GENERATE  LLM 生成修复 diff（变异候选）
+  ↓
+VERIFY    隔离 git worktree 应用 → 全量测试 + 模块导入检查（变异的"环境筛选"）
+  ↓
+APPLY     存活变异 → git commit + 同步运行实例（记录 commit hash）
+  ↓
+LOG       写入 self_modify_events 表（变异记录），可 git revert 一键回滚
+```
+
+**安全宪法**（自举永远碰不到）：
+- `self_modify.py` 自身不可被修改（否则验证门可被关闭）
+- `tests/` 不可被修改（验证门自身）
+- 只改 `metano/*.py` 业务代码，不碰配置/密钥/DB
+- 每次变异必须过验证门（全量测试+导入），无例外
+- 验证在隔离 worktree 进行，主系统在验证通过前不受任何影响
+
+坏变异会被验证门淘汰并记录；已应用的变异可经 Web「自我进化」页一键 git revert。这就是软件的"种群"——系统永远能回到活着的版本，允许大胆变异而不会自毁。
 
 ```
 Observe (收割器)    每 30min + SessionStart/End 钩子，从会话提取观察

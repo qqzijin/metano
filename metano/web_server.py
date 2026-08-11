@@ -588,6 +588,40 @@ async def api_proposals_apply_approved(_admin=Depends(require_role("admin"))):
         logger.exception()
         return _error_response('Internal error')
 
+# ── Self-modification (self-bootstrap) ──────────────────────────────────
+
+@app.get('/api/self-modify/events')
+async def api_self_modify_events(limit: int = 50, _admin=Depends(require_role("admin"))):
+    """List recorded self-modification mutations (the mutation log)."""
+    try:
+        from .evo_models import get_self_modify_events
+        return {'items': get_self_modify_events(limit=limit)}
+    except Exception:
+        logger.exception()
+        return _error_response('Internal error')
+
+
+@app.post('/api/self-modify/run')
+async def api_self_modify_run(dry_run: bool = False, _admin=Depends(require_role("admin"))):
+    """Manually trigger a self-modification pass (dry_run=scan+generate only)."""
+    try:
+        from .self_modify import self_modify_daily
+        return self_modify_daily(dry_run=dry_run, max_mutations=3)
+    except Exception:
+        logger.exception()
+        return _error_response('Internal error')
+
+
+@app.post('/api/self-modify/revert/{event_id}')
+async def api_self_modify_revert(event_id: int, _admin=Depends(require_role("admin"))):
+    """Revert an applied mutation via git revert of its commit hash."""
+    try:
+        from .self_modify import revert_mutation
+        return revert_mutation(event_id)
+    except Exception:
+        logger.exception()
+        return _error_response('Internal error')
+
 @app.get('/api/models')
 async def api_models():
     try:
