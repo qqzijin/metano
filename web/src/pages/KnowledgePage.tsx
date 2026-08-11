@@ -1,11 +1,12 @@
 import { useState } from "react";
-import { BookOpen, Upload, Search, Trash2, Loader2 } from "lucide-react";
+import { BookOpen, Upload, Search, Trash2, Loader2, Eye } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useKnowledge, useKnowledgeSearch, useKnowledgeIngest, useKnowledgeDelete } from "@/api/hooks";
 import { fmtTime } from "@/api/client";
 import { toast } from "sonner";
@@ -14,12 +15,31 @@ export default function KnowledgePage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [ingestPath, setIngestPath] = useState("");
   const [showSearch, setShowSearch] = useState(false);
+  const [viewDoc, setViewDoc] = useState<{ title: string; content: string } | null>(null);
+  const [viewLoading, setViewLoading] = useState(false);
   const { data, isLoading, isError } = useKnowledge();
   const searchMut = useKnowledgeSearch();
   const ingestMut = useKnowledgeIngest();
   const deleteMut = useKnowledgeDelete();
 
   const docs = data?.documents ?? [];
+
+  // View a knowledge document's full content (the viewer that was missing).
+  const handleView = async (id: string, title: string) => {
+    if (!id) return;
+    setViewLoading(true);
+    try {
+      const res = await fetch(`/api/knowledge/${id}`, { credentials: "include" });
+      if (res.status === 401) { window.dispatchEvent(new Event("auth:unauthorized")); return; }
+      const d = await res.json();
+      if (d.error) { toast.error(d.error?.message || "加载失败"); return; }
+      setViewDoc({ title: d.title || title, content: d.content || "(无内容)" });
+    } catch {
+      toast.error("加载文档内容失败");
+    } finally {
+      setViewLoading(false);
+    }
+  };
 
   const handleIngest = async () => {
     if (!ingestPath.trim()) return;
@@ -138,9 +158,15 @@ export default function KnowledgePage() {
                     </div>
                   </div>
                   {id && (
-                    <Button variant="ghost" size="icon" className="size-8 text-muted-foreground hover:text-destructive shrink-0" onClick={() => handleDelete(id)}>
-                      <Trash2 className="size-4" />
-                    </Button>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <Button variant="ghost" size="sm" className="size-8 px-2 text-muted-foreground hover:text-primary" onClick={() => handleView(id, title)} title="查看文档内容">
+                        <Eye className="size-4" />
+                        <span className="ml-1 text-xs">查看</span>
+                      </Button>
+                      <Button variant="ghost" size="icon" className="size-8 text-muted-foreground hover:text-destructive" onClick={() => handleDelete(id)}>
+                        <Trash2 className="size-4" />
+                      </Button>
+                    </div>
                   )}
                 </div>
               </Card>
@@ -148,6 +174,23 @@ export default function KnowledgePage() {
           })}
         </div>
       )}
+
+      <Dialog open={!!viewDoc || viewLoading} onOpenChange={(o) => { if (!o) setViewDoc(null); }}>
+        <DialogContent className="sm:max-w-2xl max-h-[80vh] flex flex-col">
+          <DialogHeader>
+            <DialogTitle>{viewDoc?.title ?? "加载中…"}</DialogTitle>
+          </DialogHeader>
+          {viewLoading ? (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground py-8 justify-center">
+              <Loader2 className="size-4 animate-spin" /> 加载文档内容…
+            </div>
+          ) : viewDoc ? (
+            <div className="overflow-y-auto text-sm whitespace-pre-wrap break-words">
+              {viewDoc.content}
+            </div>
+          ) : null}
+        </DialogContent>
+      </Dialog>
     </>
   );
 }

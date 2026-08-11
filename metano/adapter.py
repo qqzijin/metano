@@ -386,6 +386,8 @@ def apply_proposal(proposal_id: int) -> dict:
             result = _apply_claude_md(content, detail)
         elif ptype == 'skill_improvement':
             result = _apply_skill_improvement(content, detail)
+        elif ptype == 'new_skill_suggestion':
+            result = _apply_new_skill(content, detail)
         else:
             result = {'status': 'unknown_type', 'type': ptype}
 
@@ -452,6 +454,49 @@ def _apply_skill_improvement(content: str, detail: str) -> dict:
     except Exception:
         logger.exception("_apply_skill_improvement failed")
         return {'status': 'failed', 'type': 'skill_improvement'}
+
+
+def _apply_new_skill(content: str, detail: str) -> dict:
+    """Execute an approved new_skill_suggestion: actually CREATE the skill.
+
+    The suggestion was raised because a correction had NO matching existing
+    skill. On approval we create a minimal new skill derived from the
+    correction: name = slugified correction, description = correction, content
+    = a prompt template pointing at the correction. This closes the loop
+    "discover missing capability → propose → approve → create".
+    """
+    try:
+        import json as _json
+        import re as _re
+        from .skills.manager import SkillManager
+        correction = content
+        try:
+            d = _json.loads(detail) if detail else {}
+            if d.get('correction'):
+                correction = d['correction']
+        except Exception:
+            pass
+        # Derive a safe skill name from the correction (english/kebab slug).
+        slug = _re.sub(r'[^a-zA-Z0-9]+', '-', correction)[:30].strip('-').lower() or 'new-skill'
+        manager = SkillManager()
+        skill_content = (
+            f"# {slug}\n\n"
+            f"> Auto-created from an approved suggestion.\n\n"
+            f"## Task\n{correction}\n\n"
+            f"Use this skill when the request matches the description below."
+        )
+        result = manager.create(
+            name=slug,
+            category='user',
+            description=correction[:120],
+            content=skill_content,
+            version='1.0.0',
+            author='evolution',
+        )
+        return {'status': 'applied', 'type': 'new_skill_suggestion', 'skill': slug, 'result': result}
+    except Exception:
+        logger.exception("_apply_new_skill failed")
+        return {'status': 'failed', 'type': 'new_skill_suggestion'}
 
 
 def _apply_claude_md(content: str, detail: str) -> dict:

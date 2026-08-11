@@ -613,6 +613,25 @@ def knowledge_delete(doc_id: str) -> dict:
     return {"status": "deleted", "doc_id": doc_id}
 
 
+def knowledge_get_document(doc_id: str) -> dict | None:
+    """Return a single document with its full content (for the Web viewer).
+
+    The user cannot currently VIEW knowledge documents — the list only shows
+    titles/snippets. This backs a "查看内容" button that returns the whole
+    document body (documents.content) plus chunk count and metadata.
+    """
+    conn = _get_kb_conn()
+    row = conn.execute(
+        "SELECT doc_id, title, source, doc_type, content, chunk_count, created_at, updated_at "
+        "FROM documents WHERE doc_id = ?",
+        (doc_id,),
+    ).fetchone()
+    conn.close()
+    if not row:
+        return None
+    return dict(row)
+
+
 # ── Knowledge Graph: Entity Extraction & Relationship Building ──
 
 def _extract_entities(text: str, chunk_id: str = "", doc_id: str = "") -> list[dict]:
