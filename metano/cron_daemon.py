@@ -23,6 +23,23 @@ OUTPUT_DIR = CRON_DIR / 'output'
 # Action registry: maps action strings to Python functions
 ACTIONS = {}
 
+# Default evolution schedules, auto-seeded on first run (when cron/jobs.json
+# does not exist yet) so the self-evolving engine works out of the box.
+# maintain runs at 4:15 (not 0 4) to avoid colliding with reflect at 0 4.
+DEFAULT_JOBS = [
+    {"name": "harvest", "action": "evolution.harvest", "schedule": {"kind": "interval", "expr": "30"}, "enabled": True, "timeout": 180},
+    {"name": "introspect", "action": "evolution.introspect", "schedule": {"kind": "cron", "expr": "0 */2 * * *"}, "enabled": True, "timeout": 120},
+    {"name": "adapt", "action": "evolution.adapt", "schedule": {"kind": "cron", "expr": "0 3 * * *"}, "enabled": True, "timeout": 180},
+    {"name": "reflect", "action": "evolution.reflect", "schedule": {"kind": "cron", "expr": "0 4 * * *"}, "enabled": True, "timeout": 180},
+    {"name": "maintain", "action": "evolution.maintain", "schedule": {"kind": "cron", "expr": "15 4 * * *"}, "enabled": True, "timeout": 300},
+    {"name": "self-modify", "action": "self_modify.daily", "schedule": {"kind": "cron", "expr": "30 4 * * *"}, "enabled": True, "timeout": 600},
+    {"name": "knowledge-sink", "action": "knowledge.sink", "schedule": {"kind": "cron", "expr": "30 5 * * *"}, "enabled": True, "timeout": 120},
+    {"name": "architect", "action": "evolution.architect", "schedule": {"kind": "cron", "expr": "0 5 * * 0"}, "enabled": True, "timeout": 180},
+    {"name": "explore", "action": "evolution.explore", "schedule": {"kind": "cron", "expr": "0 3 * * 0"}, "enabled": True, "timeout": 300},
+    {"name": "evaluate", "action": "evolution.evaluate", "schedule": {"kind": "interval", "expr": "360"}, "enabled": True, "timeout": 120},
+    {"name": "session-retention", "action": "retention.purge_sessions", "schedule": {"kind": "cron", "expr": "0 6 * * 0"}, "enabled": True, "timeout": 600},
+]
+
 def register_action(name: str, fn):
     """Register a named action function for cron execution."""
     ACTIONS[name] = fn
@@ -54,7 +71,10 @@ def load_jobs() -> list[dict]:
         if isinstance(data, dict):
             return data.get('jobs', [])
         return data
-    return []
+    # First run: seed the default evolution schedules so the self-evolving
+    # engine is active immediately. Persist them for user editing.
+    save_jobs(DEFAULT_JOBS)
+    return list(DEFAULT_JOBS)
 
 def save_jobs(jobs: list[dict]):
     CRON_DIR.mkdir(parents=True, exist_ok=True)
