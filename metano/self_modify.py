@@ -39,16 +39,33 @@ from metano.log import logger
 # module to the nearest ancestor containing a .git; otherwise fall back to the
 # runtime instance (degraded — no git ops possible).
 def _find_repo_root() -> Path:
+    # 1) Explicit env override — the reliable path when running from the
+    #    deployed instance (METANO_HOME is NOT a git repo; the source repo is).
     env_dir = os.environ.get('METANO_SOURCE_DIR')
     if env_dir:
         p = Path(env_dir).expanduser()
-        if (p / '.git').exists() or (p / '.git').is_dir():
+        if (p / '.git').exists():
             return p
+    # 2) Walk up from this module looking for a .git ancestor (dev checkout).
     here = Path(__file__).resolve()
     for parent in [here] + list(here.parents):
         if (parent / '.git').exists():
             return parent
-    return here.parent
+    # 3) Try a sibling/known source checkout next to the deployed instance.
+    home = Path(os.environ.get('METANO_HOME', str(Path.home() / '.claude' / 'metano')))
+    if home.exists():
+        sibling = home.parent / 'metano'   # e.g. ~/metano when deployed at ~/.claude/metano
+        if (sibling / '.git').exists():
+            return sibling
+    # 4) Known dev-machine source checkout (this project's canonical repo).
+    dev_src = Path.home() / 'metano'
+    if (dev_src / '.git').exists():
+        return dev_src
+    # 5) METANO_HOME itself (deployed). No git ops will work, but the module
+    #    still imports and SCAN-only (dry_run) works.
+    if home.exists():
+        return home
+    return here.parent.parent
 
 
 REPO_ROOT = _find_repo_root()                                # e.g. /home/dk/metano (git)
