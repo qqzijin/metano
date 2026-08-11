@@ -395,7 +395,7 @@ def _cleanup(host_dir: str):
     try:
         shutil.rmtree(host_dir, ignore_errors=True)
     except Exception:
-        pass
+        logger.exception('code_exec.py:397 exception')
 
 
 # ---------------------------------------------------------------------------
