@@ -253,7 +253,7 @@ export default function CollabPage() {
             <div className="space-y-1.5">
               <label className="text-xs text-muted-foreground">目标</label>
               <Input
-                placeholder="local 或 remote-HOST_REMOTE_PLACEHOLDER"
+                placeholder="local 或 remote-<host>"
                 value={form.target}
                 onChange={(e) => setForm({ ...form, target: e.target.value })}
               />

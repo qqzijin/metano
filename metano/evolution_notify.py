@@ -1,11 +1,26 @@
 """Notify user via Feishu about pending evolution proposals requiring approval."""
 
 import json
+import os
 import subprocess
 from pathlib import Path
 from metano.log import logger
 
-NOTIFICATION_CHAT_ID = "FEISHU_CHAT_ID_PLACEHOLDER"
+# The recipient chat id comes from the environment (FEISHU_NOTIFY_CHAT_ID),
+# never hardcoded — this repo is public and must not contain private ids.
+NOTIFICATION_CHAT_ID = os.environ.get("FEISHU_NOTIFY_CHAT_ID", "")
+
+
+def _send_feishu(text: str) -> tuple[int, str]:
+    """Send via lark-cli; returns (returncode, stderr)."""
+    result = subprocess.run(
+        ['lark-cli', 'im', '+messages-send',
+         '--chat-id', NOTIFICATION_CHAT_ID,
+         '--as', 'bot',
+         '--markdown', text],
+        capture_output=True, text=True, timeout=15,
+    )
+    return result.returncode, result.stderr
 
 
 def notify_pending_proposals(proposals: list[dict]) -> dict:
@@ -48,19 +63,16 @@ def notify_pending_proposals(proposals: list[dict]) -> dict:
     text = '\n'.join(lines)
 
     try:
-        result = subprocess.run(
-            ['lark-cli', 'im', '+messages-send',
-             '--chat-id', NOTIFICATION_CHAT_ID,
-             '--as', 'bot',
-             '--markdown', text],
-            capture_output=True, text=True, timeout=15,
-        )
-        if result.returncode == 0:
+        if not NOTIFICATION_CHAT_ID:
+            logger.warning("FEISHU_NOTIFY_CHAT_ID not set; skip Feishu notification")
+            return {'status': 'not_configured'}
+        rc, err = _send_feishu(text)
+        if rc == 0:
             logger.info(f"Notified {len(proposals)} pending proposals via Feishu")
             return {'status': 'sent', 'count': len(proposals)}
         else:
-            logger.warning(f"Feishu notify failed: {result.stderr}")
-            return {'status': 'failed', 'error': result.stderr[:200]}
+            logger.warning(f"Feishu notify failed: {err}")
+            return {'status': 'failed', 'error': err[:200]}
     except Exception:
         logger.exception()
         return {'status': 'error'}

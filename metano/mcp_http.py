@@ -10,6 +10,8 @@ duplicate logic); only the whitelist in :mod:`metano.mcp_policy` decides what
 is registered. Authentication/authorization is NOT handled here — it is the
 responsibility of the layer that mounts this Starlette app.
 """
+import os
+
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
@@ -17,9 +19,13 @@ from . import mcp_server
 from . import mcp_policy
 
 # FastMCP's default transport security only accepts localhost Host headers.
-# To let other machines on the LAN (e.g. the remote NAS) reach this MCP server,
-# allow the local machine's LAN IP (and loopback) explicitly.
-_ALLOWED_HOSTS = ["localhost:*", "127.0.0.1:*", "[::1]:*", "HOST_LOCAL_PLACEHOLDER:*"]
+# To let other machines on the LAN reach this MCP server, list their host/ip
+# patterns in the METANO_ALLOWED_HOSTS env var (comma-separated, each with a
+# port wildcard, e.g. "192.168.1.50:*,nas.local:*"). Only loopback is allowed
+# by default so the repo carries no private network topology.
+_ALLOWED_HOSTS = ["localhost:*", "127.0.0.1:*", "[::1]:*"] + [
+    h.strip() for h in os.environ.get("METANO_ALLOWED_HOSTS", "").split(",") if h.strip()
+]
 
 
 def create_http_app():

@@ -1,14 +1,14 @@
 # 多设备 Claude 协同方案
 
 > 状态:📋 存档待实施(2026-08-11)
-> 背景:本机(开发机)+ 远程 NAS(HOST_REMOTE_PLACEHOLDER,群晖 aarch64)各部署了 Claude Code 与 metano 网关,需要协同执行任务。
+> 背景:本机(开发机)+ 远程 NAS(群晖 aarch64)各部署了 Claude Code 与 metano 网关,需要协同执行任务。
 
 ## 现有基础设施
 
 | 设备 | 地址 | Claude Code | metano | SSH |
 |------|------|-------------|--------|-----|
 | 本机 | localhost | ✅(默认) | ✅(9120) | — |
-| 远程 NAS | HOST_REMOTE_PLACEHOLDER | ✅(`/path/to/metano-home`,node v24,opencode 中转) | ✅(9120) | ✅ `dk@HOST_REMOTE_PLACEHOLDER` |
+| 远程 NAS | nas.local | ✅(opencode 中转) | ✅(9120) | ✅ `user@nas.local` |
 
 - 远程 Claude 走 opencode 中转(`ANTHROPIC_BASE_URL=https://opencode.ai/zen/go`),模型可配
 - metano 有 a2a-hub MCP(多智能体协调器,未接 A2A v1.0)
@@ -21,7 +21,7 @@
 本机脚本通过 SSH 远程执行 `claude -p`:
 
 ```bash
-ssh dk@HOST_REMOTE_PLACEHOLDER 'cd /path/to/metano-home && claude -p "任务描述" --output-format text'
+ssh user@nas.local 'cd <metano-home> && claude -p "任务描述" --output-format text'
 ```
 
 - ✅ 现在就能用,适合一次性/批量任务分发
@@ -69,4 +69,3 @@ ssh dk@HOST_REMOTE_PLACEHOLDER 'cd /path/to/metano-home && claude -p "任务描�
 ## 决策记录
 
 - 2026-08-11:调研完成,用户决定"先存档不实施",后续需要时再定方案
-- 远程 metano 默认模型已切换为 **gpt-5.6-luna**(opencode 中转),本机仍 deepseek-v4-flash

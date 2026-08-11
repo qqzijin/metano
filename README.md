@@ -2,6 +2,8 @@
 
 > **版本：v3.0.0** · AI 网关桥接层 · 自我进化引擎 · 多平台消息接入 · RAG 知识库 + 知识图谱 · 记忆技能库
 
+**支持平台**：Linux（x86_64 / aarch64，已实测群晖 NAS / x86 服务器 / WSL）· macOS（Python 3.11+）· 需 Python 3.11+、Node.js 18+、npm。Windows 未官方支持（WSL2 可用）。
+
 为 Claude Code 提供多维度扩展能力的桥接层：把个人 AI 助手从"单会话对话"升级为**能记住你、能自我改进、能跨平台触达**的常驻系统。
 
 ---
@@ -16,9 +18,12 @@
 | 🔧 **技能系统** | 48+ 内置技能（源自 Hermes Agent 精选），支持技能发现、校验、自定义 |
 | 📚 **RAG 知识库 + 本地向量** | 文档导入、分块、本地向量检索（chunks embedding，离线，无需外部冷启动） |
 | 🕸️ **知识图谱** | 实体-关系图，PPR（Personalized PageRank）相关扩散检索，前端可视化页 |
-| 🔌 **MCP 服务器** | 60+ 工具注册给 Claude Code（stdin/stdout 协议） |
+| 🔌 **MCP 服务器** | 60+ 工具注册给 Claude Code（stdin/stdout 协议）+ 只读远程 MCP（Streamable HTTP，JWT 鉴权，跨设备协同） |
 | 💬 **多平台网关** | Discord / Telegram / QQ / 微信 / 飞书 / Web Chat 统一路由 |
-| 🖥️ **Web 控制面板** | React 19 + FastAPI，20+ 页面，支持移动端适配（汉堡菜单+抽屉），聊天自动回写会话历史 |
+| 🖥️ **Web 控制面板** | React 19 + FastAPI，20+ 页面，移动端适配（汉堡菜单+抽屉）；聊天支持 **SSE 流式输出 + 思考过程 + 工具调用卡片 + Markdown 渲染**，跨路由流不中断 |
+| 🔄 **配置热重载** | `gateway_config.yaml` 变更自动热重载（web 进程轮询，改价格/模型/凭据免重启） |
+| 🧭 **经验记忆 + 路由反馈** | 任务签名分类 + ε-greedy bandit 路由 + Reflexion 反思经验注入（`DO:/AVOID:`），让 AI 越用越聪明 |
+| 🤝 **多设备协作** | A2A v1.0 AgentCard（JWS 签名）+ 跨设备协同页（CollabPage） |
 | 🧪 **Be-ACTIVE 即时学习** | 检测到用户纠正后立即生成规则/技能提案，不等定时任务 |
 | 🛠️ **运维** | `healthcheck.sh` 健康检查 · `backup.sh` 数据库备份 · 会话保留（180天/512MB）· 每周知识主动探索 |
 
@@ -60,6 +65,24 @@ Maintain (维护)     信念衰减、合并、归档、时间趋势抽象、成�
 - **API**：`GET /api/knowledge/graph`（查询实体/关系）、`POST /api/knowledge/graph/extract`（重建图谱）、`GET /api/knowledge/graph/stats`；懒构建，首次访问自动重建。
 - **前端**：Web 面板"知识图谱"页（`/knowledge-graph`）可视化图谱浏览。
 
+## 🧭 经验记忆 + 路由反馈（自进化闭环）
+
+网关级"越用越聪明"机制（`route_events.py` + `experience.py`，默认关闭，`METANO_EXPERIENCE_ENABLED=1` 或 `gateway_config.yaml` 配 `experience.enabled: true` 开启）：
+
+1. **任务签名**：对用户请求规范化 hash + 关键词分类（code / qa / research / cron / chat）
+2. **bandit 路由**：ε-greedy 从已配置 provider 中选策略；reward = 质量 − α×成本 − β×延迟；冷启动 <5 次强制探索，ε 随事件数衰减
+3. **经验注入**：检索 top-k 语义相似历史经验，以 `DO:`/`AVOID:` 前缀注入 prompt
+4. **Reflexion 反思**：失败时记录原因 + 修复动作；成功判定独立于生成模型（启发式 + 可外接 evaluator）
+5. **防退化**：失败经验降权/失活，每 50 事件清理低效经验
+
+## 🔄 配置热重载
+
+`gateway_config.yaml` 由 `config_watcher.py` 轮询监控（2s 间隔），检测到真实内容变化后自动热重载 `model_router`（模型/价格/默认模型）。**改配置不再需要重启 web 进程**——对远程 NAS 部署尤其重要（避免远程重启卡死）。特性：
+
+- mtime + size 快路径，内容签名去重（touch / 注释变化不触发）
+- 稳定读：文件写入中途不应用半成品
+- fail-safe：reload 失败保留旧配置，不崩溃
+
 ## 🧠 记忆技能库
 
 跨会话语义记忆库（`memory.db`），每条记忆可带多个场景 tag（如 `backend`、`frontend`、`sync`、`workflow`、`cost`），按场景检索（多 tag 为 AND 语义）。
@@ -79,23 +102,19 @@ Maintain (维护)     信念衰减、合并、归档、时间趋势抽象、成�
                        │ MessageRouter
                        ▼
 ┌─────────────────────────────────────────────────────────┐
-│                    metano 核心                  │
+│                    metano 核心                           │
 │   技能系统 │ 安全系统 │ 模型路由 │ 知识库RAG │ 知识图谱     │
 │   本地向量 │ 记忆系统 │ 定时任务 │ 子代理 │ 浏览器         │
 │   语音TTS │ 智能家居 │ 代码沙箱 │ 图像生成 │ 看板          │
-│  ┌─────────────────────────────────────────┐            │
-│  │        自我进化引擎                       │            │
-│  │  Observe → Reason → Act → Reflect       │            │
-│  │  收割器 → 方言推理 → 适配器 → 反思器      │            │
-│  └─────────────────────────────────────────┘            │
-│  ┌─────────────────────────────────────────┐            │
-│  │    知识主动探索 (knowledge_explorer)      │            │
-│  │  Tavily 搜索 → LLM 综合 → 知识摄入        │            │
-│  └─────────────────────────────────────────┘            │
-│  ┌─────────────────────────────────────────┐            │
-│  │        Honcho 用户建模                    │            │
-│  │  观察 → 信念 → 方言推理 → 信念生命周期     │            │
-│  └─────────────────────────────────────────┘            │
+│   ┌──────────────┐ ┌──────────────┐ ┌───────────────┐    │
+│   │ 自我进化引擎   │ │ 经验记忆+路由  │ │ 配置热重载     │    │
+│   │ Obs→Reas→Act │ │ 任务签名→bandit│ │ config_watcher│    │
+│   │ →Refl→Maint  │ │ →经验注入DO/AVO│ │ mtime轮询     │    │
+│   └──────────────┘ └──────────────┘ └───────────────┘    │
+│   ┌──────────────┐ ┌──────────────┐ ┌───────────────┐    │
+│   │ 知识主动探索   │ │ Honcho 建模   │ │ 只读远程MCP+A2A│    │
+│   │ Tavily→摄入   │ │ 观察→信念→推理 │ │ /mcp JWT鉴权   │    │
+│   └──────────────┘ └──────────────┘ └───────────────┘    │
 └──────────────────────┬──────────────────────────────────┘
                        │
               ┌────────┴────────┐
@@ -164,6 +183,7 @@ bash healthcheck.sh              # 健康检查（web/gateway/cron/cocoindex）�
 | `HA_URL` / `HA_TOKEN` | 智能家居 Home Assistant（可选） |
 | `INJECT_TAGS` | SessionStart 注入记忆的场景 tag（逗号分隔，per-tag 上限 4 条） |
 | `BACKUP_RETENTION_DAYS` | 数据库备份保留天数（默认 7 天） |
+| `METANO_EXPERIENCE_ENABLED` | 开启经验记忆+路由反馈闭环（`1` 开启，默认关） |
 
 ## 🔌 Claude Code 集成（自我进化引擎的关键）
 
@@ -191,6 +211,13 @@ bash healthcheck.sh              # 健康检查（web/gateway/cron/cocoindex）�
 
 `gateway_config.yaml`（位于 `$METANO_HOME/`）管理模型提供商、消息网关、智能家居、语音（TTS）等。首次运行由 `gen_config.py` 自动生成：随机 JWT secret + 初始 admin 密码（bcrypt），各消息网关默认 disabled；可用 `metano.sh setup` 重新运行。仓库另提供**脱敏示例** `gateway_config.example.yaml`，真实密钥请自行填写，且**不要提交到 Git**。
 
+**模型提供商配置**（`models.<name>` 段）：
+- `price: {input, output, cache_read}` 自定义价格（解析顺序：显式配置 → 内置表 → 默认 3/15）
+- `proxy: direct` 强制直连（清系统代理 + 注入 NO_PROXY），`proxy: http://host:port` 为该模型单独走指定代理——解决"某些模型需代理、某些需直连"的混合场景
+- `default: true` 设为默认模型
+
+**配置变更自动热重载**：修改 `gateway_config.yaml` 后 web 进程自动检测并生效（见"🔄 配置热重载"节），改价格/模型无需重启。
+
 ## 📁 项目结构
 
 ```
@@ -209,8 +236,16 @@ metano/
 ├── metano/                  # Python 后端包
 │   ├── paths.py             #   集中路径解析（METANO_HOME 支持，DB/日志/数据目录）
 │   ├── web_server.py        #   FastAPI Web 面板 + REST API + WebSocket
-│   ├── serve.py             #   Web 服务 CLI 入口（uvicorn :9120）
+│   ├── serve.py             #   Web 服务 CLI 入口（uvicorn :9120，含配置热重载启动）
+│   ├── config_watcher.py    #   gateway_config.yaml 轮询热重载（mtime+内容签名，失败保旧）
 │   ├── mcp_server.py        #   MCP 工具服务器（60+ 工具）
+│   ├── mcp_policy.py        #   MCP 工具风险分级（16 只读 / 19 危险）
+│   ├── mcp_http.py          #   只读远程 MCP（Streamable HTTP，allowed_hosts 局域网访问）
+│   ├── mcp_gateway.py       #   MCP Bearer JWT 鉴权中间件 + /api/mcp/token（跨设备协同）
+│   ├── a2a_server.py        #   A2A v1.0 服务（AgentCard / JSON-RPC / tasks）
+│   ├── route_events.py      #   经验记忆闭环核心（任务签名 + bandit + reward）
+│   ├── experience.py        #   Reflexion 反思经验 + DO:/AVOID: prompt 注入
+│   ├── collab.py            #   跨设备协作（A2A 委派 + 协作控制面）
 │   ├── auth.py              #   登录认证（JWT access/refresh + 角色）
 │   ├── evolution.py         #   自我进化协调器（Observe→Reason→Act→Reflect→Maintain）
 │   ├── harvester.py         #   观察收割器
@@ -223,7 +258,7 @@ metano/
 │   ├── knowledge.py         #   RAG 知识库 + 知识图谱 + 本地向量检索
 │   ├── knowledge_explorer.py#   知识主动探索（Tavily + LLM + 缺口发现）
 │   ├── memory.py            #   记忆系统（tags / FTS5 / 压缩 / 导入导出）
-│   ├── model_router.py      #   多模型路由
+│   ├── model_router.py      #   多模型路由（per-provider proxy: direct / 自定义价格）
 │   ├── db.py                #   数据库层（含会话保留策略 purge_old_sessions）
 │   ├── cron_daemon.py       #   定时任务守护进程
 │   ├── honcho/              #   用户建模引擎（信念/观察/方言推理）
@@ -231,8 +266,9 @@ metano/
 │   ├── skills_data/         #   内置技能定义（48+）
 │   ├── gateway/             #   多平台消息网关
 │   └── voice/               #   语音模块（仅 TTS，edge-tts）
-├── web/                     # React 19 前端（含移动端抽屉导航）
-├── tests/                   # pytest 测试（155+）
+├── web/                     # React 19 前端（含移动端抽屉导航、SSE 流式聊天）
+│   └── src/lib/chatStream.ts#   模块级 SSE 流管理器（跨路由流不中断）
+├── tests/                   # pytest 测试（181）
 ├── backups/                 # 数据库自动备份（按日期归档，保留 7 天）
 └── personalities/           # 人格模板（12）
 ```
@@ -256,6 +292,10 @@ metano/
 **语音（TTS）**：`voice_speak` · `voice_list`
 
 **其他**：`agent_spawn` · `code_run` · `image_generate` · `home_control` · `kanban_board` · `security_status`
+
+**只读远程 MCP**（跨设备协同，D 方案）：`/mcp` 端点暴露 16 个只读工具子集（`session_search` · `knowledge_search` · `memory_search` 等），Bearer JWT 鉴权（`aud=metano-mcp`，`POST /api/mcp/token` 签发 1h token），支持局域网跨设备访问（`allowed_hosts` 配置）。另一台机器在 Claude Code 中配置 `metano-local` MCP server 即可调用本机工具。
+
+**A2A**：`/.well-known/agent-card.json` 暴露 AgentCard，`/a2a` 支持 JSON-RPC task 委派（跨设备协作）。
 
 ## 🧪 测试
 

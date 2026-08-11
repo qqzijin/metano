@@ -7,8 +7,8 @@ audit trail. Task rows live in the same SQLite ``bridge.db`` used by
 which appends JSONL to ``AUDIT_LOG``.
 
 Execution itself (``execute_task``) is intentionally thin: local targets call
-the existing Claude Code CLI, remote targets (e.g. ``remote-HOST_REMOTE_PLACEHOLDER``)
-are a placeholder that will be wired to MCP/A2A in a later iteration.
+the existing Claude Code CLI, remote targets (e.g. ``remote-<host>``) are a
+placeholder that will be wired to MCP/A2A in a later iteration.
 """
 
 import time
@@ -272,9 +272,9 @@ def execute_task(task_id: str, timeout: int = 120) -> dict:
 
     Local targets run the prompt through the existing Claude Code CLI
     (``model_router.call_claude``) and persist result/status. Remote targets
-    (e.g. ``remote-HOST_REMOTE_PLACEHOLDER``) are not yet wired — the task is left
-    untouched and a placeholder ``execution`` block is returned; the eventual
-    implementation will dispatch over MCP/A2A.
+    (e.g. ``remote-<host>``) are not yet wired — the task is left untouched and
+    a placeholder ``execution`` block is returned; the eventual implementation
+    will dispatch over MCP/A2A.
 
     Returns ``{"task": ..., "execution": ...}``.
     """

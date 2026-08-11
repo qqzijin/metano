@@ -17,17 +17,14 @@
 ## 1. 克隆与依赖安装
 
 ```bash
-# 克隆（仓库是私有的，需要你的 GitHub 认证）
-git clone https://github.com/YOUR_GITHUB_USERNAME/metano.git
+# 克隆（把 <your-repo> 换成你的仓库地址）
+git clone https://github.com/<your-repo>/metano.git
 cd metano
 
-# 创建虚拟环境并安装
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+# 一键安装（推荐）：环境检测 → venv 依赖 → 前端构建 → 生成配置 → 初始化 DB → 启动 + 健康检查
+./install.sh
 
-# 前端依赖（必需：Web 面板 UI。web/dist 不在仓库，不构建则 API 可用但仪表盘 404）
-cd web && npm install && npm run build && cd ..
+# 手动安装（可选）：见 README「快速开始」
 ```
 
 **验证**：
