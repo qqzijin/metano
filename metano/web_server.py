@@ -1479,6 +1479,49 @@ async def api_evolution_cost_circuit_config(body: dict, _admin=Depends(require_r
         logger.exception()
         return _error_response('Internal error')
 
+# ── MCP remote read-only endpoint (D-plan) ──────────────────────────────
+# The read-only MCP surface (metano/mcp_http.py) is served at /mcp and guarded
+# by MCPAuthMiddleware at the FastAPI layer (FastMCP in mcp==1.27.1 has no
+# first-class Streamable HTTP auth middleware). POST /api/mcp/token issues 1h
+# read-only bearer tokens for that endpoint. See metano/mcp_gateway.py.
+from .mcp_gateway import MCPAuthMiddleware, create_mcp_token, FastMCPMount
+
+try:
+    from .mcp_http import create_http_app as _create_mcp_http_app
+    _mcp_http_app = _create_mcp_http_app()
+    _mcp_http_ready = True
+except Exception:  # pragma: no cover - depends on the parallel agent finishing mcp_http.py
+    # TODO: remove this fallback once metano/mcp_http.py is stable; the guard
+    # middleware and /api/mcp/token still work, only the /mcp endpoint is skipped.
+    logger.exception('mcp_http.create_http_app() failed; /mcp endpoint deferred')
+    _mcp_http_app = None
+    _mcp_http_ready = False
+
+app.add_middleware(MCPAuthMiddleware)
+
+if _mcp_http_ready:
+    # FastMCP serves its endpoint at the full "/mcp" path and needs its
+    # session-manager lifespan run, so we use FastMCPMount (Route registration,
+    # not a literal Mount — see mcp_gateway.FastMCPMount for why). Routes are
+    # inserted ahead of the SPA catch-all so GET /mcp (SSE) is not swallowed.
+    FastMCPMount(_mcp_http_app).install(app)
+
+
+@app.post('/api/mcp/token')
+async def api_mcp_token(request: Request, _admin=Depends(require_role("admin"))):
+    """Issue a short-lived (1h) read-only MCP bearer token for /mcp.
+
+    The returned token is used as ``Authorization: Bearer <token>`` against the
+    mounted MCP endpoint (``aud=metano-mcp``, ``scope=[mcp:read]``).
+    """
+    username = _admin['username']
+    ip = request.client.host if request.client else 'unknown'
+    ttl = 3600
+    token = create_mcp_token(username, scope=['mcp:read'], ttl_seconds=ttl)
+    _audit('mcp_token_issued', username, {'ip': ip, 'scope': ['mcp:read'], 'expires_in': ttl})
+    return {'token': token, 'expires_in': ttl}
+
+
 if WEB_DIR.exists():
     app.mount('/assets', StaticFiles(directory=str(WEB_DIR / 'assets')), name='assets')
 
