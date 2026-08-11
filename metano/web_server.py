@@ -15,6 +15,7 @@ from .auth import authenticate_user, check_login_rate, record_login_attempt, set
 from .db import get_db, init_db, DB_PATH
 from .indexer import index_all
 from .paths import CRON_DIR, CRON_JOBS_FILE, CONFIG_PATH, EVO_LOG, AUDIT_LOG, EVO_DB_PATH, HONCHO_DB, KB_DB, MEMORY_DB, UPLOADS_DIR
+from . import collab as collab
 WEB_DIR = Path(__file__).parent.parent / 'web' / 'dist'
 SENSITIVE_KEYS = {'api_key', 'bot_token', 'app_secret', 'encryption_key', 'verification_token', 'token', 'secret', 'password', 'ha_token'}
 # gateway_config.yaml 中所有 SENSITIVE_KEYS 字段在 GET /api/config 返回时自动脱敏（***）
@@ -1041,6 +1042,95 @@ async def api_home_control(body: dict):
     except Exception as e:
         logger.exception()
         return _error_response('Internal error')
+
+# ── Collaboration control plane (collab) ────────────────────────────────────
+# All collab routes are admin-only; task rows live in bridge.db (collab_tasks).
+
+@app.get('/api/collab/tasks')
+async def api_collab_tasks(status: str='', limit: int=100, _admin=Depends(require_role("admin"))):
+    try:
+        if status and status not in collab.TASK_STATUSES:
+            return _error_response(f'Invalid status: {status}', status_code=400)
+        items = collab.list_tasks(status=status or None, limit=limit)
+        return {'items': items, 'total': len(items)}
+    except Exception:
+        logger.exception()
+        return _error_response('Internal error', extra={'items': []})
+
+@app.post('/api/collab/tasks')
+async def api_collab_create_task(body: dict, _admin=Depends(require_role("admin"))):
+    task_type = body.get('task_type', 'general')
+    prompt = (body.get('prompt') or '').strip()
+    if not prompt:
+        return _error_response('prompt is required', status_code=400)
+    if not collab.task_type_allowed(task_type, _admin.get('role', 'guest')):
+        return _error_response(f'task_type "{task_type}" not allowed for your role', status_code=403)
+    try:
+        task = collab.create_task(
+            task_type=task_type,
+            target=body.get('target', 'local'),
+            prompt=prompt,
+            assigned_to=body.get('assigned_to', ''),
+            created_by=_admin.get('username', ''),
+        )
+    except Exception:
+        logger.exception()
+        return _error_response('Internal error')
+    _audit('collab_task_created', _admin.get('username', ''),
+           {'task_id': task['id'], 'task_type': task['task_type'],
+            'target': task['target'], 'prompt': prompt[:100]})
+    return task
+
+@app.get('/api/collab/tasks/{task_id}')
+async def api_collab_get_task(task_id: str, _admin=Depends(require_role("admin"))):
+    task = collab.get_task(task_id)
+    if not task:
+        return _error_response('Task not found', status_code=404)
+    return task
+
+@app.post('/api/collab/tasks/{task_id}/status')
+async def api_collab_update_status(task_id: str, body: dict, _admin=Depends(require_role("admin"))):
+    status = body.get('status', '')
+    if status not in collab.TASK_STATUSES:
+        return _error_response(f'Invalid status: {status}', status_code=400)
+    try:
+        task = collab.update_status(task_id, status)
+    except ValueError as e:
+        return _error_response(str(e), status_code=400)
+    except Exception:
+        logger.exception()
+        return _error_response('Internal error')
+    if not task:
+        return _error_response('Task not found', status_code=404)
+    _audit('collab_task_status', _admin.get('username', ''),
+           {'task_id': task_id, 'status': status})
+    return task
+
+@app.post('/api/collab/tasks/{task_id}/execute')
+async def api_collab_execute_task(task_id: str, body: dict={}, _admin=Depends(require_role("admin"))):
+    try:
+        timeout = int(body.get('timeout', 120) or 120)
+    except (TypeError, ValueError):
+        timeout = 120
+    try:
+        result = collab.execute_task(task_id, timeout=timeout)
+    except Exception:
+        logger.exception()
+        return _error_response('Internal error')
+    if not result.get('task'):
+        return _error_response('Task not found', status_code=404)
+    _audit('collab_task_executed', _admin.get('username', ''),
+           {'task_id': task_id, 'execution': result.get('execution', {})})
+    return result
+
+@app.get('/api/collab/audit')
+async def api_collab_audit(limit: int=100, _admin=Depends(require_role("admin"))):
+    try:
+        return {'items': collab.list_audit(limit=limit)}
+    except Exception:
+        logger.exception()
+        return _error_response('Internal error', extra={'items': []})
+
 _ws_clients: list[WebSocket] = []
 
 @app.websocket('/ws')
@@ -1519,6 +1609,109 @@ async def api_mcp_token(request: Request, _admin=Depends(require_role("admin")))
     ttl = 3600
     token = create_mcp_token(username, scope=['mcp:read'], ttl_seconds=ttl)
     _audit('mcp_token_issued', username, {'ip': ip, 'scope': ['mcp:read'], 'expires_in': ttl})
+    return {'token': token, 'expires_in': ttl}
+
+
+# ── A2A task-delegation endpoint (Google A2A) ──────────────────────────────
+# The standalone A2A app (metano/a2a_server.py) is mounted at /a2a and guards
+# itself with A2AAuthMiddleware (aud=metano-a2a, same HS256 secret as the rest
+# of metano).  web_server adds the RFC 8615 discovery card at the root
+# well-known path and the POST /api/a2a/token issuance endpoint.
+#
+# Why not a plain app.mount("/a2a", ...)?  Starlette's Mount keeps the full
+# "/a2a" prefix in scope["path"] and sets root_path, so the sub-app's
+# middleware sees request.url.path == "/a2a/health" — A2AAuthMiddleware's
+# PUBLIC_PATHS check compares against bare "/health" / "/.well-known/..." and
+# would 401 every public route.  A2AMount strips the prefix and clears
+# root_path before delegating (same pattern as FastMCPMount for /mcp).
+from contextlib import asynccontextmanager
+from starlette.routing import Route
+from .a2a_server import create_a2a_app as _create_a2a_app
+from .a2a_server import create_a2a_token as _create_a2a_token
+from .a2a_server import _build_agent_card as _a2a_build_agent_card
+
+
+class A2AMount:
+    """Mount the standalone A2A app (relative-path routes) at ``/a2a``.
+
+    Routes are inserted ahead of the SPA catch-all so ``/a2a/*`` is not
+    swallowed by the ``/{full_path:path}`` fallback.  The A2A app's lifespan
+    (currently a no-op) is merged into the host's so it runs if one is added.
+    """
+
+    def __init__(self, sub_app, prefix: str = '/a2a'):
+        self.sub_app = sub_app
+        self.prefix = prefix
+        self._lifespan = sub_app.router.lifespan_context(sub_app)
+
+    @asynccontextmanager
+    async def lifespan(self):
+        async with self._lifespan:
+            yield
+
+    async def __call__(self, scope, receive, send):
+        path = scope.get('path', '')
+        if path == self.prefix:
+            stripped = '/'
+        elif path.startswith(self.prefix + '/'):
+            stripped = path[len(self.prefix):]
+        else:
+            stripped = path
+        child_scope = dict(scope)
+        child_scope['path'] = stripped
+        child_scope['root_path'] = ''
+        await self.sub_app(child_scope, receive, send)
+
+    def install(self, host_app, path: str = '/a2a'):
+        host_app.router.routes.insert(
+            0, Route(path, endpoint=self, methods=['GET', 'POST', 'OPTIONS'])
+        )
+        host_app.router.routes.insert(
+            0, Route(f'{path}/{{rest:path}}', endpoint=self,
+                     methods=['GET', 'POST', 'OPTIONS'])
+        )
+
+        previous_lifespan = host_app.router.lifespan_context
+
+        @asynccontextmanager
+        async def merged_lifespan(app):
+            async with self.lifespan():
+                async with previous_lifespan(app):
+                    yield
+
+        host_app.router.lifespan_context = merged_lifespan
+
+
+try:
+    _a2a_app = _create_a2a_app()
+    _a2a_ready = True
+except Exception:  # pragma: no cover - depends on a2a_server.py being importable
+    logger.exception('a2a_server.create_a2a_app() failed; /a2a endpoint deferred')
+    _a2a_app = None
+    _a2a_ready = False
+
+if _a2a_ready:
+    A2AMount(_a2a_app).install(app)
+
+
+@app.get('/.well-known/agent-card.json')
+async def a2a_agent_card():
+    """A2A discovery card at the RFC 8615 well-known path (public, no login)."""
+    return JSONResponse(content=_a2a_build_agent_card())
+
+
+@app.post('/api/a2a/token')
+async def api_a2a_token(request: Request, _admin=Depends(require_role("admin"))):
+    """Issue a short-lived (1h) A2A bearer token for the mounted /a2a endpoint.
+
+    The returned token is used as ``Authorization: Bearer <token>`` against
+    ``/a2a`` (``aud=metano-a2a``, ``scope=[a2a:task]``).
+    """
+    username = _admin['username']
+    ip = request.client.host if request.client else 'unknown'
+    ttl = 3600
+    token = _create_a2a_token(username, scope=['a2a:task'], ttl_seconds=ttl)
+    _audit('a2a_token_issued', username, {'ip': ip, 'scope': ['a2a:task'], 'expires_in': ttl})
     return {'token': token, 'expires_in': ttl}
 
 

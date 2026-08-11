@@ -35,6 +35,7 @@ import VoicePage from "@/pages/VoicePage";
 import SmartHomePage from "@/pages/SmartHomePage";
 import MemoryPage from "@/pages/MemoryPage";
 import McpToolsPage from "@/pages/McpToolsPage";
+import CollabPage from "@/pages/CollabPage";
 import LoginPage from "@/pages/LoginPage";
 
 const queryClient = new QueryClient({
@@ -127,6 +128,7 @@ function MainLayout() {
             <Route path="/home" element={<SmartHomePage />} />
             <Route path="/memory" element={<MemoryPage />} />
             <Route path="/mcp-tools" element={<McpToolsPage />} />
+            <Route path="/collab" element={<CollabPage />} />
           </Routes>
           </ErrorBoundary>
         </AuthGuard>
