@@ -211,6 +211,40 @@ bash healthcheck.sh              # 健康检查（web/gateway/cron/cocoindex）�
 
 `gateway_config.yaml`（位于 `$METANO_HOME/`）管理模型提供商、消息网关、智能家居、语音（TTS）等。首次运行由 `gen_config.py` 自动生成：随机 JWT secret + 初始 admin 密码（bcrypt），各消息网关默认 disabled；可用 `metano.sh setup` 重新运行。仓库另提供**脱敏示例** `gateway_config.example.yaml`，真实密钥请自行填写，且**不要提交到 Git**。
 
+### 🧭 配置引导（首次配置向导）
+
+`./install.sh` 在检测到 LLM key 缺失时会询问是否运行向导；也可随时手动运行：
+
+```bash
+python3 gen_config.py --wizard                                  # 交互式配置全部核心功能
+python3 gen_config.py --wizard --home /srv/metano               # 指定数据目录
+```
+
+向导逐项交互询问，**每一步立即写入** `gateway_config.yaml`（幂等，Ctrl-C 后重跑可从断点继续；已有值会作为默认值预填）。它**不会覆盖已有 auth**（JWT secret / admin 密码），除非加 `--force`。向导覆盖：
+
+| 类别 | 配置项 | 要点 |
+|------|--------|------|
+| **LLM 通道**（必填） | `base_url` / `api_key` / `model` | 写入 `models.default`；默认网关 `https://opencode.ai/zen/go`、默认模型 `claude-sonnet-4-6`。此 key 是对话 / 记忆 / 进化的共同底座 |
+| **飞书** | `app_id` / `app_secret`（可选 `encryption_key` / `verification_token`） | 需在[飞书开放平台](https://open.feishu.cn)创建应用，配置事件订阅与机器人能力 |
+| **QQ** | `ws_url` | 默认 `ws://127.0.0.1:3001`；**前置：先运行 NapCat（或其它 OneBot v11 实现）** |
+| **微信** | `method`（`wcferry` / `ilink`） | `wcferry` 需在 Windows 端运行微信机器人框架；`ilink` 为 iPad 协议登录 |
+| **Telegram** | `bot_token` | 需先通过 [@BotFather](https://t.me/BotFather) 创建机器人 |
+| **Discord** | `bot_token`（可选 `guild_id`） | 需在 Discord Developer Portal 创建应用并邀请机器人入服 |
+| **本地向量嵌入** | 安装决策 | 选「是」后按提示运行 `./install.sh --with-embedding` 安装 torch 等依赖；向导同时写入 `METANO_EMBED_MODEL` |
+| **浏览器自动化** | 安装决策 | 选「是」后按提示运行 `./install.sh --with-browser` 安装 Playwright + chromium |
+| **只读远程 MCP** | `METANO_ALLOWED_HOSTS` | 选「是」并填局域网 Host 模式（如 `192.168.1.50:*,nas.local:*`），写入 `$METANO_HOME/.env`；供另一台机器跨设备调用本机只读工具 |
+
+**自查清单**（哪些功能需要什么）：
+
+- **Web 面板 / AI 对话 / 记忆 / 进化** → 只需 LLM 通道的 `api_key`（`models.default.api_key` 或 env `ANTHROPIC_API_KEY` 任选其一）。
+- **消息网关** → 对应渠道的凭据 + 该渠道前置（NapCat / BotFather / 飞书开放平台 / Discord 开发者后台 / wcferry 等）；各渠道独立，未配置的渠道不影响其它功能。
+- **RAG 知识库语义检索** → 需要本地向量嵌入（`METANO_EMBED_PYTHON` 指向装有 torch 的解释器；未配时回退 CocoIndex 或关键词检索）。
+- **网页浏览 / 截图工具** → 需要 Playwright 浏览器（`./install.sh --with-browser`）。
+- **局域网远程 MCP / 跨设备协作** → 需要 `METANO_ALLOWED_HOSTS` 含对应主机，且服务监听可被局域网访问；访问 `/mcp` 需先签发 Bearer JWT（`POST /api/mcp/token`）。
+- **网页搜索** → 可选 `TAVILY_API_KEY`（未配置自动降级 duckduckgo）。
+
+修改 `gateway_config.yaml` 后 web 进程会自动热重载（见「🔄 配置热重载」），改价格 / 模型 / 凭据无需重启。
+
 **模型提供商配置**（`models.<name>` 段）：
 - `price: {input, output, cache_read}` 自定义价格（解析顺序：显式配置 → 内置表 → 默认 3/15）
 - `proxy: direct` 强制直连（清系统代理 + 注入 NO_PROXY），`proxy: http://host:port` 为该模型单独走指定代理——解决"某些模型需代理、某些需直连"的混合场景
@@ -223,7 +257,7 @@ bash healthcheck.sh              # 健康检查（web/gateway/cron/cocoindex）�
 ```
 metano/
 ├── install.sh               # 一键安装脚本（环境检测 → venv 依赖 → 前端构建 → 生成配置 → DB 初始化 → 启动）
-├── gen_config.py            # 首次运行生成 gateway_config.yaml（随机 JWT secret + admin 密码 → initial_admin_password.txt）
+├── gen_config.py            # 生成 gateway_config.yaml（随机 JWT secret + admin 密码 → initial_admin_password.txt；--wizard 交互式配置全部核心功能）
 ├── .env.example             # 环境变量模板（METANO_HOME / LLM key / embedding 等）
 ├── requirements-embedding.txt # 可选依赖：本地向量嵌入（sentence-transformers + torch）
 ├── metano.sh                # 服务启动脚本（start/stop/status/restart/setup + 按服务）

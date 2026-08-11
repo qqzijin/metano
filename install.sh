@@ -8,7 +8,7 @@
 #   3. 前端构建 (web → npm install && npm run build → web/dist)
 #   4. 生成配置 (gen_config.py → gateway_config.yaml)
 #   5. 初始化数据库 (bridge.db / evo.db / memory.db)
-#   6. 检测 LLM key（缺则提示，不阻塞）
+#   6. 检测 LLM key（缺则提示，并可选运行配置向导 --wizard，不阻塞）
 #   7. 启动服务 (metano.sh start) + 健康检查 (healthcheck.sh)
 #   8. 完成输出（访问地址 / 初始 admin 密码 / 下一步）
 #
@@ -200,15 +200,51 @@ _is_placeholder() {
   esac
 }
 
-if _is_placeholder "${ANTHROPIC_API_KEY:-}"; then
+# 同时检查 gateway_config.yaml 中 models.default.api_key（gen_config.py --wizard 写入的位置）
+CFG_API_KEY=""
+if [ -f "$CONFIG_FILE" ]; then
+  CFG_API_KEY="$("$PYTHON_BIN" -c '
+import os
+try:
+    import yaml
+    from pathlib import Path
+    p = Path(os.environ.get("METANO_HOME", "")) / "gateway_config.yaml"
+    if p.exists():
+        c = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+        print((c.get("models") or {}).get("default", {}).get("api_key", "") or "")
+    else:
+        print("")
+except Exception:
+    print("")
+' 2>/dev/null || true)"
+fi
+
+if _is_placeholder "${ANTHROPIC_API_KEY:-}" && _is_placeholder "$CFG_API_KEY"; then
   warn "未检测到有效的 LLM key。系统仍可启动，但 AI 功能（对话/记忆/进化）需要 key 后才可用。"
-  warn "设置方式（写入 $METANO_HOME/.env 或 export 到 shell）:"
-  warn "  ANTHROPIC_BASE_URL=https://opencode.ai/zen/go    # 或你的 OpenAI 兼容网关"
-  warn "  ANTHROPIC_API_KEY=sk-...                         # 你的 key"
-  warn "  ANTHROPIC_MODEL=claude-sonnet-4-6                # 可选"
-  warn "  HONCHO_MODEL=claude-sonnet-4-6                   # 可选"
+  warn "配置方式："
+  warn "  ① 交互式向导（推荐）: python3 gen_config.py --wizard"
+  warn "  ② 写入 $METANO_HOME/.env 或 export 到 shell:"
+  warn "     ANTHROPIC_BASE_URL=https://opencode.ai/zen/go"
+  warn "     ANTHROPIC_API_KEY=sk-..."
+  warn "     ANTHROPIC_MODEL=claude-sonnet-4-6"
+  warn "     HONCHO_MODEL=claude-sonnet-4-6"
+  if [ -t 0 ]; then
+    echo ""
+    read -r -p "[metano] 是否立即运行配置向导 (gen_config.py --wizard)？[Y/n]: " run_wizard_now || run_wizard_now="Y"
+  else
+    run_wizard_now="n"   # 非交互终端（CI / 管道）不自动进入向导
+  fi
+  case "${run_wizard_now:-Y}" in
+    Y|y|是|1)
+      info "运行配置向导 (gen_config.py --wizard) ..."
+      ( cd "$SCRIPT_DIR" && "$PYTHON_BIN" "$GEN_CONFIG" --wizard ) || warn "配置向导未完成（可稍后重跑: python3 gen_config.py --wizard）"
+      ;;
+    *)
+      ok "跳过向导，之后可随时运行: python3 gen_config.py --wizard"
+      ;;
+  esac
 else
-  ok "已检测到 ANTHROPIC_API_KEY（长度 ${#ANTHROPIC_API_KEY}）"
+  ok "已检测到 LLM key（env 或 gateway_config.yaml）"
   [ -n "${ANTHROPIC_BASE_URL:-}" ] && ok "ANTHROPIC_BASE_URL: $ANTHROPIC_BASE_URL"
   if _is_placeholder "${TAVILY_API_KEY:-}"; then
     warn "提示: 未配置 TAVILY_API_KEY，搜索将使用 duckduckgo 引擎"
@@ -284,7 +320,7 @@ else
 fi
 echo ""
 echo "  下一步:"
-echo "    1. 配置 LLM key（未配置时见上方第 6 步提示，模板见 .env.example）"
+echo "    1. 配置 LLM key 与消息渠道（未配置时运行: python3 gen_config.py --wizard；或见上方第 6 步提示 / .env.example）"
 echo "    2. 浏览器打开 http://localhost:9120 并登录"
-echo "    3. 查看 README.md 了解 API / MCP / 功能"
+echo "    3. 查看 README.md 的「配置引导」节做自查清单"
 echo ""
