@@ -23,14 +23,18 @@ CREATE TABLE IF NOT EXISTS _harvest_state (
 );
 """
 
+# Strong correction signals only. Weak/noisy patterns (e.g. bare 不要/别/不行)
+# match ordinary negation in almost any sentence and flood the correction
+# store with false positives → every skill gets a bogus "补充经验" proposal.
 CORRECTION_PATTERNS = [
-    r"不对", r"错了", r"不是这样", r"不是那样", r"不行", r"不可以",
-    r"又重复", r"又来了", r"你又", r"还是不对", r"还是不行",
+    r"不对", r"错了", r"不是这样", r"不是那样", r"还是不对", r"还是不行",
+    r"这不行", r"那样不行", r"这样不行[！!。]?", r"做不行", r"怎么不行", r"就是不行",
+    r"为啥.{0,6}不行", r"为什么.{0,6}不行",
+    r"又重复", r"又来了", r"你又(来|错|说错|弄错|搞错)", r"为什么总是", r"为什么又",
     r"没有验证", r"没验证", r"真的做过验证",
-    r"wrong", r"not right", r"incorrect", r"wrong again",
-    r"again\?", r"repeat", r"didn't verify",
-    r"为什么不", r"为什么总是", r"为什么又",
-    r"不要", r"别", r"别再", r"不要再",
+    r"wrong again", r"not right", r"incorrect", r"didn't verify",
+    r"again\?", r"repeat",
+    r"不要(再|这样|那样|给我|这么|一直|告诉|总是|只)", r"别再", r"不要再",
     r"简陋", r"太简单", r"不够完善", r"不完善",
     r"又显示不出来", r"又不显示", r"数据显示不出来",
 ]
@@ -92,21 +96,35 @@ def _detect_corrections(user_msgs: list[dict], assistant_msgs: list[dict]) -> li
         content = msg["content"]
         if _is_system_generated(content):
             continue
-        if CORRECTION_RE.search(content):
-            # Find the most recent assistant message before this user message
-            prev_assistant = None
-            for m in all_msgs:
-                if m["role"] == "assistant" and m["timestamp"] < msg["timestamp"]:
-                    prev_assistant = m
+        if not CORRECTION_RE.search(content):
+            continue
+        # Correction must be a short, conversational user turn — not a pasted
+        # tool output, search result, diff, or code block (these contain 不要/别
+        # incidentally and were flooding the correction store).
+        stripped = content.strip()
+        if len(stripped) > 200:
+            continue
+        if "```" in stripped or "http://" in stripped or "https://" in stripped:
+            continue
+        # A question (ends with 吗/？/?) is asking, not correcting.
+        if re.search(r"[吗？?]$", stripped):
+            continue
+        # A real correction responds to something the assistant just said.
+        prev_assistant = None
+        for m in all_msgs:
+            if m["role"] == "assistant" and m["timestamp"] < msg["timestamp"]:
+                prev_assistant = m
+        if prev_assistant is None or not prev_assistant["content"].strip():
+            continue
 
-            correction_entry = {
-                "type": "correction",
-                "user_content": content[:200],
-                "prev_assistant_content": (prev_assistant["content"][:200] if prev_assistant else ""),
-                "timestamp": msg["timestamp"],
-                "strength": "strong" if any(kw in content for kw in ["又", "重复", "为什么总是", "真的做过"]) else "moderate",
-            }
-            corrections.append(correction_entry)
+        correction_entry = {
+            "type": "correction",
+            "user_content": stripped[:200],
+            "prev_assistant_content": (prev_assistant["content"][:200] if prev_assistant else ""),
+            "timestamp": msg["timestamp"],
+            "strength": "strong" if any(kw in stripped for kw in ["又", "重复", "为什么总是", "真的做过"]) else "moderate",
+        }
+        corrections.append(correction_entry)
 
     return corrections
 
