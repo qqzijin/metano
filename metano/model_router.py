@@ -174,9 +174,19 @@ class ModelRouter:
             env['ANTHROPIC_API_KEY'] = provider.api_key
         if provider.model:
             env['ANTHROPIC_MODEL'] = provider.model
-        if getattr(provider, 'proxy', ''):
-            env['HTTPS_PROXY'] = provider.proxy
-            env['HTTP_PROXY'] = provider.proxy
+        proxy = getattr(provider, 'proxy', '') or ''
+        if proxy.lower() in ('direct', 'none'):
+            # Explicit direct: strip any ambient system proxy so the call
+            # doesn't silently depend on a proxy being up (opencode.ai is
+            # reachable directly from this host).
+            env.pop('HTTPS_PROXY', None)
+            env.pop('HTTP_PROXY', None)
+            if provider.base_url:
+                _host = provider.base_url.split('://')[-1].split('/')[0]
+                env['NO_PROXY'] = f"{_host},{env.get('NO_PROXY', '')}".rstrip(',')
+        elif proxy:
+            env['HTTPS_PROXY'] = proxy
+            env['HTTP_PROXY'] = proxy
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
             response = result.stdout.strip()

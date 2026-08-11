@@ -647,9 +647,17 @@ class MessageRouter:
                 # Per-provider proxy: injected only for this call (not persisted
                 # in claude settings), so model routes needing an egress proxy
                 # can get one without fixing it into the remote environment.
-                if getattr(provider, 'proxy', ''):
-                    env['HTTPS_PROXY'] = provider.proxy
-                    env['HTTP_PROXY'] = provider.proxy
+                proxy = getattr(provider, 'proxy', '') or ''
+                if proxy.lower() in ('direct', 'none'):
+                    # Explicit direct: bypass ambient system proxy for this call.
+                    env.pop('HTTPS_PROXY', None)
+                    env.pop('HTTP_PROXY', None)
+                    if provider.base_url:
+                        _host = provider.base_url.split('://')[-1].split('/')[0]
+                        env['NO_PROXY'] = f"{_host},{env.get('NO_PROXY', '')}".rstrip(',')
+                elif proxy:
+                    env['HTTPS_PROXY'] = proxy
+                    env['HTTP_PROXY'] = proxy
         except Exception:
             logger.exception("router: provider env injection failed")
         try:
