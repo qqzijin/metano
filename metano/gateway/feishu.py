@@ -23,7 +23,7 @@ from lark_oapi.api.im.v1 import (
     GetFileRequest,
 )
 
-from ..paths import UPLOADS_DIR
+from ..paths import UPLOADS_DIR, HOME
 from .router import MessageRouter
 
 logger = logging.getLogger(__name__)
@@ -170,6 +170,14 @@ class FeishuBot:
             if not user_text:
                 return
 
+            # Mirror incoming user messages to the operator inbox so Claude Code
+            # can read them asynchronously (user replies via Feishu without
+            # returning to the terminal).
+            try:
+                self._mirror_to_inbox(sender_id, chat_id, chat_type, user_text, msg_id)
+            except Exception:
+                logger.exception('feishu: mirror to inbox failed')
+
             logger.info(f"Feishu message from {sender_id} in {chat_type}: {user_text[:80]}")
 
             # Check if this is an evolution proposal approval/rejection reply
@@ -201,6 +209,26 @@ class FeishuBot:
 
         except Exception as e:
             logger.error(f"Error handling Feishu message: {e}", exc_info=True)
+
+    def _mirror_to_inbox(self, sender_id, chat_id, chat_type, user_text, msg_id):
+        """Write the user's Feishu message to the operator inbox dir. Claude Code
+        monitors this directory and treats new files as async instructions, so
+        the user can reply to a report via Feishu without returning to the
+        terminal session."""
+        try:
+            inbox = HOME / 'feishu_inbox'
+            inbox.mkdir(parents=True, exist_ok=True)
+            fname = inbox / f"msg_{int(time.time() * 1000)}_{abs(hash(msg_id)) % 10000}.json"
+            fname.write_text(json.dumps({
+                'from': sender_id,
+                'chat_id': chat_id,
+                'chat_type': chat_type,
+                'text': user_text,
+                'time': time.time(),
+                'msg_id': msg_id,
+            }, ensure_ascii=False, indent=2))
+        except Exception:
+            logger.exception('feishu: write inbox failed')
 
     def _process_and_reply_sync(self, chat_id: str, msg_id: str, sender_id: str, chat_type: str, user_text: str):
         """Sync wrapper: runs async route_message in a new event loop within the thread pool."""
