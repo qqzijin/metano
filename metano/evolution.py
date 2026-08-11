@@ -489,34 +489,15 @@ def evolution_resume() -> dict:
 def track_rule_adherence(session_history: list[dict]) -> dict:
     """After a session exchange, update rule effectiveness based on corrections.
 
-    Simple heuristic: if user made corrections this session, mark all rules as
-    'failed'; otherwise mark them as 'succeeded'. This is a crude v1 — over
-    time, rules that correlate with correction-heavy sessions will show low
-    effectiveness.
+    NOTE (2026-08-11): the previous implementation added +1 to times_applied
+    for EVERY active rule on EVERY session — that is a session counter, not a
+    rule-application counter, and it polluted every rule's effectiveness
+    (CLAUDE.md showed "(applied: 123x)" where 123 was session count). A rule is
+    only "applied" when its content is actually exercised, which we cannot
+    observe reliably here. Until a real per-rule event tracker exists, do not
+    mutate the metrics on session end at all.
     """
-    from .evo_models import get_rules as get_agent_rules, update_rule_effectiveness
-    from .harvester import CORRECTION_RE
-
-    rules = get_agent_rules(kind='behavior', active_only=True)
-    if not rules:
-        return {'updated': 0}
-
-    user_msgs = [m['content'] for m in session_history if m.get('role') == 'user' and isinstance(m.get('content'), str)]
-    has_correction = any(CORRECTION_RE.search(msg) for msg in user_msgs)
-
-    updated = 0
-    for r in rules:
-        applied = r.get('times_applied', 0) + 1
-        succeeded = r.get('times_succeeded', 0) + (0 if has_correction else 1)
-        failed = r.get('times_failed', 0) + (1 if has_correction else 0)
-        eff = (succeeded + 1) / (applied + 2)
-        update_rule_effectiveness(r['id'], effectiveness=round(eff, 4),
-                                  times_applied=applied,
-                                  times_succeeded=succeeded,
-                                  times_failed=failed)
-        updated += 1
-
-    return {'updated': updated, 'has_correction': has_correction}
+    return {'updated': 0, 'note': 'disabled: session-count-based rule tracking polluted metrics'}
 
 
 def session_end(session_id: str='') -> dict:
@@ -559,7 +540,18 @@ def session_end(session_id: str='') -> dict:
 
     try:
         conn = init_db()
-        correction_count = conn.execute("SELECT COUNT(*) as c FROM messages WHERE session_id = ? AND role = 'user' AND (content LIKE '%不对%' OR content LIKE '%错了%' OR content LIKE '%重复%' OR content LIKE '%又来%' OR content LIKE '%不行%' OR content LIKE '%没有验证%' OR content LIKE '%不是这样%' OR content LIKE '%wrong%' OR content LIKE '%incorrect%' OR content LIKE '%为什么又%' OR content LIKE '%为什么总是%')", (session_id,)).fetchone()['c']
+        # Reuse the strict correction detector from harvester (tightened regex +
+        # conversational filters) instead of a wide SQL LIKE that matched
+        # ordinary negations (不对/不行/重复 …) and over-triggered the whole
+        # immediate-learn pipeline on every session.
+        rows = conn.execute(
+            "SELECT role, content, timestamp FROM messages WHERE session_id = ? ORDER BY timestamp ASC",
+            (session_id,),
+        ).fetchall()
+        user_msgs = [{'content': r['content'], 'timestamp': r['timestamp']} for r in rows if r['role'] == 'user' and r['content']]
+        assistant_msgs = [{'content': r['content'], 'timestamp': r['timestamp']} for r in rows if r['role'] == 'assistant' and r['content']]
+        from .harvester import _detect_corrections
+        correction_count = len(_detect_corrections(user_msgs, assistant_msgs))
         result = {'session_id': session_id, 'corrections_detected': correction_count}
         if correction_count > 0:
             try:

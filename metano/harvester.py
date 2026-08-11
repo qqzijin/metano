@@ -70,6 +70,9 @@ SYSTEM_TEXT_PREFIXES = [
     "系统设定", "系统提示", "以下是你",
     "profile", "你这个agent", "你的配置",
     "# 系统", "# 设定", "# 配置",
+    "## user profile", "## 用户画像", "[memory]", "[evolution]",
+    "=== 画像类", "=== approved", "=== 用户", "===",
+
 ]
 
 def _is_system_generated(content: str) -> bool:
@@ -108,6 +111,10 @@ def _detect_corrections(user_msgs: list[dict], assistant_msgs: list[dict]) -> li
             continue
         # A question (ends with 吗/？/?) is asking, not correcting.
         if re.search(r"[吗？?]$", stripped):
+            continue
+        # ABAB rhetorical questions (对不对/是不是/行不行/好不好/要不要)
+        # contain 不对/不行 but are asking, not correcting.
+        if re.search(r"[对是不好不好要]不(对|是|好|行|要)", stripped):
             continue
         # A real correction responds to something the assistant just said.
         prev_assistant = None

@@ -158,8 +158,12 @@ def apply_skill_improvement(content: str, detail: str) -> dict:
     rec = manager.loader.find_by_name(skill_name)
     if not rec:
         return {'status': 'skipped', 'reason': f"skill '{skill_name}' not found"}
-    if manager.is_pinned(skill_name):
-        return {'status': 'skipped', 'reason': f"skill '{skill_name}' is pinned"}
+    # Protected (bundled/pinned) skills must not be mutated by the autonomous
+    # evolution system. is_pinned alone missed bundled skills (0 pinned), so an
+    # approved proposal could write references/ + SKILL.md pointers into the
+    # git-tracked source tree — use is_protected instead.
+    if manager.is_protected(skill_name):
+        return {'status': 'skipped', 'reason': f"skill '{skill_name}' is protected"}
 
     skill_dir = rec.path.parent
     refs_dir = skill_dir / 'references'
@@ -175,14 +179,15 @@ def apply_skill_improvement(content: str, detail: str) -> dict:
     )
 
     # Add a one-line pointer in SKILL.md body (idempotent per file).
-    # force=True: this runs only after the user approved the proposal.
+    # force=False: protected skills were already rejected above; a non-protected
+    # skill still needs the normal protection check honoured.
     body = rec.body
     if f"references/{fname}" not in body:
         pointer = f"- 经验补充: `references/{fname}`（自动学习）"
         anchor = '## Pitfalls'
         if anchor in body:
-            manager.patch(skill_name, anchor, f'{anchor}\n{pointer}', force=True)
+            manager.patch(skill_name, anchor, f'{anchor}\n{pointer}')
         else:
-            manager.edit(skill_name, body.rstrip() + f'\n\n{pointer}\n', force=True)
+            manager.edit(skill_name, body.rstrip() + f'\n\n{pointer}\n')
 
     return {'status': 'applied', 'skill': skill_name, 'references_file': str(ref_path)}

@@ -22,8 +22,14 @@ def _call_llm(system_prompt: str, user_prompt: str) -> str:
     return text
 
 def _rule_based_reasoning(system_prompt: str, user_prompt: str) -> str:
-    """Simple rule-based fallback when no API key is available."""
-    return json.dumps({'action': 'add', 'category': 'general', 'content': 'User observation recorded', 'confidence': 0.5, 'reasoning': 'Rule-based: no LLM available, storing observation as-is'})
+    """Rule-based fallback when no API key is available (or LLM returned empty).
+
+    A missing/no-op LLM response means "nothing meaningful to extract" — the
+    correct action is IGNORE, never a fabricated belief. Previously this
+    returned {'action':'add', 'content':'User observation recorded'} which
+    planted garbage beliefs into the store on every empty LLM reply.
+    """
+    return json.dumps({'action': 'ignore', 'reasoning': 'No LLM signal; nothing meaningful to store'})
 
 def extract_observations(user_id: str, conversation_text: str) -> list[dict]:
     """Extract user observations from a conversation snippet."""

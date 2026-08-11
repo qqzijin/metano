@@ -61,6 +61,11 @@ class SkillLoader:
             return None
         fm, warnings = validate_frontmatter(raw)
         if fm is None:
+            # Log instead of silently dropping the skill — a broken SKILL.md used
+            # to disappear with no trace (e.g. research-paper-writing exceeded
+            # the size limit and vanished from skills_list).
+            from metano.log import logger as _lg
+            _lg.warning('[skills] 技能加载失败(跳过): %s — %s', path, warnings or 'frontmatter 无效')
             return None
         body = self._extract_body(raw)
         rel = path.relative_to(path.parent.parent.parent)

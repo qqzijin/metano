@@ -24,7 +24,10 @@ def _cluster_corrections(corrections: list[dict]) -> dict[str, list[dict]]:
     for c in corrections:
         content = c.get('content', '').lower()
         assigned = False
-        keywords_map = {'field_mismatch': ['字段', 'field', '不匹配', '不对', '不显示', '显示不出来', 'id', 'doc_id', 'chunk'], 'no_verification': ['验证', 'verify', 'curl', '真的做过验证', '没有验证', '没验证'], 'repeat_mistake': ['重复', '又来', '又重复', 'again', 'repeat', '为什么又', '为什么总是'], 'reinvent_wheel': ['造轮子', '重新写', '重写', '已有', '复用', '已有的组件'], 'ui_quality': ['简陋', '太简单', '不够完善', '不完善', '功能缺失']}
+        # NOTE: bare 'id' was removed from field_mismatch — it matches any
+        # string containing "id" (kid/did/modified-id) and misclassified
+        # unrelated corrections. Only explicit field terms remain.
+        keywords_map = {'field_mismatch': ['字段', 'field', '不匹配', '不显示', '显示不出来', 'doc_id', 'chunk'], 'no_verification': ['验证', 'verify', 'curl', '真的做过验证', '没有验证', '没验证'], 'repeat_mistake': ['重复', '又来', '又重复', 'again', 'repeat', '为什么又', '为什么总是'], 'reinvent_wheel': ['造轮子', '重新写', '重写', '已有', '复用', '已有的组件'], 'ui_quality': ['简陋', '太简单', '不够完善', '不完善', '功能缺失']}
         for cluster_name, keywords in keywords_map.items():
             if any((kw in content for kw in keywords)):
                 clusters.setdefault(cluster_name, []).append(c)
