@@ -55,7 +55,7 @@ def _estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
         from .model_router import model_router
         return model_router.estimate_cost(model, input_tokens, output_tokens)
     except Exception:
-        pass
+        logger.exception('llm_call.py:57 exception')
     input_price, output_price = _COST_PER_MILLION.get(model, _DEFAULT_COST)
     return (input_tokens * input_price + output_tokens * output_price) / 1_000_000
 
