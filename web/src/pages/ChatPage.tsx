@@ -60,6 +60,10 @@ export default function ChatPage() {
   const [dirty, setDirty] = useState<boolean>(loadDirty);
   const failedSendRef = useRef(false);
   const clearedRef = useRef(false);
+  // True after 新对话/清空/断开: the next message must open a brand-new DB
+  // session (reset:true) instead of continuing whatever session the backend
+  // still has pinned.
+  const freshRef = useRef(false);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -111,6 +115,7 @@ export default function ChatPage() {
     setConnectedSession(sessionId);
     clearedRef.current = false;
     failedSendRef.current = false;
+    freshRef.current = false; // explicitly resumed a past session, not a fresh one
     setDirty(false); // replacing local state with persisted DB messages
     // When messages data arrives, merge them into chat
   };
@@ -134,6 +139,7 @@ export default function ChatPage() {
     if (dirty && !window.confirm("当前有未成功保存到历史的消息，断开后将丢失这些消息。仍要断开吗？")) return;
     clearedRef.current = true;
     failedSendRef.current = false;
+    freshRef.current = true;
     setDirty(false);
     setConnectedSession(null);
     setMessages([]);
@@ -174,6 +180,7 @@ export default function ChatPage() {
           message: text,
           user_id: "web_user",
           session_id: connectedSession || undefined,
+          reset: !connectedSession && freshRef.current ? true : undefined,
           context: messages.slice(-10).map((m) => ({ role: m.role, content: m.content })),
         }),
       });
@@ -218,6 +225,7 @@ export default function ChatPage() {
             });
           } else if (ev.type === "done") {
             setConnectedSession(ev.session_id || null);
+            freshRef.current = false;
             setDirty(failedSendRef.current);
           }
         }
@@ -235,6 +243,7 @@ export default function ChatPage() {
     if (dirty && !window.confirm("当前有未成功保存到历史的消息，清空后将丢失这些消息。仍要清空吗？")) return;
     clearedRef.current = true;
     failedSendRef.current = false;
+    freshRef.current = true;
     setDirty(false);
     setMessages([]);
     setConnectedSession(null);
@@ -244,6 +253,7 @@ export default function ChatPage() {
   const handleNewChat = () => {
     clearedRef.current = true;
     failedSendRef.current = false;
+    freshRef.current = true;
     loadedSessionRef.current = null;
     setShowSessionPicker(false);
     setDirty(false);
@@ -355,7 +365,7 @@ export default function ChatPage() {
         <div
           ref={messagesContainerRef}
           onScroll={handleMessagesScroll}
-          className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4 space-y-4"
+          className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain p-4 space-y-4"
         >
           {messages.length === 0 && !msgLoading && (
             <div className="flex flex-col items-center justify-center h-full gap-3">
@@ -387,8 +397,13 @@ export default function ChatPage() {
               >
                 {m.role === "assistant" && m.thinking ? (
                   <details className="mb-1.5 text-xs text-muted-foreground">
-                    <summary className="cursor-pointer select-none">💭 思考过程</summary>
-                    <div className="mt-1 whitespace-pre-wrap border-t border-border/50 pt-1">{m.thinking}</div>
+                    <summary
+                      className="cursor-pointer select-none"
+                      onClick={() => { autoScrollRef.current = false; }}
+                    >
+                      💭 思考过程
+                    </summary>
+                    <div className="mt-1 whitespace-pre-wrap break-all border-t border-border/50 pt-1">{m.thinking}</div>
                   </details>
                 ) : null}
                 {m.role === "assistant" && m.tool_calls && m.tool_calls.length > 0 ? (
@@ -432,7 +447,7 @@ export default function ChatPage() {
                     <span className="text-muted-foreground">思考中…</span>
                   )
                 ) : (
-                  <span className="whitespace-pre-wrap">{m.content}</span>
+                  <span className="whitespace-pre-wrap break-words">{m.content}</span>
                 )}
               </div>
               {m.role === "user" && (

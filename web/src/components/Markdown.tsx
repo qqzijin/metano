@@ -52,7 +52,7 @@ function CodeBlock({ code, lang, children }: { code: string; lang: string; child
  *  highlight palette stays stable across light/dark themes. */
 export function Markdown({ children }: { children: string }) {
   return (
-    <div className="metano-md text-sm leading-relaxed">
+    <div className="metano-md break-words text-sm leading-relaxed">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[rehypeHighlight]}
