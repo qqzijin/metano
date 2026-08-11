@@ -120,6 +120,23 @@ def propose_skill_improvements(corrections: list[dict], source: str = 'immediate
         if not content:
             continue
         matches = find_relevant_skills(content)
+        if not matches:
+            # Root-cause gap: a correction in a domain with NO matching skill
+            # used to be silently dropped — the system could never grow a new
+            # skill. Surface it as a "new skill" suggestion so the loop closes:
+            # discover missing capability → propose → approve → manager.create.
+            ptype = 'new_skill_suggestion'
+            pcontent = f"建议新建技能: {content[:60]}"
+            if (ptype, pcontent) in existing_keys:
+                continue
+            detail = json.dumps({
+                'correction': content[:300],
+                'reason': 'no existing skill matches this correction',
+            }, ensure_ascii=False)
+            add_proposal(ptype, pcontent, detail, source=source)
+            existing_keys.add((ptype, pcontent))
+            created.append({'skill': '(new)', 'proposal': pcontent})
+            continue
         for rec in matches:
             ptype = 'skill_improvement'
             pcontent = f"为技能 '{rec.name}' 补充经验: {content[:60]}"

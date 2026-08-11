@@ -70,10 +70,13 @@ export default function ModelsPage() {
 
   // Presets are display-only; "启用" must register the provider first, then set default.
   const handleEnablePreset = async (p: any) => {
-    const payload: { name: string; base_url: string; model: string; api_key?: string } = {
+    const payload: { name: string; base_url: string; model: string; api_key?: string; protocol?: string } = {
       name: p.name,
       base_url: p.base_url,
       model: p.model,
+      // OpenAI-compatible presets must be marked openai, else the router would
+      // send them to the claude CLI (Anthropic protocol) and fail.
+      protocol: p.protocol || "openai",
     };
     // 若预设自带 api_key 则直接使用
     if (p.api_key) payload.api_key = p.api_key;
@@ -246,8 +249,9 @@ export default function ModelsPage() {
                         <span className="font-medium text-sm truncate min-w-0">{p.name}</span>
                       </div>
                       <div className="text-xs text-muted-foreground space-y-0.5">
-                        {p.base_url && <div className="truncate">URL: {p.base_url}</div>}
+                        {p.base_url && <div className="truncate">接口: {p.base_url}/chat/completions</div>}
                         {p.model && <div>默认模型: {p.model}</div>}
+                        <div>协议: <code className="font-mono">{p.protocol || "openai"}</code></div>
                         {p.note && <div className="break-words">{p.note}</div>}
                       </div>
                       <Button

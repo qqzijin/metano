@@ -17,33 +17,19 @@ import {
   useGraphStats, useGraphQuery, useGraphExtract,
 } from "@/api/hooks";
 import type { GraphEntity, GraphRelationship } from "@/api/client";
+import { ForceGraph, ENTITY_TYPE_LABELS, REL_TYPE_LABELS } from "@/components/ForceGraph";
 import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "sonner";
 
 const ENTITY_TYPES = ["technology", "concept", "module", "file"];
 
-const ENTITY_TYPE_LABELS: Record<string, string> = {
-  technology: "技术",
-  concept: "概念",
-  module: "模块",
-  file: "文件",
-};
-
-// Theme-aware tinted chips — resolve against chart/indigo tokens so they
-// follow the active light/dark theme automatically.
+// Theme-aware tinted chips — resolve against chart tokens so they follow the
+// active light/dark theme automatically.
 const ENTITY_TYPE_COLORS: Record<string, string> = {
   technology: "bg-chart-1/15 text-chart-1",
   concept: "bg-chart-2/15 text-chart-2",
   module: "bg-chart-4/15 text-chart-4",
   file: "bg-chart-3/15 text-chart-3",
-};
-
-const REL_TYPE_LABELS: Record<string, string> = {
-  related_to: "相关",
-  imports: "导入",
-  implements: "实现",
-  implemented_by: "被实现",
-  co_occurs_with: "共现",
 };
 
 function entityBadgeClass(type: string): string {
@@ -63,13 +49,27 @@ export default function KnowledgeGraphPage() {
   const { data, isLoading, isError, refetch } = useGraphQuery(search, entityType, 100);
   const extractMut = useGraphExtract();
 
-  const entities = data?.entities ?? [];
-  const relationships = data?.relationships ?? [];
+  const entities = useMemo(() => data?.entities ?? [], [data]);
+  const relationships = useMemo(() => data?.relationships ?? [], [data]);
+
+  // Relationships whose both endpoints are present in the rendered node set.
+  const entityIds = useMemo(() => new Set(entities.map((e) => e.entity_id)), [entities]);
+  const visibleRels = useMemo(
+    () => relationships.filter((r) => entityIds.has(r.source_id) && entityIds.has(r.target_id)),
+    [relationships, entityIds]
+  );
 
   const handleSelect = (e: GraphEntity) => {
     setSelectedId(e.entity_id);
     setSelectedName(e.name);
     setSearch(e.name);
+  };
+
+  // Graph node click: only select for the detail panel — keep the graph view
+  // stable (do not narrow the query).
+  const handleGraphSelect = (e: GraphEntity) => {
+    setSelectedId(e.entity_id);
+    setSelectedName(e.name);
   };
 
   const handleClearSelected = () => {
@@ -226,6 +226,42 @@ export default function KnowledgeGraphPage() {
         </div>
       )}
 
+      {/* ── Force-directed graph visualization ── */}
+      <Card className="mb-4 min-w-0">
+        <CardHeader>
+          <CardTitle className="text-sm flex items-center gap-2">
+            <Network className="size-4" /> 图谱可视化
+            <span className="text-muted-foreground font-normal">
+              {entities.length} 节点 · {visibleRels.length} 边
+            </span>
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {isError ? (
+            <div className="text-sm text-destructive">加载失败，请检查服务或刷新重试</div>
+          ) : isLoading ? (
+            <Skeleton className="h-[520px] rounded-lg" />
+          ) : entities.length === 0 ? (
+            <EmptyState
+              title={search ? "未找到匹配实体" : "暂无实体"}
+              description={
+                search
+                  ? "换个关键词试试，或点击右上角重建图谱"
+                  : "导入文档后访问本页会自动构建图谱"
+              }
+              icon={<Network className="size-10" />}
+            />
+          ) : (
+            <ForceGraph
+              entities={entities}
+              relationships={relationships}
+              selectedId={selectedId}
+              onSelect={handleGraphSelect}
+            />
+          )}
+        </CardContent>
+      </Card>
+
       <div className="grid grid-cols-1 md:grid-cols-[minmax(0,2fr)_minmax(0,3fr)] gap-4">
         {/* Entity list */}
         <Card className="min-w-0">
@@ -298,7 +334,7 @@ export default function KnowledgeGraphPage() {
             {!selectedId ? (
               <EmptyState
                 title="选择一个实体查看关系"
-                description="点击左侧列表中的实体，显示它的出入关系"
+                description="点击左侧列表或图谱中的节点，显示它的出入关系"
                 icon={<Share2 className="size-10" />}
               />
             ) : selectedRels.length === 0 ? (

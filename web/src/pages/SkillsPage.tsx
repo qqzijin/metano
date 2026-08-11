@@ -7,20 +7,53 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useSkills, useSkill } from "@/api/hooks";
+import { useSkills, useSkill, useSkillUsage } from "@/api/hooks";
+import { Flame, Snowflake } from "lucide-react";
 
 export default function SkillsPage() {
   const [category, setCategory] = useState("");
   const [detailName, setDetailName] = useState<string | null>(null);
   const { data, isLoading, isError } = useSkills();
   const { data: detail } = useSkill(detailName ?? "");
+  const { data: usage } = useSkillUsage(30);
 
   const skills = data?.skills ?? [];
   const categories = [...new Set(skills.map((s) => s.category).filter(Boolean))];
 
+  // usage map: skill_name -> uses (last 30 days) for badges
+  const usageMap = new Map<string, number>();
+  for (const u of usage?.recent ?? []) usageMap.set(u.skill_name, u.uses);
+  // Skills with zero recorded usage in the window.
+  const usedSkills = new Set(usageMap.keys());
+  const neverUsed = skills.filter((s) => !usedSkills.has(s.name));
+  const hotSkills = (usage?.recent ?? []).slice(0, 5);
+
   return (
     <>
       <PageHeader title="技能" description={`已注册 ${skills.length} 项`} />
+
+      {hotSkills.length > 0 && (
+        <Card className="mb-4">
+          <CardContent className="p-3">
+            <div className="text-xs font-medium text-muted-foreground flex items-center gap-1.5 mb-2">
+              <Flame className="size-3.5 text-orange-500" /> 近30天热门技能
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {hotSkills.map((u) => (
+                <Badge key={u.skill_name} variant="secondary" className="text-[10px]">
+                  {u.skill_name} × {u.uses}
+                </Badge>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+      {neverUsed.length > 0 && (
+        <div className="flex items-center gap-2 mb-4 text-xs text-muted-foreground">
+          <Snowflake className="size-3.5" />
+          <span>{neverUsed.length} 项技能近30天未使用</span>
+        </div>
+      )}
 
       <div className="flex gap-2 mb-4 flex-wrap">
         <Button variant={category === "" ? "default" : "outline"} size="sm" onClick={() => setCategory("")}>全部</Button>
@@ -49,6 +82,13 @@ export default function SkillsPage() {
                 <div className="flex gap-2 mt-2 flex-wrap">
                   <Badge variant="secondary" className="text-[10px]">{s.trigger}</Badge>
                   <Badge variant="outline" className="text-[10px]">{s.category}</Badge>
+                  <Badge
+                    variant={usageMap.get(s.name) ? "default" : "outline"}
+                    className={`text-[10px] ${usageMap.get(s.name) ? "" : "text-muted-foreground"}`}
+                    title="近30天使用次数"
+                  >
+                    {usageMap.get(s.name) ? `${usageMap.get(s.name)}次` : "未使用"}
+                  </Badge>
                   {s.source && <Badge variant="outline" className="text-[10px]">{s.source}</Badge>}
                 </div>
               </CardContent>

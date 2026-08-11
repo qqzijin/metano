@@ -19,6 +19,7 @@ import {
 import type { AgentRule, KnowledgeGap, ActionLogEntry, Proposal } from '../api/client';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { RoleGuard } from '@/components/auth/RoleGuard';
+import { SelfModifyPanel } from '@/components/SelfModifyPanel';
 import { StatCard } from '@/components/shared/StatCard';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -30,7 +31,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 
-type TabKey = 'overview' | 'proposals' | 'rules' | 'strategy' | 'knowledge' | 'architecture' | 'actions';
+type TabKey = 'overview' | 'proposals' | 'rules' | 'strategy' | 'knowledge' | 'architecture' | 'actions' | 'self-modify';
 
 const tabs: { key: TabKey; label: string }[] = [
   { key: 'overview', label: '概览' },
@@ -40,6 +41,7 @@ const tabs: { key: TabKey; label: string }[] = [
   { key: 'knowledge', label: '知识探索' },
   { key: 'architecture', label: '架构感知' },
   { key: 'actions', label: '操作日志' },
+  { key: 'self-modify', label: '自我修改' },
 ];
 
 function fmtTime(ts: number) {
@@ -677,7 +679,7 @@ export default function EvolutionPage() {
 
   return (
     <RoleGuard role="admin">
-      <PageHeader title="进化系统" description="自我进化、规则与策略管理" />
+      <PageHeader title="进化系统" description="自我进化（含自我修改）、规则与策略管理" />
       <div className="flex gap-1 mb-6 border-b border-border overflow-x-auto">
         {tabs.map(tab => (
           <button key={tab.key} onClick={() => setActiveTab(tab.key)}
@@ -696,6 +698,7 @@ export default function EvolutionPage() {
       {activeTab === 'knowledge' && <KnowledgeTab />}
       {activeTab === 'architecture' && <ArchitectureTab />}
       {activeTab === 'actions' && <ActionsTab />}
+      {activeTab === 'self-modify' && <SelfModifyPanel />}
     </RoleGuard>
   );
 }

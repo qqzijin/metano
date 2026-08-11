@@ -476,6 +476,19 @@ async def api_skills(category: str=''):
         skills = [s for s in skills if s.category == category]
     return {'items': [{'name': s.name, 'description': s.description, 'trigger': s.trigger, 'category': s.category, 'source': s.source} for s in skills]}
 
+@app.get('/api/skills/usage')
+async def api_skill_usage(days: int = 30):
+    """Skill usage frequency (how often each skill was activated) — lets the
+    operator see which skills are hot and which are dead."""
+    try:
+        from .evo_models import get_skill_usage, get_skill_usage_all_time
+        recent = get_skill_usage(days=days)
+        all_time = get_skill_usage_all_time()
+        return {'days': days, 'recent': recent, 'all_time': all_time}
+    except Exception:
+        logger.exception()
+        return _error_response('Internal error', extra={'recent': [], 'all_time': []})
+
 @app.get('/api/skills/{name}')
 async def api_skill_detail(name: str):
     from .skills.loader import SkillLoader
@@ -1299,7 +1312,7 @@ async def api_proxy_add(body: dict, _admin=Depends(require_role("admin"))):
             with open(CONFIG_PATH) as f:
                 existing = yaml.safe_load(f) or {}
         models = existing.get('models', {})
-        models[name] = {'base_url': body.get('base_url', ''), 'api_key': body.get('api_key', ''), 'model': body.get('model', ''), 'max_tokens': body.get('max_tokens', 4096), 'supports_vision': body.get('supports_vision', False), 'supports_tools': body.get('supports_tools', True), 'enabled': True}
+        models[name] = {'base_url': body.get('base_url', ''), 'api_key': body.get('api_key', ''), 'model': body.get('model', ''), 'max_tokens': body.get('max_tokens', 4096), 'supports_vision': body.get('supports_vision', False), 'supports_tools': body.get('supports_tools', True), 'protocol': body.get('protocol', 'anthropic'), 'enabled': True}
         price = body.get('price')
         if isinstance(price, dict):
             models[name]['price'] = {k: price[k] for k in ('input', 'output', 'cache_read') if k in price}
@@ -1338,7 +1351,7 @@ async def api_proxy_update(name: str, body: dict, _admin=Depends(require_role("a
             models[name] = m
         else:
             m = models[name]
-        for field in ('base_url', 'api_key', 'model', 'max_tokens', 'supports_vision', 'supports_tools', 'enabled'):
+        for field in ('base_url', 'api_key', 'model', 'max_tokens', 'supports_vision', 'supports_tools', 'enabled', 'protocol'):
             if field in body:
                 m[field] = body[field]
         if 'default' in body:

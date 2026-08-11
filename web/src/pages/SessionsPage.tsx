@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useSearchParams, useNavigate } from "react-router-dom";
 import { ArrowLeft, MessageSquare, Cpu, Coins, Clock } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { SearchInput } from "@/components/shared/SearchInput";
@@ -13,6 +13,7 @@ import { fmtTokens, fmtCost, fmtTime } from "@/api/client";
 
 export default function SessionsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<string | null>(searchParams.get("session"));
   const { data, isLoading, isError } = useSessions(search);
@@ -45,6 +46,10 @@ export default function SessionsPage() {
               {(session?.estimated_cost_usd ?? 0) > 0 && <span className="flex items-center gap-1"><Coins className="size-3" />{fmtCost(session?.estimated_cost_usd ?? 0)}</span>}
             </div>
           </div>
+          <Button size="sm" className="shrink-0 mt-0.5" onClick={() => navigate(`/chat?session=${selected}`)}>
+            <MessageSquare className="size-3.5" />
+            继续对话
+          </Button>
         </div>
 
         <div className="space-y-3">

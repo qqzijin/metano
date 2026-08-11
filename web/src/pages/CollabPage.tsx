@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { refreshAuthSession } from "@/api/client";
 import { ClipboardList, Eye, FileText, Play, Plus, RefreshCw } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { EmptyState } from "@/components/shared/EmptyState";
@@ -73,10 +74,22 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
     "Content-Type": "application/json",
     ...(init?.headers as Record<string, string> | undefined),
   };
-  const res = await fetch(`/api${path}`, { ...init, credentials: "include", headers });
+  const doFetch = () => fetch(`/api${path}`, { ...init, credentials: "include", headers });
+  let res = await doFetch();
   if (res.status === 401) {
-    window.dispatchEvent(new Event("auth:unauthorized"));
-    throw new Error("未登录");
+    // Access token may have expired (15 min) while the refresh token is still
+    // valid — try a silent refresh and retry once before logging out.
+    const refreshed = await refreshAuthSession();
+    if (refreshed) {
+      res = await doFetch();
+      if (res.status === 401) {
+        window.dispatchEvent(new Event("auth:unauthorized"));
+        throw new Error("未登录");
+      }
+    } else {
+      window.dispatchEvent(new Event("auth:unauthorized"));
+      throw new Error("未登录");
+    }
   }
   if (!res.ok) {
     let detail = "";

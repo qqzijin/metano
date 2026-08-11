@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import { useSearchParams } from "react-router-dom";
 import { Send, Bot, User, Trash2, History, X, Plus, Paperclip } from "lucide-react";
 import { toast } from "sonner";
 import { Card } from "@/components/ui/card";
@@ -50,6 +51,7 @@ function saveHistory(msgs: ChatMsg[]) {
 }
 
 export default function ChatPage() {
+  const [searchParams] = useSearchParams();
   const [messages, setMessages] = useState<ChatMsg[]>(loadHistory);
   const [input, setInput] = useState("");
   const [showSessionPicker, setShowSessionPicker] = useState(false);
@@ -142,6 +144,18 @@ export default function ChatPage() {
     setDirty(false); // replacing local state with persisted DB messages
     // When messages data arrives, merge them into chat
   };
+
+  // Auto-connect to a session passed via ?session=<id> (e.g. "继续对话" from the
+  // sessions history page). Runs once per distinct session id in the URL.
+  const autoConnectSessionRef = useRef<string | null>(null);
+  const sessionParam = searchParams.get("session");
+  useEffect(() => {
+    if (sessionParam && autoConnectSessionRef.current !== sessionParam) {
+      autoConnectSessionRef.current = sessionParam;
+      handleConnectSession(sessionParam);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionParam]);
 
   // Only load session messages once per connected session, so later refetches
   // (e.g. refetchOnWindowFocus) don't overwrite messages sent locally this turn.

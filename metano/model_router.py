@@ -33,6 +33,7 @@ class ModelProvider:
     price_output: float = 15.0
     price_cache_read: float = 0.3
     proxy: str = ''  # optional HTTP(S) proxy, injected as env only when calling this provider
+    protocol: str = 'anthropic'  # 'anthropic' (claude CLI /v1/messages) or 'openai' (HTTP /v1/chat/completions)
 
 class ModelRouter:
 
@@ -68,7 +69,7 @@ class ModelRouter:
                                 out_p = builtin[1]
                             if cache_p is None:
                                 cache_p = builtin[2]
-                        self._providers[name] = ModelProvider(name=name, base_url=cfg.get('base_url', ''), api_key=cfg.get('api_key', ''), model=cfg.get('model', ''), max_tokens=cfg.get('max_tokens', 4096), supports_vision=cfg.get('supports_vision', False), supports_tools=cfg.get('supports_tools', True), price_input=in_p, price_output=out_p, price_cache_read=cache_p, proxy=cfg.get('proxy', ''))
+                        self._providers[name] = ModelProvider(name=name, base_url=cfg.get('base_url', ''), api_key=cfg.get('api_key', ''), model=cfg.get('model', ''), max_tokens=cfg.get('max_tokens', 4096), supports_vision=cfg.get('supports_vision', False), supports_tools=cfg.get('supports_tools', True), price_input=in_p, price_output=out_p, price_cache_read=cache_p, proxy=cfg.get('proxy', ''), protocol=cfg.get('protocol', 'anthropic'))
                         if cfg.get('default', False):
                             self._default = name
         except Exception:
@@ -157,13 +158,37 @@ class ModelRouter:
 
     @staticmethod
     def free_provider_presets() -> list[dict]:
-        """Return preset configurations for free/low-cost LLM backends."""
-        return [{'name': 'ollama-local', 'base_url': 'http://localhost:11434/v1', 'model': 'llama3', 'max_tokens': 4096, 'supports_vision': False, 'note': 'Ollama local, free'}, {'name': 'nvidia-nim', 'base_url': 'https://integrate.api.nvidia.com/v1', 'model': 'meta/llama3-70b-instruct', 'max_tokens': 4096, 'supports_vision': False, 'note': 'NVIDIA NIM free tier'}, {'name': 'deepseek', 'base_url': 'https://api.deepseek.com/v1', 'model': 'deepseek-chat', 'max_tokens': 4096, 'supports_vision': False, 'note': 'DeepSeek V3, low cost'}, {'name': 'kimi', 'base_url': 'https://api.moonshot.cn/v1', 'model': 'moonshot-v1-8k', 'max_tokens': 4096, 'supports_vision': False, 'note': 'Moonshot Kimi'}, {'name': 'openrouter', 'base_url': 'https://openrouter.ai/api/v1', 'model': 'meta-llama/llama-3-8b-instruct:free', 'max_tokens': 4096, 'supports_vision': False, 'note': 'OpenRouter free models'}, {'name': 'siliconflow', 'base_url': 'https://api.siliconflow.cn/v1', 'model': 'Qwen/Qwen2.5-7B-Instruct', 'max_tokens': 4096, 'supports_vision': False, 'note': 'SiliconFlow free tier'}]
+        """Return preset configurations for free/low-cost LLM backends.
+
+        These presets are OpenAI-compatible endpoints (base_url + /v1/chat/completions),
+        so ``protocol`` is set to ``openai`` — the router will call them via HTTP
+        instead of the claude CLI (which speaks Anthropic /v1/messages).
+        """
+        presets = [
+            {'name': 'ollama-local', 'base_url': 'http://localhost:11434/v1', 'model': 'llama3', 'protocol': 'openai', 'note': 'Ollama local, free'},
+            {'name': 'nvidia-nim', 'base_url': 'https://integrate.api.nvidia.com/v1', 'model': 'meta/llama3-70b-instruct', 'protocol': 'openai', 'note': 'NVIDIA NIM free tier'},
+            {'name': 'deepseek', 'base_url': 'https://api.deepseek.com/v1', 'model': 'deepseek-chat', 'protocol': 'openai', 'note': 'DeepSeek V3, low cost'},
+            {'name': 'kimi', 'base_url': 'https://api.moonshot.cn/v1', 'model': 'moonshot-v1-8k', 'protocol': 'openai', 'note': 'Moonshot Kimi'},
+            {'name': 'openrouter', 'base_url': 'https://openrouter.ai/api/v1', 'model': 'meta-llama/llama-3-8b-instruct:free', 'protocol': 'openai', 'note': 'OpenRouter free models'},
+            {'name': 'siliconflow', 'base_url': 'https://api.siliconflow.cn/v1', 'model': 'Qwen/Qwen2.5-7B-Instruct', 'protocol': 'openai', 'note': 'SiliconFlow free tier'},
+        ]
+        for p in presets:
+            p.setdefault('max_tokens', 4096)
+            p.setdefault('supports_vision', False)
+        return presets
 
     def call_claude(self, prompt: str, provider_name: str='', session_id: str='', timeout: int=120) -> str:
-        """Call Claude Code CLI with a specific model provider."""
-        claude_bin = shutil.which('claude') or '/home/dk/local/node/bin/claude'
+        """Call a model with a specific provider.
+
+        ``protocol`` on the provider selects the transport:
+        - 'anthropic': invoke the claude CLI (ANTHROPIC_BASE_URL + /v1/messages)
+        - 'openai':    HTTP POST to base_url + /v1/chat/completions (OpenAI-compatible
+                      endpoints: OpenRouter/Kimi/SiliconFlow/Ollama/DeepSeek/NVIDIA)
+        """
         provider = self.get_provider(provider_name)
+        if (provider.protocol or 'anthropic').lower() == 'openai':
+            return self._call_openai(prompt, provider, timeout=timeout)
+        claude_bin = shutil.which('claude') or '/home/dk/local/node/bin/claude'
         cmd = [claude_bin, '-p', prompt]
         if session_id:
             cmd = [claude_bin, '--resume', session_id, '-p', prompt]
@@ -198,4 +223,49 @@ class ModelRouter:
         except Exception as e:
             logger.exception()
             return f'Error: {str(e)}'
+
+    def _call_openai(self, prompt: str, provider: ModelProvider, timeout: int = 120) -> str:
+        """Call an OpenAI-compatible endpoint via HTTP POST /v1/chat/completions.
+
+        Used for presets whose base_url is OpenAI-protocol (OpenRouter/Kimi/
+        SiliconFlow/Ollama/DeepSeek/NVIDIA). Returns the assistant message text.
+        """
+        import urllib.request
+        import urllib.error
+        base = (provider.base_url or '').rstrip('/')
+        url = base + '/chat/completions'
+        if not base.endswith('/v1') and '/v1/' not in base + '/':
+            # Some endpoints expose the base directly (already include /v1).
+            url = base + '/chat/completions'
+        payload = {
+            'model': provider.model,
+            'messages': [{'role': 'user', 'content': prompt}],
+            'max_tokens': provider.max_tokens,
+        }
+        headers = {'Content-Type': 'application/json'}
+        if provider.api_key:
+            headers['Authorization'] = f'Bearer {provider.api_key}'
+        req = urllib.request.Request(
+            url, data=json.dumps(payload).encode(), headers=headers, method='POST'
+        )
+        proxy = getattr(provider, 'proxy', '') or ''
+        if proxy and proxy.lower() not in ('direct', 'none'):
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({'http': proxy, 'https': proxy}))
+        else:
+            opener = urllib.request.build_opener()
+        try:
+            with opener.open(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode())
+            choices = data.get('choices') or []
+            if choices:
+                msg = choices[0].get('message', {})
+                return (msg.get('content') or '').strip() or '(empty response)'
+            return f'Error: unexpected response: {str(data)[:200]}'
+        except urllib.error.HTTPError as e:
+            body = e.read().decode(errors='replace')[:200]
+            return f'Error: HTTP {e.code} — {body}'
+        except Exception as e:
+            logger.exception('openai call failed')
+            return f'Error: {str(e)[:200]}'
+
 model_router = ModelRouter()

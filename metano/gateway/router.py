@@ -216,6 +216,13 @@ class MessageRouter:
             content = loader.get_content(skill.name, variables={'SKILL_DIR': str(skill.path.parent)})
             prefix = f'[Skill Activated: {skill.name}]\n{content}\n\n---\n\n'
             user_msg = args if args else f"(Skill '{skill.name}' activated. Following its instructions.)"
+            # Record skill usage so the system knows which skills are hot/cold
+            # (feeds skill pruning and the "keep or drop" decision).
+            try:
+                from ..evo_models import record_skill_usage
+                record_skill_usage(skill.name)
+            except Exception:
+                logger.exception('skill usage record failed')
             return (prefix, user_msg)
         except Exception:
             logger.exception()

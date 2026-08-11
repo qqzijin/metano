@@ -363,3 +363,87 @@ def run_knowledge_exploration(max_topics: int = 2, dedup_days: int = 14,
         'skipped_recent': skipped,
         'results': results,
     }
+
+def sink_evolution_knowledge(user_id: str = 'default') -> dict:
+    """Sink the evolution system's learned knowledge into the knowledge base.
+
+    Root-cause gap: the knowledge base held only external explorations and
+    skills — the actual wisdom the system learned (user-model observations,
+    behavior rules, memories) never entered it. This closes that loop by
+    writing a "learned knowledge" document built from:
+      - honcho observations (what we've observed about the user / world)
+      - agent_rules (behavior rules distilled from corrections)
+      - memories (cross-session memory entries)
+
+    Idempotent: rewrites a stable titled doc each run (knowledge_ingest upserts
+    by title).
+    """
+    try:
+        import sqlite3
+        from .honcho.models import get_honcho_db
+        from .paths import EVO_DB_PATH, MEMORY_DB
+        sections = []
+
+        # 1. Behavior rules (evo.db agent_rules)
+        try:
+            conn = sqlite3.connect(str(EVO_DB_PATH))
+            conn.row_factory = sqlite3.Row
+            rules = conn.execute(
+                "SELECT content, effectiveness, source FROM agent_rules WHERE active=1 ORDER BY effectiveness DESC LIMIT 50"
+            ).fetchall()
+            if rules:
+                s = ['## 行为规则（从纠正中学到）', '']
+                for r in rules:
+                    s.append(f"- {r['content']} (eff={r['effectiveness']:.2f})")
+                sections.append('\n'.join(s))
+            conn.close()
+        except Exception:
+            logger.exception('sink: rules')
+
+        # 2. Observations (honcho)
+        try:
+            honcho = get_honcho_db()
+            obs = honcho.execute(
+                "SELECT category, content FROM observations WHERE user_id=? ORDER BY timestamp DESC LIMIT 40",
+                (user_id,)
+            ).fetchall()
+            if obs:
+                s = ['## 观察（收割的原始信号）', '']
+                for o in obs:
+                    s.append(f"- [{o['category']}] {o['content']}")
+                sections.append('\n'.join(s))
+            honcho.close()
+        except Exception:
+            logger.exception('sink: observations')
+
+        # 3. Memories
+        try:
+            conn = sqlite3.connect(str(MEMORY_DB))
+            conn.row_factory = sqlite3.Row
+            mem = conn.execute(
+                "SELECT category, content FROM memories ORDER BY id DESC LIMIT 30"
+            ).fetchall()
+            if mem:
+                s = ['## 跨会话记忆', '']
+                for m in mem:
+                    s.append(f"- [{m['category']}] {m['content']}")
+                sections.append('\n'.join(s))
+            conn.close()
+        except Exception:
+            logger.exception('sink: memories')
+
+        if not sections:
+            return {'status': 'no_data'}
+
+        from .knowledge import knowledge_ingest
+        content = '# 进化系统学到的知识\n\n' + '\n\n'.join(sections) + '\n'
+        # knowledge_ingest takes a file path (validated against allowed dirs);
+        # write a temp artifact under EXPLORATION_DIR then ingest it.
+        import time as _t
+        out = EXPLORATION_DIR / f'evolution_sink_{int(_t.time())}.md'
+        out.write_text(content, encoding='utf-8')
+        result = knowledge_ingest(str(out), title='进化系统学习沉淀', doc_type='markdown')
+        return {'status': 'ingested', 'sections': len(sections), 'result': result}
+    except Exception:
+        logger.exception('sink_evolution_knowledge failed')
+        return {'status': 'error'}

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Menu } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -26,7 +26,6 @@ import KnowledgePage from "@/pages/KnowledgePage";
 import KnowledgeGraphPage from "@/pages/KnowledgeGraphPage";
 import ConfigPage from "@/pages/ConfigPage";
 import EvolutionPage from "@/pages/EvolutionPage";
-import SelfModifyPage from "@/pages/SelfModifyPage";
 import LogsPage from "@/pages/LogsPage";
 import ProfilesPage from "@/pages/ProfilesPage";
 import CronPage from "@/pages/CronPage";
@@ -120,7 +119,7 @@ function MainLayout() {
             <Route path="/knowledge-graph" element={<KnowledgeGraphPage />} />
             <Route path="/config" element={<ConfigPage />} />
             <Route path="/evolution" element={<EvolutionPage />} />
-            <Route path="/self-modify" element={<SelfModifyPage />} />
+            <Route path="/self-modify" element={<Navigate to="/evolution" replace />} />
             <Route path="/logs" element={<LogsPage />} />
             <Route path="/profiles" element={<ProfilesPage />} />
             <Route path="/cron" element={<CronPage />} />

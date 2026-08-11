@@ -13,6 +13,8 @@
  * and returning to the chat page shows the finished reply.
  */
 
+import { refreshAuthSession } from "@/api/client";
+
 export interface ChatStreamEvent {
   type: "thinking" | "text" | "tool_use" | "tool_result" | "done" | "error";
   id?: string;
@@ -90,12 +92,30 @@ export async function startChatStream(body: {
     { role: "assistant", content: "", thinking: "", tool_calls: [] },
   ];
   try {
-    const res = await fetch("/api/chat", {
+    let res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
       body: JSON.stringify(body),
     });
+    if (res.status === 401) {
+      // Access token may have expired (15 min) while the refresh token is still
+      // valid. This raw fetch bypasses fetchAPI's 401-retry, so renew explicitly
+      // and retry once before reporting failure.
+      const refreshed = await refreshAuthSession();
+      if (refreshed) {
+        res = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify(body),
+        });
+      }
+      if (res.status === 401) {
+        // Refresh failed or retry still 401 → session is genuinely dead.
+        window.dispatchEvent(new Event("auth:unauthorized"));
+      }
+    }
     if (!res.ok || !res.body) {
       streamMessages[streamMessages.length - 1].content = `请求失败 (${res.status})`;
       notify({ type: "error", message: `请求失败 (${res.status})` });

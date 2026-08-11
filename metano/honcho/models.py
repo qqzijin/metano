@@ -350,14 +350,26 @@ def merge_similar_beliefs(conn: sqlite3.Connection, user_id: str,
 
 
 def _text_similarity(a: str, b: str) -> float:
-    """Simple Jaccard-like similarity based on word overlap."""
-    words_a = set(a.lower().split())
-    words_b = set(b.lower().split())
-    if not words_a or not words_b:
+    """Char-bigram Jaccard similarity, robust for Chinese (no spaces).
+
+    Word-overlap fails for Chinese: an entire sentence is one token, so two
+    near-identical Chinese beliefs scored 0.0. Char bigrams capture the
+    surface overlap that matters for belief dedup/merging in Chinese.
+    """
+    a = (a or '').lower().replace(' ', '')
+    b = (b or '').lower().replace(' ', '')
+    if not a or not b:
         return 0.0
-    intersection = words_a & words_b
-    union = words_a | words_b
-    return len(intersection) / len(union)
+    if a == b:
+        return 1.0
+    grams_a = {a[i:i + 2] for i in range(len(a) - 1)}
+    grams_b = {b[i:i + 2] for i in range(len(b) - 1)}
+    if not grams_a or not grams_b:
+        # Too short for bigrams — fall back to substring containment.
+        return 1.0 if a in b or b in a else 0.0
+    inter = grams_a & grams_b
+    union = grams_a | grams_b
+    return len(inter) / len(union)
 
 
 def _merge_content(a: str, b: str) -> str:

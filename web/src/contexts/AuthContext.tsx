@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
+import { refreshAuthSession } from "@/api/client";
 
 interface User {
   username: string;
@@ -15,6 +16,10 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | null>(null);
 
+// Backend ACCESS_TOKEN_EXPIRE_MINUTES = 15; renew well before it lapses so an
+// open page never crosses the expiry boundary mid-use.
+const ACCESS_REFRESH_INTERVAL_MS = 9 * 60 * 1000;
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
@@ -27,6 +32,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .catch(() => setUser(null))
       .finally(() => setLoading(false));
   }, []);
+
+  // Proactively renew the access token before it expires. The refresh token
+  // cookie is HttpOnly + path-scoped to /api/auth/refresh, so this endpoint is
+  // the only way the frontend can keep the session alive without a 401 mid-use.
+  useEffect(() => {
+    if (!user) return;
+    // Immediately top up once (covers a session left open across the expiry),
+    // then keep it fresh on a timer for as long as the user is signed in.
+    refreshAuthSession();
+    const id = window.setInterval(() => {
+      refreshAuthSession();
+    }, ACCESS_REFRESH_INTERVAL_MS);
+    return () => window.clearInterval(id);
+  }, [user]);
 
   useEffect(() => {
     const handler = () => {

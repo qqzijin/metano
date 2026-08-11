@@ -35,6 +35,8 @@ def _register_default_actions():
     )
     from .db import cron_purge_sessions
     from .self_modify import self_modify_daily
+    from .knowledge_explorer import sink_evolution_knowledge
+    register_action('knowledge.sink', sink_evolution_knowledge)
     register_action('evolution.harvest', cron_harvest)
     register_action('evolution.reflect', cron_reflect)
     register_action('evolution.adapt', cron_adapt)

@@ -1,22 +1,7 @@
 const BASE = "/api";
 
-export async function fetchAPI<T>(path: string, init?: RequestInit): Promise<T> {
-  const headers: Record<string, string> = {
-    // Let the browser set multipart Content-Type (with boundary) for FormData bodies.
-    ...(init?.body instanceof FormData ? {} : { "Content-Type": "application/json" }),
-    ...(init?.headers as Record<string, string> | undefined),
-  };
-  const res = await fetch(`${BASE}${path}`, {
-    ...init,
-    credentials: "include",
-    headers,
-  });
-
-  if (res.status === 401) {
-    window.dispatchEvent(new Event("auth:unauthorized"));
-    throw new Error("未登录");
-  }
-
+/** Parse a Response into T, handling error bodies and empty/204 responses. */
+async function handleResponse<T>(res: Response): Promise<T> {
   if (!res.ok) {
     // Prefer the backend's `detail` message (validation errors, etc.) over the
     // generic status text. Body may be empty or non-JSON — fall back quietly.
@@ -38,6 +23,70 @@ export async function fetchAPI<T>(path: string, init?: RequestInit): Promise<T> 
     return undefined as T;
   }
   return res.json() as Promise<T>;
+}
+
+// Dedupe concurrent refresh calls: several requests may 401 at the same time
+// right after the access token expires, but the refresh endpoint should be hit
+// once and the new cookie reused by all of them.
+let refreshPromise: Promise<boolean> | null = null;
+
+/**
+ * Silently renew the access token using the HttpOnly refresh_token cookie.
+ *
+ * The refresh token cookie is path-scoped to /api/auth/refresh, so the backend
+ * middleware cannot auto-refresh on other API paths — the frontend must call
+ * this endpoint explicitly. On success the response sets a fresh access_token
+ * cookie (15 min) that subsequent requests send automatically.
+ */
+export async function refreshAuthSession(): Promise<boolean> {
+  if (refreshPromise) return refreshPromise;
+  refreshPromise = fetch(`${BASE}/auth/refresh`, {
+    method: "POST",
+    credentials: "include",
+  })
+    .then((res) => res.ok)
+    .catch(() => false)
+    .finally(() => {
+      refreshPromise = null;
+    });
+  return refreshPromise;
+}
+
+export async function fetchAPI<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers: Record<string, string> = {
+    // Let the browser set multipart Content-Type (with boundary) for FormData bodies.
+    ...(init?.body instanceof FormData ? {} : { "Content-Type": "application/json" }),
+    ...(init?.headers as Record<string, string> | undefined),
+  };
+  const doFetch = () =>
+    fetch(`${BASE}${path}`, {
+      ...init,
+      credentials: "include",
+      headers,
+    });
+
+  let res = await doFetch();
+
+  if (res.status === 401) {
+    // Access token may simply have expired (15 min) while the refresh token is
+    // still valid — normal session expiry should NOT log the user out. Try a
+    // silent refresh and retry once before giving up.
+    const refreshed = await refreshAuthSession();
+    if (refreshed) {
+      res = await doFetch();
+      if (res.status === 401) {
+        // Retry failed even with a fresh token → refresh token is gone/invalid.
+        window.dispatchEvent(new Event("auth:unauthorized"));
+        throw new Error("未登录");
+      }
+    } else {
+      // Refresh failed → no valid session at all.
+      window.dispatchEvent(new Event("auth:unauthorized"));
+      throw new Error("未登录");
+    }
+  }
+
+  return handleResponse<T>(res);
 }
 
 /* ---- types ---- */

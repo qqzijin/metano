@@ -135,6 +135,19 @@ CREATE TABLE IF NOT EXISTS self_modify_events (
     status TEXT DEFAULT 'candidate',     -- candidate/verified/applied/rejected/reverted
     created_at REAL
 );
+
+-- Skill usage tracking: every time a skill is activated (via /trigger), one
+-- row is recorded so the system knows which skills are hot and which are dead
+-- (feeds skill pruning and the "which skills to keep" decision).
+CREATE TABLE IF NOT EXISTS skill_usage (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    skill_name TEXT NOT NULL,
+    platform TEXT DEFAULT '',
+    user_id TEXT DEFAULT '',
+    used_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_skill_usage_name ON skill_usage(skill_name);
+CREATE INDEX IF NOT EXISTS idx_skill_usage_time ON skill_usage(used_at);
 """
 
 
@@ -662,3 +675,46 @@ def get_self_modify_event(event_id: int) -> dict | None:
     row = conn.execute("SELECT * FROM self_modify_events WHERE id = ?", (event_id,)).fetchone()
     conn.close()
     return dict(row) if row else None
+
+
+# ── skill usage tracking ──
+
+def record_skill_usage(skill_name: str, platform: str = '', user_id: str = '') -> None:
+    """Record that a skill was activated (used) at this moment."""
+    try:
+        conn = _get_conn()
+        conn.execute(
+            "INSERT INTO skill_usage (skill_name, platform, user_id, used_at) VALUES (?, ?, ?, ?)",
+            (skill_name, platform, user_id, time.time()),
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        logger.exception('record_skill_usage failed')
+
+
+def get_skill_usage(days: int = 30) -> list[dict]:
+    """Aggregate skill usage frequency over the last ``days`` days, hottest first."""
+    conn = _get_conn()
+    cutoff = time.time() - days * 86400
+    rows = conn.execute(
+        "SELECT skill_name, COUNT(*) AS uses, MAX(used_at) AS last_used "
+        "FROM skill_usage WHERE used_at >= ? GROUP BY skill_name "
+        "ORDER BY uses DESC, last_used DESC",
+        (cutoff,),
+    ).fetchall()
+    result = [dict(r) for r in rows]
+    conn.close()
+    return result
+
+
+def get_skill_usage_all_time() -> list[dict]:
+    """Aggregate skill usage over all time (for dead-skill detection)."""
+    conn = _get_conn()
+    rows = conn.execute(
+        "SELECT skill_name, COUNT(*) AS uses, MAX(used_at) AS last_used "
+        "FROM skill_usage GROUP BY skill_name ORDER BY uses DESC"
+    ).fetchall()
+    result = [dict(r) for r in rows]
+    conn.close()
+    return result

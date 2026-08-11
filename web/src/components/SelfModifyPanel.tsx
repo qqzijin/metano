@@ -1,10 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import { RefreshCw, Undo2, Play, Trash2, CheckCircle2, XCircle, Clock } from "lucide-react";
-import { PageHeader } from "@/components/layout/PageHeader";
+import { RefreshCw, Undo2, Play } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { RoleGuard } from "@/components/auth/RoleGuard";
+import { Card, CardAction, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { toast } from "sonner";
 
 interface SelfModifyEvent {
@@ -27,21 +25,25 @@ const STATUS_BADGE: Record<string, { label: string; cls: string }> = {
   reverted: { label: "已回滚", cls: "bg-muted text-muted-foreground" },
 };
 
-export default function SelfModifyPage() {
+/**
+ * 自我修改面板（进化系统第 8 个 tab）。
+ * 内容原为独立页面 SelfModifyPage —— 自我修改是进化系统的核心能力，
+ * 故并入进化系统页，此处为纯内容，无 PageHeader / RoleGuard 包裹。
+ */
+export function SelfModifyPanel() {
   const [events, setEvents] = useState<SelfModifyEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
   const [expanded, setExpanded] = useState<number | null>(null);
 
   const load = useCallback(async () => {
-    setLoading(true);
     try {
       const res = await fetch("/api/self-modify/events?limit=50", { credentials: "include" });
       if (res.status === 401) { window.dispatchEvent(new Event("auth:unauthorized")); return; }
       const data = await res.json();
       setEvents(data.items ?? []);
     } catch {
-      setLoading(false);
+      // keep current events; just stop the spinner below
     } finally {
       setLoading(false);
     }
@@ -51,6 +53,7 @@ export default function SelfModifyPage() {
 
   const handleRun = async (dry: boolean) => {
     setRunning(true);
+    setLoading(true);
     try {
       const res = await fetch(`/api/self-modify/run?dry_run=${dry}`, {
         method: "POST", credentials: "include",
@@ -58,7 +61,7 @@ export default function SelfModifyPage() {
       const data = await res.json();
       toast.success(`完成: 扫描 ${data.scanned ?? 0} 问题, 应用 ${data.applied ?? 0}`);
       load();
-    } catch (e) {
+    } catch {
       toast.error("触发失败");
     } finally {
       setRunning(false);
@@ -67,6 +70,7 @@ export default function SelfModifyPage() {
 
   const handleRevert = async (id: number) => {
     if (!window.confirm("确认回滚这次自我修改？将通过 git revert 还原代码。")) return;
+    setLoading(true);
     try {
       const res = await fetch(`/api/self-modify/revert/${id}`, {
         method: "POST", credentials: "include",
@@ -83,42 +87,48 @@ export default function SelfModifyPage() {
   const shortHash = (h?: string) => h ? h.slice(0, 10) : "-";
 
   return (
-    <RoleGuard role="admin">
-      <PageHeader
-        title="自我进化"
-        description="进化系统自主修改自己代码的变异记录 · 验证门 + git 回滚保障"
-        actions={
-          <>
-            <Button size="sm" variant="outline" onClick={() => handleRun(true)} disabled={running}>
-              <Play className="size-3.5 mr-1" /> 扫描(仅候选)
-            </Button>
-            <Button size="sm" onClick={() => handleRun(false)} disabled={running}>
-              <RefreshCw className="size-3.5 mr-1" /> 运行自举
-            </Button>
-          </>
-        }
-      />
+    <div className="space-y-4">
       <Card>
         <CardHeader>
           <CardTitle className="text-base">变异记录（self_modify_events）</CardTitle>
+          <CardAction>
+            <div className="flex gap-2">
+              <Button size="sm" variant="outline" onClick={() => handleRun(true)} disabled={running}>
+                <Play className="size-3.5 mr-1" /> 扫描(仅候选)
+              </Button>
+              <Button size="sm" onClick={() => handleRun(false)} disabled={running}>
+                <RefreshCw className="size-3.5 mr-1" /> 运行自举
+              </Button>
+            </div>
+          </CardAction>
         </CardHeader>
         <CardContent>
           {loading ? (
             <div className="text-sm text-muted-foreground">加载中…</div>
           ) : events.length === 0 ? (
-            <div className="text-sm text-muted-foreground">暂无自我修改记录。可点击上方「运行自举」触发第一次扫描。</div>
+            <div className="text-sm text-muted-foreground">
+              暂无自我修改记录。可点击上方「运行自举」触发第一次扫描。
+            </div>
           ) : (
             <div className="space-y-2">
               {events.map((ev) => {
                 const badge = STATUS_BADGE[ev.status] ?? STATUS_BADGE.candidate;
                 return (
                   <div key={ev.id} className="border rounded-lg overflow-hidden">
-                    <div className="flex items-center gap-2 p-3 cursor-pointer hover:bg-muted/50" onClick={() => setExpanded(expanded === ev.id ? null : ev.id)}>
+                    <div
+                      className="flex items-center gap-2 p-3 cursor-pointer hover:bg-muted/50"
+                      onClick={() => setExpanded(expanded === ev.id ? null : ev.id)}
+                    >
                       <span className="text-xs text-muted-foreground font-mono">#{ev.id}</span>
                       <span className="flex-1 text-sm truncate">{ev.issue || ev.file}</span>
                       <Badge variant="outline" className={`text-[10px] ${badge.cls}`}>{badge.label}</Badge>
                       {ev.status === "applied" && (
-                        <Button size="sm" variant="ghost" onClick={(e) => { e.stopPropagation(); handleRevert(ev.id); }} title="git revert 回滚">
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={(e) => { e.stopPropagation(); handleRevert(ev.id); }}
+                          title="git revert 回滚"
+                        >
                           <Undo2 className="size-3.5" />
                         </Button>
                       )}
@@ -144,6 +154,8 @@ export default function SelfModifyPage() {
           )}
         </CardContent>
       </Card>
-    </RoleGuard>
+    </div>
   );
 }
+
+export default SelfModifyPanel;

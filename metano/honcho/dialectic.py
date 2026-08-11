@@ -7,9 +7,34 @@ Uses LLM to:
 """
 import json
 import os
-from .models import get_honcho_db, get_beliefs, add_belief, update_belief, contradict_belief, add_observation, get_observations, reinforce_belief
+from .models import get_honcho_db, get_beliefs, add_belief, update_belief, contradict_belief, add_observation, get_observations, reinforce_belief, _text_similarity
 from ..llm_call import call_llm
 from metano.log import logger
+
+
+def _find_similar_belief(conn, user_id: str, category: str, content: str, threshold: float = 0.3) -> dict | None:
+    """Return an existing non-contradicted belief of the same category whose
+    content is similar enough to ``content`` — so the observation reinforces it
+    instead of creating a near-duplicate draft.
+
+    This is the root-cause fix for belief-stage skew: without it, every new
+    observation produced a fresh draft belief (reinforcement_count stays low and
+    stages never mature past draft).
+    """
+    rows = conn.execute(
+        "SELECT * FROM beliefs WHERE user_id = ? AND category = ? AND contradicted = 0",
+        (user_id, category),
+    ).fetchall()
+    if not rows:
+        return None
+    best, best_sim = None, 0.0
+    for r in rows:
+        sim = _text_similarity((r['content'] or ''), content)
+        if sim > best_sim:
+            best_sim, best = sim, r
+    if best and best_sim >= threshold:
+        return dict(best)
+    return None
 ANTHROPIC_API_KEY = os.environ.get('ANTHROPIC_API_KEY', '')
 
 def _call_llm(system_prompt: str, user_prompt: str) -> str:
@@ -77,9 +102,38 @@ def dialectic_reason(user_id: str, observation_content: str, observation_categor
             result = {'action': 'add', 'content': observation_content, 'category': observation_category, 'confidence': 0.5, 'reasoning': 'Parse error fallback'}
         action = result.get('action', 'add')
         if action == 'add':
-            belief = add_belief(conn, user_id, result.get('category', observation_category), result.get('content', observation_content), result.get('confidence', 0.5))
-            result['belief'] = belief
+            # Root-cause guard: prefer reinforcing an EXISTING similar belief
+            # over piling up near-duplicate drafts. This is why stage counts
+            # skew toward draft — every new observation became a fresh belief
+            # instead of strengthening the one it matches.
+            existing_sim = _find_similar_belief(conn, user_id, result.get('category', observation_category), observation_content)
+            if existing_sim:
+                reinforce_belief(conn, existing_sim['id'])
+                row = conn.execute('SELECT * FROM beliefs WHERE id = ?', (existing_sim['id'],)).fetchone()
+                result['belief'] = dict(row) if row else None
+                result['action'] = 'update'
+                result['belief_id'] = existing_sim['id']
+            else:
+                belief = add_belief(conn, user_id, result.get('category', observation_category), result.get('content', observation_content), result.get('confidence', 0.5))
+                result['belief'] = belief
         elif action == 'update' and result.get('belief_id'):
+            # Verify the target belief belongs to this user before mutating it
+            # (LLM-supplied ids are not trusted).
+            owner = conn.execute('SELECT 1 FROM beliefs WHERE id = ? AND user_id = ?', (result['belief_id'], user_id)).fetchone()
+            if not owner:
+                # Can't safely update someone else's / a missing belief — fall
+                # back to add-if-new (with the same similar-belief guard).
+                existing_sim = _find_similar_belief(conn, user_id, result.get('category', observation_category), observation_content)
+                if existing_sim:
+                    reinforce_belief(conn, existing_sim['id'])
+                    row = conn.execute('SELECT * FROM beliefs WHERE id = ?', (existing_sim['id'],)).fetchone()
+                    result['belief'] = dict(row) if row else None
+                    result['action'] = 'update'
+                    result['belief_id'] = existing_sim['id']
+                else:
+                    belief = add_belief(conn, user_id, result.get('category', observation_category), result.get('content', observation_content), result.get('confidence', 0.5))
+                    result['belief'] = belief
+                return result
             new_content = result.get('content')
             if new_content and new_content != observation_content:
                 update_belief(conn, result['belief_id'], new_content, result.get('confidence'))
@@ -87,7 +141,9 @@ def dialectic_reason(user_id: str, observation_content: str, observation_categor
             row = conn.execute('SELECT * FROM beliefs WHERE id = ?', (result['belief_id'],)).fetchone()
             result['belief'] = dict(row) if row else None
         elif action == 'contradict' and result.get('belief_id'):
-            contradict_belief(conn, result['belief_id'])
+            owner = conn.execute('SELECT 1 FROM beliefs WHERE id = ? AND user_id = ?', (result['belief_id'], user_id)).fetchone()
+            if owner:
+                contradict_belief(conn, result['belief_id'])
             belief = add_belief(conn, user_id, result.get('category', observation_category), result.get('content', observation_content), result.get('confidence', 0.5))
             result['new_belief'] = belief
         return result

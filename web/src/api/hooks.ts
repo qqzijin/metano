@@ -131,6 +131,14 @@ export function useSkill(name: string) {
   });
 }
 
+export function useSkillUsage(days = 30) {
+  return useQuery<{ days: number; recent: { skill_name: string; uses: number; last_used: number }[]; all_time: { skill_name: string; uses: number; last_used: number }[] }>({
+    queryKey: ["skill-usage", days],
+    queryFn: () => fetchAPI(`/skills/usage?days=${days}`),
+    staleTime: 60000,
+  });
+}
+
 export function useKnowledge() {
   return useQuery<{ documents: KnowledgeDoc[] }>({
     queryKey: qk.knowledge,
