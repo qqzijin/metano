@@ -154,13 +154,6 @@ export function useEvolution() {
   });
 }
 
-export function useSuggestions() {
-  return useQuery<{ suggestions: Suggestion[] }>({
-    queryKey: qk.suggestions,
-    queryFn: () => fetchAPI("/evolution/suggestions").then((d: any) => ({ suggestions: d.items ?? [] })),
-  });
-}
-
 export function useModels() {
   return useQuery<{ providers: ModelProvider[] }>({
     queryKey: qk.models,
@@ -292,24 +285,6 @@ export function useEvolutionResume() {
   });
 }
 
-export function useApproveSuggestion() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (id: string) =>
-      fetchAPI(`/evolution/approve/${id}`, { method: "POST" }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: qk.suggestions }),
-  });
-}
-
-export function useRejectSuggestion() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (id: string) =>
-      fetchAPI(`/evolution/reject/${id}`, { method: "POST" }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: qk.suggestions }),
-  });
-}
-
 export function useKnowledgeIngest() {
   const qc = useQueryClient();
   return useMutation({
@@ -374,13 +349,6 @@ export function useVoiceTTS() {
         method: "POST",
         body: JSON.stringify(data),
       }),
-  });
-}
-
-export function useHomeControl() {
-  return useMutation({
-    mutationFn: (data: { entity_id: string; service: string; value?: unknown }) =>
-      fetchAPI("/home/control", { method: "POST", body: JSON.stringify(data) }),
   });
 }
 
@@ -461,15 +429,6 @@ export function useMemoryCompress() {
 export function useMemoryExport() {
   return useMutation({
     mutationFn: () => fetchAPI("/memory/export"),
-  });
-}
-
-export function useMemoryImport() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (data: any) =>
-      fetchAPI("/memory/import", { method: "POST", body: JSON.stringify(data) }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["memory", "stats"] }),
   });
 }
 
@@ -725,56 +684,6 @@ export function useKnowledgeSemanticSearch() {
 
 /* ---- knowledge synthesize ---- */
 
-export function useKnowledgeSynthesize() {
-  const qc = useQueryClient();
-  return useMutation<{ status: string; topic: string }, Error, string>({
-    mutationFn: (topic) =>
-      fetchAPI("/knowledge/synthesize", { method: "POST", body: JSON.stringify({ topic }) }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: qk.knowledge }),
-  });
-}
-
-/* ---- rule effectiveness ---- */
-
-export function useRuleEffectiveness(ruleId: number | null) {
-  return useQuery<EffectivenessData>({
-    queryKey: ["effectiveness", ruleId],
-    queryFn: () => fetchAPI(`/evolution/effectiveness/${ruleId}`),
-    enabled: !!ruleId,
-  });
-}
-
-/* ---- config update ---- */
-
-export function useConfigUpdate() {
-  const qc = useQueryClient();
-  return useMutation<Record<string, unknown>, Error, Record<string, unknown>>({
-    mutationFn: (config) =>
-      fetchAPI("/config", { method: "PUT", body: JSON.stringify(config) }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: qk.config }),
-  });
-}
-
-/* ---- services ---- */
-
-export function useServices() {
-  return useQuery<Record<string, string>>({
-    queryKey: ["services"],
-    queryFn: () => fetchAPI("/services"),
-  });
-}
-
-/* ---- voice voices list ---- */
-
-export function useVoices(lang?: string) {
-  return useQuery<{ voices: Array<{ id: string; name: string; language: string }> }>({
-    queryKey: qk.voices(lang),
-    queryFn: () => fetchAPI(`/voice/voices${lang ? `?language=${encodeURIComponent(lang)}` : ""}`),
-  });
-}
-
-/* ---- cost circuit breaker ---- */
-
 export function useCostCircuit() {
   return useQuery<CostCircuitState>({
     queryKey: ["evolution", "cost-circuit"],
@@ -796,25 +705,6 @@ export function useUpdateCostCircuitConfig() {
 }
 
 /* ---- home entity detail ---- */
-
-export function useHomeEntity(entityId: string) {
-  return useQuery<{ state: string; attributes: Record<string, unknown> }>({
-    queryKey: ["home", "entity", entityId],
-    queryFn: () => fetchAPI(`/home/status/${entityId}`),
-    enabled: !!entityId,
-  });
-}
-
-/* ---- MCP call ---- */
-
-export function useMcpCall() {
-  return useMutation<{ result: unknown }, Error, { server: string; tool: string; arguments?: Record<string, unknown> }>({
-    mutationFn: (data) =>
-      fetchAPI("/mcp/call", { method: "POST", body: JSON.stringify(data) }),
-  });
-}
-
-/* ---- proxy add ---- */
 
 export function useProxyAdd() {
   const qc = useQueryClient();

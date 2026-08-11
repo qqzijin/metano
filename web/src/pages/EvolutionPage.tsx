@@ -15,6 +15,10 @@ import {
   useProposalReject,
   useProposalApply,
   useProposalsApplyApproved,
+  useEvolutionRun,
+  useEvolutionPause,
+  useEvolutionResume,
+  useEvolutionCorrect,
 } from '../api/hooks';
 import type { AgentRule, KnowledgeGap, ActionLogEntry, Proposal } from '../api/client';
 import { PageHeader } from '@/components/layout/PageHeader';
@@ -27,7 +31,7 @@ import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
   Loader2, Zap, Compass, User, ListChecks, ShieldCheck, Inbox,
-  Boxes, Puzzle, Clock, Route,
+  Boxes, Puzzle, Clock, Route, MessageSquareWarning,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -105,6 +109,21 @@ function PriorityBadge({ priority }: { priority: string }) {
 function OverviewTab() {
   const { data: status, isLoading, isError } = useEvolution();
   const { data: patterns } = useBehaviorPatterns();
+  const runMut = useEvolutionRun();
+  const pauseMut = useEvolutionPause();
+  const resumeMut = useEvolutionResume();
+  const correctMut = useEvolutionCorrect();
+  const [correction, setCorrection] = useState('');
+  const submitCorrection = async () => {
+    if (!correction.trim()) return;
+    try {
+      await correctMut.mutateAsync({ correction: correction.trim() });
+      toast.success('纠正已提交，已进入学习回路');
+      setCorrection('');
+    } catch {
+      toast.error('提交纠正失败');
+    }
+  };
 
   if (isError) return <div className="text-sm text-destructive">加载失败，请检查服务或刷新重试</div>;
   if (isLoading) return <LoadingBlock />;
@@ -157,6 +176,47 @@ function OverviewTab() {
       <div className="flex flex-wrap items-center gap-4 text-sm">
         {status?.paused && <span className="rounded-md bg-destructive/10 px-2 py-1 text-xs font-medium text-destructive">已暂停</span>}
         <span className="text-muted-foreground">预估日成本: ${(status?.estimated_daily_cost ?? 0).toFixed(4)}</span>
+        {/* 进化运行控制：后端 /evolution/run|pause|resume API 一直存在，但 UI 从未接上——
+            "已暂停"只有徽标没有控制按钮。这里补全闭环。 */}
+        <span className="ml-auto flex items-center gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={runMut.isPending}
+            onClick={async () => {
+              try { await runMut.mutateAsync('all'); toast.success('进化已运行'); }
+              catch { toast.error('运行失败'); }
+            }}
+          >
+            {runMut.isPending ? <Loader2 className="size-3.5 animate-spin mr-1" /> : <Zap className="size-3.5 mr-1" />}
+            立即运行
+          </Button>
+          {status?.paused ? (
+            <Button
+              size="sm"
+              variant="default"
+              disabled={resumeMut.isPending}
+              onClick={async () => {
+                try { await resumeMut.mutateAsync(); toast.success('进化已恢复'); }
+                catch { toast.error('恢复失败'); }
+              }}
+            >
+              恢复进化
+            </Button>
+          ) : (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={pauseMut.isPending}
+              onClick={async () => {
+                try { await pauseMut.mutateAsync(); toast.success('进化已暂停'); }
+                catch { toast.error('暂停失败'); }
+              }}
+            >
+              暂停进化
+            </Button>
+          )}
+        </span>
       </div>
 
       {patterns?.recent_corrections && patterns.recent_corrections.length > 0 && (
@@ -174,6 +234,33 @@ function OverviewTab() {
           </CardContent>
         </Card>
       )}
+
+      {/* 手动纠正入口：告诉进化系统"这条观察/规则不对"，作为校正信号进入学习回路 */}
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm flex items-center gap-2">
+            <MessageSquareWarning className="size-4 text-amber-500" /> 手动纠正
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-2 sm:flex-row sm:items-center pt-0">
+          <Input
+            value={correction}
+            onChange={(e) => setCorrection(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter' && correction.trim() && !correctMut.isPending) { submitCorrection(); } }}
+            placeholder="告诉进化系统你的纠正，例如：'回复时必须用中文'、'这个功能不应该自动执行'"
+            className="flex-1 min-w-0"
+          />
+          <Button
+            size="sm"
+            disabled={!correction.trim() || correctMut.isPending}
+            onClick={submitCorrection}
+            className="shrink-0"
+          >
+            {correctMut.isPending ? <Loader2 className="size-3.5 animate-spin mr-1" /> : <Zap className="size-3.5 mr-1" />}
+            提交纠正
+          </Button>
+        </CardContent>
+      </Card>
     </div>
   );
 }

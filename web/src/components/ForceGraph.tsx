@@ -101,6 +101,12 @@ export function ForceGraph({ entities, relationships, selectedId, onSelect }: Fo
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [tooltip, setTooltip] = useState<{ x: number; y: number; name: string; type: string } | null>(null);
   const [frame, setFrame] = useState(0);
+  // Render snapshot. Using STATE (not a ref) for the rendered nodes/edges is
+  // the key: a ref change never triggers a React render, so on first mount the
+  // SVG was empty (nodesRef populated by the effect, but no re-render happened
+  // with the new ref value). We write both the ref (for the physics loop) and
+  // this snapshot (for rendering).
+  const [graphSnapshot, setGraphSnapshot] = useState<{ nodes: FNode[]; edges: FEdge[] }>({ nodes: [], edges: [] });
 
   // One physics tick: repulsion + spring attraction + centering + damping.
   const step = useCallback((): number => {
@@ -244,6 +250,9 @@ export function ForceGraph({ entities, relationships, selectedId, onSelect }: Fo
 
     nodesRef.current = nodes;
     edgesRef.current = edges;
+    // Commit to render state so the SVG actually draws nodes/edges (refs alone
+    // don't trigger a render — this was why the graph stayed empty).
+    setGraphSnapshot({ nodes, edges });
     setFrame((f) => f + 1);
     startSim();
 
@@ -266,7 +275,7 @@ export function ForceGraph({ entities, relationships, selectedId, onSelect }: Fo
     // frame: recompute after data/sim changes keep it in sync.
   }, [highlightId, frame]);
 
-  const nodeById = useMemo(() => new Map(nodesRef.current.map((n) => [n.id, n])), [frame]);
+  const nodeById = useMemo(() => new Map(graphSnapshot.nodes.map((n) => [n.id, n])), [graphSnapshot, frame]);
 
   // ── drag / pointer helpers ──
   const toSvgPoint = (clientX: number, clientY: number) => {
@@ -332,8 +341,8 @@ export function ForceGraph({ entities, relationships, selectedId, onSelect }: Fo
     setTooltip(null);
   };
 
-  const nodes = nodesRef.current;
-  const edges = edgesRef.current;
+  const nodes = graphSnapshot.nodes;
+  const edges = graphSnapshot.edges;
 
   return (
     <div ref={containerRef} className="relative overflow-hidden rounded-lg border bg-background/40">

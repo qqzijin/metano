@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
+import { Link } from "react-router-dom";
 import { Search, Zap, Download, Sparkles, ChevronRight, ChevronDown, Brain, Layers, User, ListChecks } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -192,6 +193,9 @@ export default function MemoryPage() {
                     ))}
                   {beliefs.length === 0 && <span className="text-[11px] text-muted-foreground">暂无信念</span>}
                 </div>
+                <Link to="/profiles" className="inline-flex items-center gap-1 text-[11px] text-primary hover:underline mt-2">
+                  查看用户画像 →
+                </Link>
               </CardContent>
             </Card>
 
@@ -215,6 +219,9 @@ export default function MemoryPage() {
                   ))}
                   {rules.length === 0 && <span className="text-[11px] text-muted-foreground">暂无规则</span>}
                 </div>
+                <Link to="/evolution" className="inline-flex items-center gap-1 text-[11px] text-primary hover:underline mt-2">
+                  查看进化规则 →
+                </Link>
               </CardContent>
             </Card>
           </div>

@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useSearchParams, useNavigate } from "react-router-dom";
 import { Send, Bot, User, Trash2, History, X, Plus, Paperclip } from "lucide-react";
 import { toast } from "sonner";
 import { Card } from "@/components/ui/card";
@@ -52,6 +52,7 @@ function saveHistory(msgs: ChatMsg[]) {
 
 export default function ChatPage() {
   const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
   const [messages, setMessages] = useState<ChatMsg[]>(loadHistory);
   const [input, setInput] = useState("");
   const [showSessionPicker, setShowSessionPicker] = useState(false);
@@ -360,6 +361,12 @@ export default function ChatPage() {
                 </div>
               </button>
             ))}
+          </div>
+          {/* 职责分离：这里的 picker 只管快速"继续对话"，完整会话档案去 /sessions */}
+          <div className="border-t px-4 py-2">
+            <Button size="sm" variant="outline" className="w-full" onClick={() => navigate("/sessions")}>
+              <History className="size-3.5 mr-1" /> 管理全部会话
+            </Button>
           </div>
         </Card>
       )}

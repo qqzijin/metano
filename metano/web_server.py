@@ -921,28 +921,6 @@ async def api_knowledge_ingest(body: dict, _admin=Depends(require_role("admin"))
         logger.exception()
         return _error_response('Internal error')
 
-@app.get('/api/knowledge/{doc_id}')
-async def api_knowledge_get(doc_id: str, _admin=Depends(require_role("admin"))):
-    """Return a single knowledge document with its full content (Web viewer)."""
-    try:
-        from .knowledge import knowledge_get_document
-        doc = knowledge_get_document(doc_id)
-        if not doc:
-            return _error_response('Not found', status_code=404)
-        return doc
-    except Exception as e:
-        logger.exception()
-        return _error_response('Internal error')
-
-@app.delete('/api/knowledge/{doc_id}')
-async def api_knowledge_delete(doc_id: str, _admin=Depends(require_role("admin"))):
-    try:
-        from .knowledge import knowledge_delete
-        return knowledge_delete(doc_id)
-    except Exception as e:
-        logger.exception()
-        return _error_response('Internal error')
-
 # ── Knowledge Graph ──
 
 @app.post('/api/knowledge/graph/extract')
@@ -979,6 +957,32 @@ async def api_knowledge_graph_stats():
     except Exception as e:
         logger.exception()
         return _error_response('Internal error', extra={'entities': 0, 'relationships': 0})
+
+# NOTE: /api/knowledge/{doc_id} MUST be declared AFTER all fixed
+# /api/knowledge/... routes (graph, graph/stats, explore, gaps, ingest).
+# FastAPI matches in declaration order, so a `{doc_id}` before them would
+# capture "graph" / "graph/stats" and 404 them.
+@app.get('/api/knowledge/{doc_id}')
+async def api_knowledge_get(doc_id: str, _admin=Depends(require_role("admin"))):
+    """Return a single knowledge document with its full content (Web viewer)."""
+    try:
+        from .knowledge import knowledge_get_document
+        doc = knowledge_get_document(doc_id)
+        if not doc:
+            return _error_response('Not found', status_code=404)
+        return doc
+    except Exception as e:
+        logger.exception()
+        return _error_response('Internal error')
+
+@app.delete('/api/knowledge/{doc_id}')
+async def api_knowledge_delete(doc_id: str, _admin=Depends(require_role("admin"))):
+    try:
+        from .knowledge import knowledge_delete
+        return knowledge_delete(doc_id)
+    except Exception as e:
+        logger.exception()
+        return _error_response('Internal error')
 
 @app.post('/api/evolution/pause')
 async def api_evolution_pause(_admin=Depends(require_role("admin"))):

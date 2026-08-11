@@ -44,6 +44,14 @@ export default function ProfilesPage() {
     <>
       <PageHeader title="用户画像" description={`${beliefs.length} 条信念`} />
 
+      {/* 说明：百分比是置信度而非成熟度。stage 由 置信度 + 强化次数 共同决定，
+          所以会出现"established 的置信度低于 draft"——draft 可能单次置信高但强化次数不足。 */}
+      <p className="text-xs text-muted-foreground mb-4 leading-relaxed">
+        成熟度（核心/已建立/草稿）由 <code className="font-mono">置信度 × 强化次数</code> 共同决定，
+        卡片右上角百分比是<strong className="text-foreground">置信度</strong>（该信念被证据支持的程度），不是完成度。
+        一条信念可以置信度高但强化次数少而停留在草稿；置信度会随时间衰减，被强化后回升。
+      </p>
+
       {profile?.belief_summary && (
         <Card className="mb-4">
           <CardHeader className="pb-2">
@@ -73,7 +81,7 @@ export default function ProfilesPage() {
                       <div className="flex gap-2 flex-wrap mt-2">
                         <Badge variant="secondary" className="text-[10px]">{STAGE_NAMES[b.stage] ?? b.stage}</Badge>
                         {b.category && <Badge variant="outline" className="text-[10px]">{b.category}</Badge>}
-                        <Badge variant="outline" className="text-[10px] ml-auto">{((b.confidence ?? 0) * 100).toFixed(0)}%</Badge>
+                        <Badge variant="outline" className="text-[10px] ml-auto" title="置信度：该信念被证据支持的程度">置信度 {((b.confidence ?? 0) * 100).toFixed(0)}%</Badge>
                       </div>
                     </CardContent>
                   </Card>

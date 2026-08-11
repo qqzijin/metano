@@ -24,7 +24,6 @@ ANTHROPIC_API_KEY = os.environ.get('ANTHROPIC_API_KEY', '')
 ANTHROPIC_MODEL = os.environ.get('HONCHO_MODEL', 'claude-sonnet-4-6')
 PROJECT_DIR = home_dir()
 SRC_DIR = Path(__file__).resolve().parent
-SKILLS_DIR = SRC_DIR / 'skills_data'
 MODIFIABLE_FILES = {'cron/jobs.json', 'skills/*/SKILL.md trigger', 'gateway_config.yaml'}
 
 def _call_llm(system_prompt: str, user_prompt: str) -> str:

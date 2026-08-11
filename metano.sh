@@ -12,14 +12,30 @@ start_backup() {
 }
 
 start_web() {
-    if [ -f "$PID_DIR/web.pid" ] && kill -0 "$(cat "$PID_DIR/web.pid")" 2>/dev/null; then
-        echo "Web dashboard already running (PID $(cat "$PID_DIR/web.pid"))"
+    # Root-cause fix: `kill -0 PID` only checks the process exists, NOT that it
+    # bound :9120. A second instance that fails to bind (port held by another)
+    # "lives" without serving → every page request fails and the user is bounced
+    # to the login page. Detect by PORT, not pid.
+    if ss -tlnp 2>/dev/null | grep -q ':9120'; then
+        echo "Web dashboard already listening on :9120"
+        L=$(ss -tlnp 2>/dev/null | grep ':9120' | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2)
+        [ -n "$L" ] && echo "$L" > "$PID_DIR/web.pid"
         return
     fi
+    rm -f "$PID_DIR/web.pid"
     echo "Starting web dashboard on http://0.0.0.0:9120 ..."
+    mkdir -p "$BRIDGE_DIR/logs"
     cd "$BRIDGE_DIR"
-    python3 -c "from metano.serve import main; main()" &
+    nohup python3 -c "from metano.serve import main; main()" >> "$BRIDGE_DIR/logs/web.log" 2>&1 &
     echo $! > "$PID_DIR/web.pid"
+    for i in $(seq 1 16); do
+        if ss -tlnp 2>/dev/null | grep -q ':9120'; then
+            echo "Web dashboard up on :9120"
+            return 0
+        fi
+        sleep 0.5
+    done
+    echo "Warning: web did not bind :9120 within 8s — see $BRIDGE_DIR/logs/web.log"
 }
 
 start_ccc_daemon() {
