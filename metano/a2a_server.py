@@ -262,6 +262,7 @@ def verify_a2a_token(token: str) -> Optional[dict]:
     try:
         secret = get_jwt_secret()
     except Exception:
+        logger.exception('a2a_server.py:264 exception')
         return None
     try:
         return jwt.decode(
