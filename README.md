@@ -1,5 +1,14 @@
 # metano
 
+<p align="center">
+  <img alt="版本" src="https://img.shields.io/badge/版本-v3.1.0-6a4ff3" />
+  <img alt="平台" src="https://img.shields.io/badge/平台-Linux%20%7C%20macOS-28a745" />
+  <img alt="Python" src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white" />
+  <img alt="Node" src="https://img.shields.io/badge/Node.js-18%2B-339933?logo=nodedotjs&logoColor=white" />
+  <img alt="License" src="https://img.shields.io/badge/License-MIT-yellow" />
+  <img alt="PRs Welcome" src="https://img.shields.io/badge/PRs-Welcome-brightgreen" />
+</p>
+
 > **版本：v3.1.0** · AI 网关桥接层 · 自我进化引擎 · 多平台消息接入 · RAG 知识库 + 知识图谱 · 记忆技能库
 
 **支持平台**：Linux（x86_64 / aarch64，已实测群晖 NAS / x86 服务器 / WSL）· macOS（Python 3.11+）· 需 Python 3.11+、Node.js 18+、npm。Windows 未官方支持（WSL2 可用）。
@@ -346,6 +355,46 @@ python3 -m pytest tests/ -q
 - ❌ 不包含会话记录、用户建模数据、进化日志、知识库数据
 - ✅ 所有密钥以 `gateway_config.example.yaml` 脱敏模板提供
 
+## 🤝 贡献指南
+
+欢迎贡献！无论是修 bug、加功能、改进文档，还是提 issue，都非常感谢。
+
+### 开发环境
+
+```bash
+# 克隆 + 一键安装（含开发依赖）
+git clone https://github.com/<your-repo>/metano.git && cd metano
+./install.sh --skip-start
+
+# 前端开发模式（热更新，:5173 代理到 :9120）
+cd web && npm run dev
+
+# 后端（另开终端）
+METANO_HOME=./dev-data python3 -m metano.serve
+
+# 运行测试
+python3 -m pytest tests/ -q
+```
+
+### 提交规范
+
+- **分支**：从 `main` 切新分支（`feat/xxx` 或 `fix/xxx`），完成后开 PR
+- **Commit 信息**：`feat:` / `fix:` / `docs:` / `chore:` / `refactor:` 前缀 + 中文或英文描述
+- **测试**：Python 改动必须带 pytest 用例；前端改动跑 `npm run build` 验证编译
+- **验证**：改动后实际运行验证（不是只看代码逻辑推断），涉及前端必须重建 dist
+
+### 代码约定
+
+- **后端**：Python 3.11+，模块按职责拆分到 `metano/`；新增能力参考现有模块风格（函数注释 + `logger` 而非 `print`）
+- **前端**：React 19 + shadcn/ui + Tailwind；新页面加到 `web/src/pages/` 并在 `App.tsx` 注册路由
+- **配置**：新增可配置项优先走 `gateway_config.yaml`（`gen_config.py` 提供向导），密钥永不硬编码——用环境变量
+- **隐私**：仓库为纯源码导出，**严禁提交**任何 `.db` / `.env` / 真实密钥 / 私人 ID / 局域网 IP
+
+### 安全
+
+- 发现安全漏洞请**不要**公开提 issue，直接邮件或开私有讨论，修复后再公开披露
+- 涉及密钥、鉴权、消息网关的改动请特别注明安全影响
+
 ## 📜 License
 
-MIT
+[MIT](LICENSE) © metano 贡献者
