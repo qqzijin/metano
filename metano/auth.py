@@ -57,6 +57,9 @@ def _save_config(config: dict):
     import yaml
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     CONFIG_PATH.write_text(yaml.dump(config, allow_unicode=True, default_flow_style=False))
+    # SECURITY (S9): config holds secrets (JWT secret, user password hashes);
+    # force owner-only permissions instead of relying on the process umask.
+    os.chmod(CONFIG_PATH, 0o600)
 
 
 def ensure_jwt_secret() -> str:

@@ -15,8 +15,17 @@ export function useWebSocket(): UseWebSocketReturn {
   const subsRef = useRef<Map<string, Set<(data: unknown) => void>>>(new Map());
   const [connected, setConnected] = useState(false);
   const retryRef = useRef(0);
+  // Track the pending reconnect timer so it can be cleared on unmount and
+  // before a new connection is opened (avoiding reconnects after teardown).
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const connect = useCallback(() => {
+    // A previous close may have scheduled a reconnect; drop it so we don't
+    // end up with two sockets / reconnect loops.
+    if (retryTimerRef.current) {
+      clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
+    }
     const ws = new WebSocket(WS_URL);
     wsRef.current = ws;
 
@@ -27,9 +36,13 @@ export function useWebSocket(): UseWebSocketReturn {
 
     ws.onclose = () => {
       setConnected(false);
+      // Only schedule a reconnect if this closing socket is still the active
+      // one. After unmount (or a newer connect) wsRef.current changes, and a
+      // stale socket's onclose must not arm a timer.
+      if (wsRef.current !== ws) return;
       const delay = Math.min(1000 * 2 ** retryRef.current, 30000);
       retryRef.current++;
-      setTimeout(connect, delay);
+      retryTimerRef.current = setTimeout(connect, delay);
     };
 
     ws.onmessage = (e) => {
@@ -45,7 +58,15 @@ export function useWebSocket(): UseWebSocketReturn {
 
   useEffect(() => {
     connect();
-    return () => wsRef.current?.close();
+    return () => {
+      // Clear any pending reconnect so an unmounted hook never reconnects.
+      if (retryTimerRef.current) {
+        clearTimeout(retryTimerRef.current);
+        retryTimerRef.current = null;
+      }
+      wsRef.current?.close();
+      wsRef.current = null;
+    };
   }, [connect]);
 
   const subscribe = useCallback((type: string, cb: (data: unknown) => void) => {

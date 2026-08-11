@@ -246,10 +246,10 @@ export function Sidebar({ collapsed, onToggle, connected, onNavigate, onClose }:
                 </div>
               </div>
               <div className="flex gap-1">
-                <Button variant="ghost" size="icon" className="size-7" onClick={() => setShowChangePwd(true)} title="修改密码">
+                <Button variant="ghost" size="icon" className="size-7" onClick={() => setShowChangePwd(true)} title="修改密码" aria-label="修改密码">
                   <KeyRound className="size-3.5 text-muted-foreground" />
                 </Button>
-                <Button variant="ghost" size="icon" className="size-7" onClick={logout} title="登出">
+                <Button variant="ghost" size="icon" className="size-7" onClick={logout} title="登出" aria-label="登出">
                   <LogOut className="size-3.5 text-muted-foreground" />
                 </Button>
               </div>
@@ -261,6 +261,7 @@ export function Sidebar({ collapsed, onToggle, connected, onNavigate, onClose }:
               variant="ghost"
               size="icon"
               className="size-7"
+              aria-label="切换主题"
               onClick={() => {
                 const next = theme === "dark" ? "light" : theme === "light" ? "system" : "dark";
                 setTheme(next);
@@ -279,7 +280,7 @@ export function Sidebar({ collapsed, onToggle, connected, onNavigate, onClose }:
 
             {/* Collapse toggle (desktop only) */}
             {!mobile && (
-              <Button variant="ghost" size="icon" className="size-7 ml-auto" onClick={onToggle}>
+              <Button variant="ghost" size="icon" className="size-7 ml-auto" onClick={onToggle} aria-label={collapsed ? "展开侧边栏" : "折叠侧边栏"}>
                 {collapsed ? <ChevronsRight className="size-3.5" /> : <ChevronsLeft className="size-3.5" />}
               </Button>
             )}

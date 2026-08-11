@@ -8,6 +8,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useConfig } from "@/api/hooks";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { fetchAPI } from "@/api/client";
+import { RoleGuard } from "@/components/auth/RoleGuard";
 import { toast } from "sonner";
 
 export default function ConfigPage() {
@@ -33,7 +34,8 @@ export default function ConfigPage() {
   });
 
   return (
-    <>
+    <RoleGuard role="admin">
+      <>
       <PageHeader
         title="配置"
         description="系统配置"
@@ -66,6 +68,7 @@ export default function ConfigPage() {
           </CardContent>
         </Card>
       )}
-    </>
+      </>
+    </RoleGuard>
   );
 }

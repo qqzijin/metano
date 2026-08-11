@@ -17,8 +17,27 @@ export async function fetchAPI<T>(path: string, init?: RequestInit): Promise<T> 
     throw new Error("未登录");
   }
 
-  if (!res.ok) throw new Error(`API ${res.status}: ${res.statusText}`);
-  return res.json();
+  if (!res.ok) {
+    // Prefer the backend's `detail` message (validation errors, etc.) over the
+    // generic status text. Body may be empty or non-JSON — fall back quietly.
+    let detail = "";
+    try {
+      const body = await res.json();
+      if (body && typeof body === "object" && "detail" in body) {
+        detail = String((body as { detail: unknown }).detail ?? "");
+      }
+    } catch {
+      /* empty / non-JSON error body */
+    }
+    throw new Error(detail || `API ${res.status}: ${res.statusText}`);
+  }
+
+  // Some endpoints return 204/empty bodies or text content — don't JSON.parse.
+  const contentType = res.headers.get("content-type") ?? "";
+  if (res.status === 204 || !contentType.includes("application/json")) {
+    return undefined as T;
+  }
+  return res.json() as Promise<T>;
 }
 
 /* ---- types ---- */

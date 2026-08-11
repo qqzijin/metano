@@ -43,11 +43,11 @@ from .code_exec import code_run
 from .sub_agent import delegator as _agent_delegator
 from .image_gen import image_generate as _image_gen_func, image_describe as _image_desc_func
 from .model_router import model_router as _model_router
-from .knowledge import knowledge_ingest, knowledge_search, knowledge_list, knowledge_delete
+from .knowledge import knowledge_ingest as _kb_ingest, knowledge_search as _kb_search, knowledge_list as _kb_list, knowledge_delete as _kb_delete
 from .voice import voice_speak as _voice_speak, voice_list_voices
 from .security import security as _security
 from .kanban import kanban_create_board, kanban_add_task, kanban_move_task, kanban_list, kanban_delete_task
-from .home_assistant import home_control, home_status, home_automate
+from .home_assistant import home_control as _ha_control, home_status as _ha_status, home_automate as _ha_automate
 from .memory import add_memory, search_memories, get_memory_stats, compress_memories
 from .mcp_bridge import tavily_search
 from metano.log import logger
@@ -534,20 +534,20 @@ def model_list() -> str:
 @mcp.tool()
 def knowledge_ingest(path: str, title: str='', doc_type: str='auto') -> str:
     """Ingest a document into the knowledge base. Supports text, markdown, code, JSON files. doc_type: text, markdown, code, json, auto."""
-    result = knowledge_ingest(path, title=title, doc_type=doc_type)
+    result = _kb_ingest(path, title=title, doc_type=doc_type)
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 @mcp.tool()
 @track_action('knowledge_search')
 def knowledge_search(query: str, limit: int=5) -> str:
     """Search the knowledge base for relevant content."""
-    result = knowledge_search(query, limit=limit)
+    result = _kb_search(query, limit=limit)
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 @mcp.tool()
 def knowledge_list(doc_type: str='') -> str:
     """List all documents in the knowledge base."""
-    result = knowledge_list(doc_type=doc_type)
+    result = _kb_list(doc_type=doc_type)
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 @mcp.tool()
@@ -591,13 +591,13 @@ def kanban_task(action: str, board_id: str='', task_id: str='', title: str='', d
 @mcp.tool()
 def home_control(entity_id: str, action: str, value: str='') -> str:
     """Control a Home Assistant entity. action: turn_on, turn_off, toggle, set_value. Requires HA_URL and HA_TOKEN configured."""
-    result = home_control(entity_id, action, value)
+    result = _ha_control(entity_id, action, value)
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 @mcp.tool()
 def home_status(entity_id: str='') -> str:
     """Get status of Home Assistant entities. Leave entity_id empty to list all domains."""
-    result = home_status(entity_id)
+    result = _ha_status(entity_id)
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 @mcp.tool()

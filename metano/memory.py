@@ -15,7 +15,7 @@ from pathlib import Path
 from metano.log import logger
 from .paths import home_dir
 
-DB_PATH = os.environ.get('MEMORY_DB', str(home_dir() / 'memory.db'))
+DB_PATH = os.environ.get('MEMORY_DB') or str(home_dir() / 'memory.db')
 
 _SCHEMA_SQL = """
     CREATE TABLE IF NOT EXISTS memories (
@@ -97,6 +97,9 @@ def _fts_remove(conn, row_id: int):
 def _get_conn():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     conn.executescript(_SCHEMA_SQL)
     _migrate(conn)
     conn.commit()

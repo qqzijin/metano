@@ -77,6 +77,10 @@ class FeishuBot:
         self.encryption_key = os.environ.get("FEISHU_ENCRYPTION_KEY") or config.get("encryption_key", "")
         self.verification_token = os.environ.get("FEISHU_VERIFICATION_TOKEN") or config.get("verification_token", "")
         self.allowed_users = config.get("allowed_users", [])
+        # S2：审批人白名单——优先独立配置 feishu.approval_users，未配置时回退到
+        # allowed_users。审批回复（批准#N/拒绝#N）只有白名单内的发送者才能生效，
+        # 防止任意能私聊 bot 的人改写 operator 配置 / CLAUDE.md。
+        self.approval_users = config.get("approval_users") or config.get("allowed_users") or []
         self.router = router
         self.client: Optional[lark.Client] = None
         self._processed = set()  # message dedup
@@ -180,16 +184,29 @@ class FeishuBot:
 
             logger.info(f"Feishu message from {sender_id} in {chat_type}: {user_text[:80]}")
 
-            # Check if this is an evolution proposal approval/rejection reply
-            if chat_type == "p2p":
+            # Check if this is an evolution proposal approval/rejection reply.
+            # SECURITY (S2/C4): only configured approvers may act on proposal
+            # replies. feishu.approval_users（未单独配置时回退到 allowed_users）
+            # 必须非空且包含发送者 open_id；否则审批指令被拒绝、不处理
+            # （处理会改写 operator 配置 / CLAUDE.md）。同时把 sender_id 传给
+            # process_approval_reply 做第二道身份校验（纵深防御）。
+            if chat_type == "p2p" and re.match(r'(批准|拒绝)\s*#?\d+', user_text.strip()):
+                if not self.approval_users or sender_id not in self.approval_users:
+                    self._send_text_message(chat_id, '⚠️ 无权处理提案审批（仅限配置的审批人）。', "")
+                    return
                 try:
                     from ..evolution_notify import process_approval_reply
-                    approval_result = process_approval_reply(user_text)
+                    approval_result = process_approval_reply(
+                        user_text, sender_id=sender_id, allowed_senders=self.approval_users
+                    )
                     if approval_result:
                         action = approval_result['action']
-                        pid = approval_result['proposal_id']
-                        self._send_text_message(chat_id, f"Proposal #{pid} {action}", "")
-                        return
+                        if action == 'denied':
+                            logger.warning(f"feishu: 审批被拒绝，sender={sender_id}")
+                        else:
+                            pid = approval_result['proposal_id']
+                            self._send_text_message(chat_id, f"Proposal #{pid} {action}", "")
+                            return
                 except Exception:
                     pass  # Not an approval reply, continue normal processing
 

@@ -66,10 +66,23 @@ def image_generate(prompt: str, size: str='1024x1024', style: str='vivid', model
         return {'error': str(e)}
 
 def image_describe(image_path: str, prompt: str='Describe this image in detail.') -> dict:
-    """Describe an image using vision API."""
+    """Describe an image using vision API.
+
+    SECURITY: only files under IMAGE_DIR/UPLOADS_DIR may be described — reading
+    an arbitrary path would let an attacker exfiltrate gateway_config.yaml,
+    ~/.ssh/id_rsa, etc. via the vision API response.
+    """
     import requests
     import os
-    path = Path(image_path)
+    from .paths import UPLOADS_DIR
+    path = Path(image_path).expanduser()
+    try:
+        allowed_dirs = [IMAGE_DIR.resolve(), UPLOADS_DIR.resolve()]
+        resolved = path.resolve()
+        if not any(resolved.is_relative_to(d) for d in allowed_dirs):
+            return {'error': 'Access denied: only files in the images/uploads directory may be described'}
+    except (ValueError, OSError):
+        return {'error': 'Invalid path'}
     if not path.exists():
         return {'error': f'Image not found: {image_path}'}
     cfg = _openai_config()

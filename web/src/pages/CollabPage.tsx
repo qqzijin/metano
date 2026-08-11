@@ -18,6 +18,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import { fmtCost, fmtTime } from "@/api/client";
+import { RoleGuard } from "@/components/auth/RoleGuard";
 import { toast } from "sonner";
 
 /* ── types ─────────────────────────────────────────────────────────────── */
@@ -219,7 +220,8 @@ export default function CollabPage() {
   };
 
   return (
-    <>
+    <RoleGuard role="admin">
+      <>
       <PageHeader
         title="协作控制面"
         description={`${tasks.length} 个任务 · 跨设备协作管理`}
@@ -474,6 +476,7 @@ export default function CollabPage() {
           )}
         </DialogContent>
       </Dialog>
-    </>
+      </>
+    </RoleGuard>
   );
 }

@@ -137,7 +137,7 @@ ALL_TOOL_TIERS: dict[str, str] = {
     "agent_result": "read",
     # image
     "image_generate": "destructive",
-    "image_describe": "read",
+    "image_describe": "destructive",  # reads arbitrary files (path traversal) — must not be in read-only remote whitelist
     # model router
     "model_list": "read",
     # knowledge base

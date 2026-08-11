@@ -114,18 +114,37 @@ def _log(phase: str, action: str, detail: dict = None, cost: float = 0, model: s
 def session_start():
     """Called from SessionStart hook.
 
-    1. Harvest previous session (if unharvested)
+    1. Zero-cost keyword correction scan (no LLM) on the most recent unharvested
+       session — full LLM harvest runs on cron_harvest (every 30 minutes).
     2. Print compact belief index (Layer 1) for context injection
     3. Print pending suggestion reminders
     """
     init_evo_db()
+    # S3：SessionStart 钩子只有 5s 超时，跑 LLM 收割（extract_observations）
+    # 会在超时被杀——LLM 请求已发出但结果丢弃（白烧 tokens），且会话未标记
+    # 收割导致 30 分钟后 cron 再收割一次（重复 LLM 花费 + 重复写入）。
+    # 这里只做零成本的关键词纠正扫描（_detect_corrections，纯正则），
+    # 不跑 LLM、不落盘、不标记，完整收割统一交给 cron/后台。
     if not _is_paused():
         try:
-            harvest_result = harvest_recent_sessions(max_sessions=1)
-            if harvest_result['sessions_processed'] > 0:
-                _log('observe', 'session_harvest', harvest_result)
+            from .harvester import get_unharvested_sessions, _detect_corrections
+            conn = init_db()
+            try:
+                session_ids = get_unharvested_sessions(conn, limit=1)
+                if session_ids:
+                    sid = session_ids[0]
+                    rows = conn.execute(
+                        "SELECT role, content, timestamp FROM messages WHERE session_id = ? ORDER BY timestamp ASC",
+                        (sid,),
+                    ).fetchall()
+                    user_msgs = [{'content': r['content'], 'timestamp': r['timestamp']} for r in rows if r['role'] == 'user' and r['content']]
+                    assistant_msgs = [{'content': r['content'], 'timestamp': r['timestamp']} for r in rows if r['role'] == 'assistant' and r['content']]
+                    correction_count = len(_detect_corrections(user_msgs, assistant_msgs))
+                    _log('observe', 'session_scan', {'session_id': sid, 'corrections': correction_count, 'mode': 'keyword_scan'})
+            finally:
+                conn.close()
         except Exception as e:
-            _log('observe', 'harvest_error', {'error': str(e)})
+            _log('observe', 'harvest_error', {'error': str(e), 'mode': 'keyword_scan'})
     # Layer 1: compact belief index (~50-100 tokens)
     conn = init_honcho_db()
     if not get_user(conn, 'default'):
@@ -162,11 +181,16 @@ def cron_harvest():
     _log('observe', 'cron_harvest', result)
     return result
 
-def cron_adapt():
-    """Called from cron daily at 03:00. Run belief-to-action adaptation."""
+def cron_adapt(dry_run: bool = True):
+    """Called from cron daily at 03:00. Run belief-to-action adaptation.
+
+    S1：自动 cron 默认 dry_run=True —— 只生成待审批预览，不直接写全局
+    ~/CLAUDE.md 或记忆文件，避免绕过审批管线。用户显式触发（evolution_run
+    的 act 阶段，经由 Web/MCP 管理员接口）时才真实写入。
+    """
     if _is_paused():
         return {'status': 'paused'}
-    result = execute_adaptation_cycle(dry_run=False)
+    result = execute_adaptation_cycle(dry_run=dry_run)
     _log('act', 'cron_adapt', result)
     return result
 
@@ -386,15 +410,15 @@ def _estimate_daily_cost() -> float:
 
     基于网络探索发现：Agent Memory系统需要量化记忆质量。
     改进：区分引擎成本和用户日常使用成本，避免混淆。
+    S4：改用 SQL COALESCE(SUM(cost),0) 直接求和，避免 get_audit(limit=100)
+    在日调用超过 100 条时截断导致成本被低估、熔断永不触发。
     """
     try:
-        from .evo_models import get_audit
+        from .evo_models import get_audit_cost_since
         cutoff = time.time() - 86400
-        entries = get_audit(since=cutoff)
         # 只计算进化引擎自身的成本，排除对话成本
         evo_phases = ('observe', 'act', 'maintain', 'architect', 'knowledge', 'introspect', 'control')
-        evo_cost = sum(e.get('cost', 0) for e in entries if e.get('phase', '') in evo_phases)
-        return evo_cost
+        return get_audit_cost_since(cutoff, evo_phases)
     except Exception:
         return 0.0
 
@@ -424,7 +448,8 @@ def evolution_run(stage: str='all') -> dict:
     if stage in ('all', 'observe'):
         results['observe'] = cron_harvest()
     if stage in ('all', 'act'):
-        results['act'] = cron_adapt()
+        # S1：用户显式运行 act 阶段才真实写入 CLAUDE.md/记忆文件
+        results['act'] = cron_adapt(dry_run=False)
     if stage in ('all', 'reflect'):
         results['reflect'] = cron_reflect()
     if stage in ('all', 'maintain'):

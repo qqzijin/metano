@@ -78,12 +78,21 @@ def notify_pending_proposals(proposals: list[dict]) -> dict:
         return {'status': 'error'}
 
 
-def process_approval_reply(text: str) -> dict | None:
+def process_approval_reply(text: str, sender_id: str = None, allowed_senders: list = None) -> dict | None:
     """Parse a Feishu reply like '批准#3' or '拒绝#5' and update proposal status.
 
     Returns the action taken, or None if text doesn't match.
+
+    S2：当调用方提供了审批人白名单 allowed_senders 时，必须先校验 sender_id。
+    非白名单发送者返回 {'action': 'denied', ...}，绝不改变 proposal 状态。
+    未提供白名单时保持旧行为（向后兼容，如单元测试直接调用）。
     """
     import re
+    # S2：审批人身份校验（仅当调用方提供白名单时强制）
+    if allowed_senders:
+        if not sender_id or sender_id not in allowed_senders:
+            logger.warning(f"Feishu 审批回复被拒绝：发送者 {sender_id} 不在审批人白名单")
+            return {'action': 'denied', 'reason': 'unauthorized_sender'}
     approve_match = re.match(r'批准\s*#?(\d+)', text.strip())
     reject_match = re.match(r'拒绝\s*#?(\d+)', text.strip())
 

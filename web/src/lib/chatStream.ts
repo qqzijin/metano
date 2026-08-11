@@ -12,7 +12,6 @@
  * loop owned by this module the backend keeps streaming, the message is persisted,
  * and returning to the chat page shows the finished reply.
  */
-import { toast } from "sonner";
 
 export interface ChatStreamEvent {
   type: "thinking" | "text" | "tool_use" | "tool_result" | "done" | "error";
@@ -160,5 +159,3 @@ export async function startChatStream(body: {
     running = false;
   }
 }
-
-void toast;

@@ -113,6 +113,12 @@ class MessageRouter:
         cmd_response = self._handle_command(platform, user_id, message)
         if cmd_response is not None:
             return cmd_response
+        # SECURITY (S6): cap per-message length before it reaches the prompt to
+        # bound token cost / queue DoS from arbitrarily long messages.
+        truncation_note = ''
+        if len(message) > self._MAX_MESSAGE_LENGTH:
+            message = message[:self._MAX_MESSAGE_LENGTH]
+            truncation_note = f'⚠️ 消息超过 {self._MAX_MESSAGE_LENGTH} 字符，已截断处理。'
         session = self.get_or_create_session(platform, user_id)
         if not session.history and not session.start_new:
             self._restore_history(session, platform, user_id)
@@ -145,6 +151,8 @@ class MessageRouter:
         response, in_tok, out_tok, cache_tok = await self._call_claude(
             prompt, session, skill_prefix=skill_prefix, allowed_tools=tools, skip_permissions=skip, on_event=on_event,
             provider_name=exp_ctx.get('strategy', '') if exp_ctx else '')
+        if truncation_note:
+            response = truncation_note + '\n\n' + response
         session.last_active = time.time()
         session.message_count += 1
         session.history.append({'role': 'user', 'content': message})
@@ -420,7 +428,13 @@ class MessageRouter:
             return '授权状态不可用'
 
     def _cmd_mode(self, command: str, args: list, user_key: str) -> str:
+        # SECURITY (S13): only accept on/off/empty — arbitrary args must not
+        # silently map to free mode.
+        if len(args) > 1:
+            return f'用法: /{command} [on|off]'
         arg = args[0].lower() if args else ''
+        if arg not in ('on', 'off', ''):
+            return f'用法: /{command} [on|off]（收到未知参数: {arg}）'
         if command == 'auto':
             if arg == 'off':
                 self._set_auth(user_key, 'mode', 'safe')
@@ -461,16 +475,23 @@ class MessageRouter:
         return f'已收回工具: {tool}'
 
     def _get_auth(self, user_key: str) -> dict:
-        """Read per-user authorization state, with defaults when absent."""
-        default = {'mode': 'free', 'granted': [], 'revoked': []}
+        """Read per-user authorization state, with defaults when absent.
+
+        SECURITY: default mode is 'safe', NOT 'free'. 'free' maps to
+        --dangerously-skip-permissions for the whole allowlist (incl. Bash,
+        Write, Edit) — any unauthenticated/unknown platform user who can message
+        the bot would get arbitrary command execution. Only a user who
+        explicitly opts into /auto (free) gets that.
+        """
+        default = {'mode': 'safe', 'granted': [], 'revoked': []}
         try:
             if AUTH_STATE.exists():
                 with open(AUTH_STATE, encoding='utf-8') as f:
                     data = json.load(f)
                 entry = data.get(user_key, {})
-                mode = entry.get('mode', 'free')
+                mode = entry.get('mode', 'safe')
                 if mode not in ('free', 'safe'):
-                    mode = 'free'
+                    mode = 'safe'
                 return {
                     'mode': mode,
                     'granted': list(entry.get('granted', []) or []),
@@ -488,7 +509,7 @@ class MessageRouter:
             if AUTH_STATE.exists():
                 with open(AUTH_STATE, encoding='utf-8') as f:
                     data = json.load(f)
-            entry = data.setdefault(user_key, {'mode': 'free', 'granted': [], 'revoked': []})
+            entry = data.setdefault(user_key, {'mode': 'safe', 'granted': [], 'revoked': []})
             if field == 'mode':
                 if value not in ('free', 'safe'):
                     raise ValueError(f'invalid auth mode: {value}')
@@ -528,6 +549,7 @@ class MessageRouter:
     # Categories that should never be injected into system context
     _SKIP_CATEGORIES = {'tool_error', 'correction', 'code_quality', 'self_reflection'}
     _MAX_CONTEXT_CHARS = 3000
+    _MAX_MESSAGE_LENGTH = 4000
 
     def _build_system_context(self) -> str:
         """Build system context from Honcho profile and memory for claude -p."""
@@ -610,9 +632,20 @@ class MessageRouter:
         'mcp__metano__browser_click',
         'mcp__metano__browser_type',
         'mcp__metano__memory_search',
-        'mcp__metano__memory_add',
         'mcp__metano__knowledge_search',
     ]
+
+    # Tools stripped in safe mode (no --dangerously-skip-permissions): write /
+    # destructive primitives must not be pre-approved via --allowedTools for
+    # unauthenticated gateway users. In free mode (/auto) they remain available
+    # since that's the user's explicit opt-in.
+    _SAFE_EXCLUDED_TOOLS = {
+        'Bash', 'Edit', 'Write',
+        'mcp__metano__browser_navigate',
+        'mcp__metano__browser_click',
+        'mcp__metano__browser_type',
+        'mcp__tavily__tavily_crawl', 'mcp__tavily__tavily_research',
+    }
 
     async def _call_claude(self, prompt: str, session: GatewaySession, skill_prefix: str='',
                            allowed_tools=None, skip_permissions: bool=True,
@@ -651,6 +684,13 @@ class MessageRouter:
             combined = '\n\n'.join(context_layers)
             prompt = f"{combined}\n\n---\n\nUser message: {prompt}\n\nRespond in Chinese."
         tools = allowed_tools or self._GATEWAY_ALLOWED_TOOLS
+        if not skip_permissions:
+            # SECURITY: in safe mode we do NOT pass --dangerously-skip-permissions,
+            # but --allowedTools still pre-approves every listed tool. Stripping
+            # write/destructive tools keeps safe mode meaningfully safe — the
+            # model cannot touch the filesystem/shell unless the user granted
+            # those tools explicitly.
+            tools = [t for t in tools if t not in self._SAFE_EXCLUDED_TOOLS]
         cmd = [claude_bin, '-p', prompt]
         if skip_permissions:
             cmd.append('--dangerously-skip-permissions')
@@ -697,9 +737,11 @@ class MessageRouter:
             proc.kill()
             await proc.wait()
             return 'Response timed out. Please try again.', 0, 0, 0
-        except Exception as e:
+        except Exception:
             logger.exception()
-            return f'Error: {str(e)}', 0, 0, 0
+            # SECURITY (S10): do not echo internal exception details to the
+            # channel (leaks paths / stack traces); log them and return generic.
+            return '处理失败，请稍后重试', 0, 0, 0
 
     async def _call_claude_stream_events(self, proc, on_event) -> tuple:
         """Read claude stream-json line-by-line, invoking ``on_event`` with
@@ -767,7 +809,11 @@ class MessageRouter:
         response = ''.join(text_parts).strip()
         if not response:
             err = (stderr or b'').decode(errors='replace').strip()
-            response = f'Error: {err[:300]}' if err else 'Error: empty response'
+            if err:
+                logger.error(f'claude -p stream stderr: {err[:500]}')
+            # SECURITY (S10): never echo stderr (paths / stack traces) back to
+            # the channel; log it and return a generic message.
+            response = '处理失败，请稍后重试'
         return (response,
                 usage.get('input_tokens', 0) or 0,
                 usage.get('output_tokens', 0) or 0,
@@ -932,9 +978,10 @@ class MessageRouter:
         response = ''.join(text_parts).strip()
         if not response:
             if stderr:
-                response = f'Error: {stderr.decode(errors="replace")[:200]}'
-            else:
-                response = '(no response)'
+                # SECURITY (S10): log stderr details but never echo them back to
+                # the channel (leaks paths / stack traces).
+                logger.error(f'claude -p stderr: {stderr.decode(errors="replace")[:500]}')
+            response = '处理失败，请稍后重试'
         in_tok = usage.get('input_tokens') or 0
         out_tok = usage.get('output_tokens') or 0
         cache_tok = usage.get('cache_read_input_tokens') or 0

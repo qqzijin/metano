@@ -500,6 +500,31 @@ def get_daily_cost(days: int = 1) -> float:
     return row[0] if row else 0.0
 
 
+def get_audit_cost_since(cutoff: float, phases: tuple = ()) -> float:
+    """Direct SQL SUM of audit_log.cost since cutoff (optionally filtered by phase).
+
+    S4：与 get_audit(limit=100) 不同，这里用聚合查询一次性求和，不会因日调用量
+    超过 100 条而被截断，从而避免成本被低估、熔断永不触发。
+    """
+    conn = _get_conn()
+    try:
+        if phases:
+            placeholders = ','.join('?' * len(phases))
+            row = conn.execute(
+                f"SELECT COALESCE(SUM(cost), 0) FROM audit_log "
+                f"WHERE timestamp >= ? AND phase IN ({placeholders})",
+                (cutoff,) + tuple(phases)
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT COALESCE(SUM(cost), 0) FROM audit_log WHERE timestamp >= ?",
+                (cutoff,)
+            ).fetchone()
+    finally:
+        conn.close()
+    return row[0] if row else 0.0
+
+
 # ── Cron Jobs ──
 
 def sync_cron_jobs(jobs: list[dict]):

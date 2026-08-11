@@ -285,12 +285,33 @@ def _merge_results(query: str, semantic_results: list, semantic_source: str,
     return {"query": query, "results": combined[:limit], "source": "merged"}
 
 
+# Sensitive filenames that must NEVER be ingested, even if under an allowed
+# prefix (metano home holds gateway_config.yaml with API keys, .env*, etc.).
+_SENSITIVE_INGEST_NAMES = {
+    'gateway_config.yaml', 'gateway_config.yml', '.env', '.env.cron', '.env.local',
+    'authorizations.json', 'initial_admin_password.txt',
+}
+
+
+def _is_sensitive_ingest(real: Path) -> bool:
+    """True if the file (or any ancestor) is a sensitive config that must not
+    be read into the knowledge base (it would leak keys via /knowledge/search
+    and the /search chat command)."""
+    for part in real.parts:
+        if part in _SENSITIVE_INGEST_NAMES:
+            return True
+    return False
+
+
 def _validate_ingest_path(path: str) -> str | None:
     """Return error message if path is outside allowed directories, else None."""
     real = Path(path).resolve()
     for prefix in ALLOWED_INGEST_PREFIXES:
         try:
             real.relative_to(prefix.resolve())
+            # Sensitive config files under an allowed prefix are still off-limits.
+            if _is_sensitive_ingest(real):
+                return f"File is a sensitive config and may not be ingested: {path}"
             return None
         except ValueError:
             continue
@@ -301,6 +322,9 @@ def _get_kb_conn() -> sqlite3.Connection:
     KB_DIR.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(KB_DB))
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS documents (
             doc_id TEXT PRIMARY KEY,

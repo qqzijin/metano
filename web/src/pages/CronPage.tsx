@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useCronJobs, useCronPause, useCronResume, useCronDelete, useCronTrigger, useCronCreate } from "@/api/hooks";
+import { RoleGuard } from "@/components/auth/RoleGuard";
 import { toast } from "sonner";
 
 export default function CronPage() {
@@ -68,7 +69,8 @@ export default function CronPage() {
   };
 
   return (
-    <>
+    <RoleGuard role="admin">
+      <>
       <PageHeader
         title="定时任务"
         description={`${jobs.length} 个定时任务`}
@@ -131,6 +133,7 @@ export default function CronPage() {
           ))}
         </div>
       )}
-    </>
+      </>
+    </RoleGuard>
   );
 }

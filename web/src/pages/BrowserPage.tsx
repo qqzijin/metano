@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useBrowserSearch, useBrowserBrowse, useBrowserScreenshot } from "@/api/hooks";
+import { RoleGuard } from "@/components/auth/RoleGuard";
 
 export default function BrowserPage() {
   const [url, setUrl] = useState("");
@@ -19,7 +20,8 @@ export default function BrowserPage() {
   const shotMut = useBrowserScreenshot();
 
   return (
-    <>
+    <RoleGuard role="admin">
+      <>
       <PageHeader title="浏览器" description="Web 自动化工具" />
 
       <Tabs defaultValue="browse" className="space-y-4">
@@ -117,6 +119,7 @@ export default function BrowserPage() {
           </Card>
         </TabsContent>
       </Tabs>
-    </>
+      </>
+    </RoleGuard>
   );
 }

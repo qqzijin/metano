@@ -702,14 +702,23 @@ async def api_logs(source: str='all', lines: int=100, _admin=Depends(require_rol
 
 @app.get('/api/profile')
 @app.get('/api/profiles/{user_id}')
-async def api_profile(user_id: str='default'):
+async def api_profile(user_id: str='', _user=Depends(require_role("user"))):
     try:
+        # SECURITY (S5): a normal user may only read their own profile. The
+        # requested user_id must match the authenticated JWT identity unless the
+        # caller is an admin (who may inspect any profile).
+        if not user_id:
+            user_id = _user['username']
+        elif _user.get('role') != 'admin' and user_id != _user['username']:
+            raise HTTPException(status_code=403, detail='无权查看其他用户画像')
         from .honcho.models import init_honcho_db, get_profile, get_user, create_user
         conn = init_honcho_db()
         if not get_user(conn, user_id):
             create_user(conn, user_id=user_id)
         return get_profile(conn, user_id)
-    except Exception as e:
+    except HTTPException:
+        raise
+    except Exception:
         logger.exception()
         return _error_response('Internal error')
 
@@ -731,12 +740,16 @@ async def api_upload(file: UploadFile = File(...), _user=Depends(require_role("u
     return {'path': str(dest), 'name': filename, 'size': len(content)}
 
 @app.post('/api/chat')
-async def api_chat(body: dict):
+async def api_chat(body: dict, _user=Depends(require_role("user"))):
     msg = body.get('message', '')
     if not isinstance(msg, str) or not msg.strip():
         raise HTTPException(status_code=400, detail='message 不能为空')
     from .gateway.router import router
-    user_id = body.get('user_id', 'web_user')
+    # SECURITY: user_id must come from the authenticated JWT identity, never
+    # from the client body — otherwise a logged-in user could impersonate
+    # another user (admin/default), bypass rate limits by rotating user_id, and
+    # escalate to user-tier tools from a guest role.
+    user_id = _user['username']
     platform = body.get('platform', 'web')
     session_id = body.get('session_id', '')
     context = body.get('context', [])
@@ -784,10 +797,24 @@ async def api_chat(body: dict):
 
 
 def _inject_session_context(router, platform: str, user_id: str, session_id: str):
-    """Load messages from bridge.db session and inject into router session."""
+    """Load messages from bridge.db session and inject into router session.
+
+    SECURITY: only allow resuming a session that belongs to this user
+    (sessions.user_key == f'{platform}:{user_id}'). Without the ownership check
+    any logged-in user could read another user's conversation by guessing or
+    leaking a session_id (IDOR).
+    """
     try:
         from .db import get_db
         conn = get_db()
+        expected_key = f'{platform}:{user_id}'
+        owner = conn.execute(
+            'SELECT 1 FROM sessions WHERE id = ? AND user_key = ?',
+            (session_id, expected_key)
+        ).fetchone()
+        if not owner:
+            # Not this user's session — do not load or pin it.
+            return
         rows = conn.execute(
             'SELECT role, content FROM messages WHERE session_id = ? ORDER BY timestamp ASC LIMIT 20',
             (session_id,)
@@ -821,7 +848,7 @@ async def api_knowledge_semantic_search(body: dict):
         return _error_response('Internal error')
 
 @app.post('/api/knowledge/explore')
-async def api_knowledge_explore(body: dict):
+async def api_knowledge_explore(body: dict, _admin=Depends(require_role("admin"))):
     try:
         from .knowledge_explorer import explore_domain
         return explore_domain(body.get('topic', ''), depth=body.get('depth', 3))
@@ -961,7 +988,7 @@ async def api_security_set_tier(user_id: str, body: dict, _admin=Depends(require
         return _error_response('Internal error')
 
 @app.post('/api/browser/browse')
-async def api_browser_browse(body: dict):
+async def api_browser_browse(body: dict, _admin=Depends(require_role("admin"))):
     try:
         from .browser import web_browse
         result = web_browse(body.get('url', ''))
@@ -971,7 +998,7 @@ async def api_browser_browse(body: dict):
         return _error_response('Internal error')
 
 @app.post('/api/browser/search')
-async def api_browser_search(body: dict):
+async def api_browser_search(body: dict, _admin=Depends(require_role("admin"))):
     try:
         from .browser import web_search
         result = web_search(body.get('query', ''))
@@ -991,7 +1018,7 @@ async def get_voice_file(path: str):
     return FileResponse(safe_path, media_type='audio/mpeg', filename=os.path.basename(safe_path))
 
 @app.post('/api/voice/tts')
-async def api_voice_tts(body: dict):
+async def api_voice_tts(body: dict, _admin=Depends(require_role("admin"))):
     try:
         from .voice import voice_speak
         return voice_speak(body.get('text', ''), voice=body.get('voice', 'zh-CN-YunxiNeural'), rate=body.get('rate', '+0%'))
@@ -1027,7 +1054,7 @@ async def api_home_config_get():
         return _error_response('Internal error', extra={})
 
 @app.post('/api/home/config')
-async def api_home_config_set(body: dict):
+async def api_home_config_set(body: dict, _admin=Depends(require_role("admin"))):
     try:
         from .home_assistant import ha_set_config
         return ha_set_config((body.get('url') or '').strip(), (body.get('token') or '').strip())
@@ -1045,7 +1072,7 @@ async def api_home_entity(entity_id: str):
         return _error_response('Internal error')
 
 @app.post('/api/home/control')
-async def api_home_control(body: dict):
+async def api_home_control(body: dict, _admin=Depends(require_role("admin"))):
     try:
         from .home_assistant import home_control
         return home_control(body.get('entity_id', ''), body.get('service', 'toggle'))
@@ -1730,7 +1757,15 @@ if WEB_DIR.exists():
 
     @app.get('/{full_path:path}')
     def serve_spa(full_path: str):
-        file_path = WEB_DIR / full_path
-        if file_path.exists() and file_path.is_file():
-            return FileResponse(str(file_path))
-        return FileResponse(str(WEB_DIR / 'index.html'))
+        # SECURITY: never serve files outside WEB_DIR. URL path segments can
+        # contain ".." (e.g. /../../etc/hostname) and would let an unauthenticated
+        # caller read arbitrary files (bridge.db, gateway_config.yaml, …).
+        # Resolve and verify containment before returning any file.
+        try:
+            web_root = WEB_DIR.resolve()
+            candidate = (web_root / full_path).resolve()
+            if candidate.is_relative_to(web_root) and candidate.is_file():
+                return FileResponse(str(candidate))
+        except (ValueError, OSError):
+            pass
+        return FileResponse(str(web_root / 'index.html'))

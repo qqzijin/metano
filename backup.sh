@@ -94,7 +94,9 @@ cleanup_old() {
     old_dirs="$(find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d \
         -name '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' \
         -mtime "+${cutoff}" 2>/dev/null || true)"
-    for d in $old_dirs; do
+    # 逐行读取（IFS= read -r）而非 `for d in $old_dirs` —— 后者会按空白分词，
+    # 路径含空格时会把一个目录拆成多个、可能误删不相关目录。
+    while IFS= read -r d; do
         [ -z "$d" ] && continue
         [ "$d" = "$DEST_DIR" ] && continue
         if rm -rf "$d" 2>>"$LOG_FILE"; then
@@ -102,7 +104,7 @@ cleanup_old() {
         else
             log "WARN 删除失败 $d"
         fi
-    done
+    done <<< "$old_dirs"
 }
 
 # ---- 主流程 ---------------------------------------------------------------

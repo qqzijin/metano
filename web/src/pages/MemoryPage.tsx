@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useMemoryStats, useMemorySearch, useMemoryCompress, useMemorySeed, useMemoryExport } from "@/api/hooks";
+import { RoleGuard } from "@/components/auth/RoleGuard";
 import { toast } from "sonner";
 
 export default function MemoryPage() {
@@ -67,7 +68,8 @@ export default function MemoryPage() {
   }
 
   return (
-    <>
+    <RoleGuard role="admin">
+      <>
       <PageHeader title="记忆系统" description="跨会话持久记忆，语义压缩存储" />
 
       {/* Stats */}
@@ -214,6 +216,7 @@ export default function MemoryPage() {
           </CardContent>
         </Card>
       )}
-    </>
+      </>
+    </RoleGuard>
   );
 }

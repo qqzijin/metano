@@ -78,6 +78,9 @@ export default function ChatPage() {
   const bottomRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
+  // Latest committed messages, used to persist the final reply once the stream
+  // finishes (the "done" event itself does not change the `messages` reference).
+  const messagesRef = useRef<ChatMsg[]>([]);
 
   const autoGrow = () => {
     const ta = taRef.current;
@@ -109,7 +112,17 @@ export default function ChatPage() {
     autoScrollRef.current = container.scrollHeight - container.scrollTop - container.clientHeight < 80;
   };
 
+  // Keep a live copy of messages for the stream "done"/"error" handlers, which
+  // run outside a render and otherwise couldn't see the latest messages.
   useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
+  // SKIP localStorage writes while a stream is running: every streamed text
+  // event triggers a render, and JSON.stringify of the whole history on each
+  // token is wasteful. The final reply is persisted once on done/error.
+  useEffect(() => {
+    if (isChatStreamRunning()) return;
     saveHistory(messages);
   }, [messages]);
 
@@ -160,6 +173,14 @@ export default function ChatPage() {
     const text = input.trim();
     if (!text) return;
     if (chatMut.isPending) return; // a stream is already running
+    // chatMut.isPending is per-mutation-instance: after navigating away and
+    // back mid-generation it is false even though the module-level stream is
+    // still running. Without this guard, message B would be inserted locally
+    // and startChatStream(B) would return null (running=true), silently losing B.
+    if (isChatStreamRunning()) {
+      toast.info("上一条仍在生成，请稍候");
+      return;
+    }
 
     const userMsg: ChatMsg = { role: "user", content: text, ts: Date.now() };
     setMessages((prev) => [...prev, userMsg]);
@@ -231,12 +252,15 @@ export default function ChatPage() {
         setSession(ev.session_id || null);
         freshRef.current = false;
         setDirty(failedSendRef.current);
+        // Stream over — persist the accumulated reply (skipped during streaming).
+        saveHistory(messagesRef.current);
       } else if (ev.type === "error") {
         failedSendRef.current = true;
         setDirty(true);
         if (!clearedRef.current) {
           patchLast((a) => { a.content = `错误: ${ev.message ?? "请求失败"}`; });
         }
+        saveHistory(messagesRef.current);
       }
     });
     return unsub;
@@ -461,7 +485,7 @@ export default function ChatPage() {
               )}
             </div>
           ))}
-          {chatMut.isPending && (
+          {(chatMut.isPending || isChatStreamRunning()) && (
             <div className="flex gap-3">
               <div className="size-8 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
                 <Bot className="size-4 text-primary" />
@@ -483,7 +507,7 @@ export default function ChatPage() {
               placeholder="输入消息..."
               onChange={(e) => { setInput(e.target.value); autoGrow(); }}
               onKeyDown={handleKeyDown}
-              disabled={chatMut.isPending}
+              disabled={chatMut.isPending || isChatStreamRunning()}
               className="min-w-0 flex-1 resize-none bg-transparent px-1 py-2 text-[16px] leading-relaxed outline-none placeholder:text-muted-foreground max-h-40"
             />
             <Button
@@ -499,7 +523,7 @@ export default function ChatPage() {
             </Button>
             <Button
               onClick={handleSend}
-              disabled={chatMut.isPending || !input.trim()}
+              disabled={chatMut.isPending || isChatStreamRunning() || !input.trim()}
               size="icon"
               className="size-8 shrink-0 rounded-full md:size-9"
               aria-label="发送"

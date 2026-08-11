@@ -1,11 +1,24 @@
 """Smart home/IoT integration via Home Assistant REST API."""
 import json
 import os
+import re
 import time
 from typing import Optional
 import requests
 from metano.log import logger
 from .paths import CONFIG_PATH
+
+_ENTITY_ID_RE = re.compile(r'^[a-z][a-z0-9_]*\.[a-z0-9_]+$')
+
+
+def _validate_entity_id(entity_id: str) -> bool:
+    """Return True if entity_id is a safe HA entity identifier.
+
+    SECURITY: entity_id is interpolated into the HA REST URL path. A value like
+    '../config' or 'switch.1/../../states' would traverse to arbitrary HA
+    endpoints (carrying the stored bearer token). Only allow domain.entity form.
+    """
+    return bool(_ENTITY_ID_RE.match(entity_id))
 
 def _get_ha_config() -> dict:
     """Load Home Assistant config from gateway_config.yaml."""
@@ -52,6 +65,8 @@ def home_control(entity_id: str, action: str, value: str='') -> dict:
     action: turn_on, turn_off, toggle, set_value
     value: optional value for set_value action (e.g., brightness, temperature)
     """
+    if not _validate_entity_id(entity_id):
+        return {'error': f'Invalid entity_id: {entity_id}. Expected domain.entity (e.g. light.living_room)'}
     domain = entity_id.split('.')[0]
     if action == 'turn_on':
         service = 'turn_on'
@@ -78,6 +93,8 @@ def home_control(entity_id: str, action: str, value: str='') -> dict:
 def home_status(entity_id: str='') -> dict:
     """Get status of Home Assistant entities."""
     if entity_id:
+        if not _validate_entity_id(entity_id):
+            return {'error': f'Invalid entity_id: {entity_id}. Expected domain.entity'}
         result = _ha_request('GET', f'/states/{entity_id}')
         if 'error' in result:
             return result
@@ -95,6 +112,9 @@ def home_status(entity_id: str='') -> dict:
 
 def home_automate(name: str, trigger: dict, actions: list[dict]) -> dict:
     """Create a simple automation in Home Assistant."""
+    # SECURITY: name is interpolated into the URL path — reject path traversal.
+    if not name or '/' in name or '..' in name or '\\' in name:
+        return {'error': 'Invalid automation name (must not contain path separators)'}
     automation = {'alias': name, 'trigger': trigger, 'action': actions}
     result = _ha_request('POST', '/config/automation/config/' + name, automation)
     return {'name': name, 'result': result}

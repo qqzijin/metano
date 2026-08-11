@@ -5,6 +5,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useSecurityUsers, useSecuritySetTier } from "@/api/hooks";
+import { RoleGuard } from "@/components/auth/RoleGuard";
 import { toast } from "sonner";
 
 export default function SecurityPage() {
@@ -14,7 +15,8 @@ export default function SecurityPage() {
   const users = data?.users ?? [];
 
   return (
-    <>
+    <RoleGuard role="admin">
+      <>
       <PageHeader title="安全管理" description="访问控制与审计" />
 
       {isError ? (
@@ -67,6 +69,7 @@ export default function SecurityPage() {
           ))}
         </div>
       )}
-    </>
+      </>
+    </RoleGuard>
   );
 }

@@ -18,6 +18,7 @@ import {
 } from '../api/hooks';
 import type { AgentRule, KnowledgeGap, ActionLogEntry, Proposal } from '../api/client';
 import { PageHeader } from '@/components/layout/PageHeader';
+import { RoleGuard } from '@/components/auth/RoleGuard';
 import { StatCard } from '@/components/shared/StatCard';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -675,7 +676,7 @@ export default function EvolutionPage() {
   const [activeTab, setActiveTab] = useState<TabKey>('overview');
 
   return (
-    <>
+    <RoleGuard role="admin">
       <PageHeader title="进化系统" description="自我进化、规则与策略管理" />
       <div className="flex gap-1 mb-6 border-b border-border overflow-x-auto">
         {tabs.map(tab => (
@@ -695,6 +696,6 @@ export default function EvolutionPage() {
       {activeTab === 'knowledge' && <KnowledgeTab />}
       {activeTab === 'architecture' && <ArchitectureTab />}
       {activeTab === 'actions' && <ActionsTab />}
-    </>
+    </RoleGuard>
   );
 }

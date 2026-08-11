@@ -1,5 +1,6 @@
 """Belief-to-Action adapter: translate learned beliefs into behavioral changes."""
 import json
+import re
 import time
 from pathlib import Path
 from .honcho.models import get_honcho_db, get_beliefs, belief_stage
@@ -12,6 +13,14 @@ MEMORY_DIR = Path.home() / '.claude' / 'projects' / '-home-dk' / 'memory'
 MEMORY_INDEX = MEMORY_DIR / 'MEMORY.md'
 MARKER_START = '<!-- LEARNED-PREFS-START -->'
 MARKER_END = '<!-- LEARNED-PREFS-END -->'
+
+def _sanitize_markers(text: str) -> str:
+    """Remove evolution marker strings from content to prevent marker injection.
+
+    S5：LLM 生成的提案内容可能伪造结束标记（MARKER_END），注入前必须先移除，
+    防止逃逸出受控的 CLAUDE.md 区间写入任意内容。
+    """
+    return text.replace(MARKER_START, '').replace(MARKER_END, '')
 
 def _ensure_dirs():
     EVOLUTION_DIR.mkdir(parents=True, exist_ok=True)
@@ -35,7 +44,9 @@ def beliefs_to_claude_md_injection(beliefs: list[dict]) -> str:
         lines.append(f'\n## {cat.title()}')
         for b in cat_beliefs:
             stage = belief_stage(b)
-            lines.append(f"- {b['content']} (confidence: {b['confidence']:.0%}, stage: {stage})")
+            # S5：清除信念内容中的标记字符串，防止伪造结束标记破坏 CLAUDE.md 结构
+            safe_content = _sanitize_markers(b['content'])
+            lines.append(f"- {safe_content} (confidence: {b['confidence']:.0%}, stage: {stage})")
     rules = get_agent_rules(active_only=True)
     if rules:
         lines.append('\n## Behavior Rules')
@@ -43,7 +54,8 @@ def beliefs_to_claude_md_injection(beliefs: list[dict]) -> str:
             eff = r.get('effectiveness', 0)
             applied = r.get('times_applied', 0)
             eff_str = f' (effectiveness: {eff:.0%}, applied: {applied}x)' if applied > 0 else ''
-            lines.append(f"- {r['content']}{eff_str}")
+            safe_rule = _sanitize_markers(r['content'])
+            lines.append(f"- {safe_rule}{eff_str}")
     lines.append(MARKER_END)
     return '\n'.join(lines)
 
@@ -75,13 +87,22 @@ def apply_beliefs_to_claude_md(dry_run: bool=True) -> dict:
     finally:
         conn.close()
 
-def beliefs_to_memory_file(beliefs: list[dict], category: str) -> dict | None:
+def beliefs_to_memory_file(beliefs: list[dict], category: str, dry_run: bool = True) -> dict | None:
     """Generate memory files from learned beliefs.
 
     Creates structured memory files in the memory directory for each category
     of learned beliefs. Only includes beliefs with confidence >= 0.6.
+
+    S6：category 来自 LLM，必须按白名单正则 [a-z0-9_-]+ 消毒，非法则拒绝，
+    防止 ``learned-../xxx`` 路径穿越写任意文件。
+    S1：dry_run=True 时只返回预览，不真实写入记忆文件（自动 cron 不允许直接写盘，
+    用户显式运行时才真实写入）。
     """
     if category == 'behavior_pattern':
+        return None
+    # S6：category 白名单消毒，非法字符直接拒绝（防止路径穿越）
+    if not re.fullmatch(r'[a-z0-9_-]+', category or ''):
+        logger.warning(f"memory_file: 非法 category {category!r}，已拒绝写入")
         return None
     eligible = [b for b in beliefs if b['category'] == category and b['confidence'] >= 0.6 and (not b.get('contradicted'))]
     if len(eligible) < 2:
@@ -91,7 +112,9 @@ def beliefs_to_memory_file(beliefs: list[dict], category: str) -> dict | None:
     lines = ['---', f'name: {slug}', f'description: Auto-generated from learned {category} beliefs', 'metadata:', '  type: feedback', '---', '']
     for b in eligible:
         stage = belief_stage(b)
-        lines.append(f"- {b['content']} (confidence: {b['confidence']:.0%}, stage: {stage})")
+        lines.append(f"- {_sanitize_markers(b['content'])} (confidence: {b['confidence']:.0%}, stage: {stage})")
+    if dry_run:
+        return {'action': 'memory_file', 'category': category, 'status': 'dry_run', 'file': str(filepath), 'belief_count': len(eligible)}
     filepath.write_text('\n'.join(lines))
     _add_to_memory_index(slug, f'Auto-learned {category} preferences')
     _log('memory_file_create', {'category': category, 'belief_count': len(eligible), 'file': str(filepath)})
@@ -244,7 +267,7 @@ def execute_adaptation_cycle(dry_run: bool=True) -> dict:
         # 2. Generate memory files from beliefs
         categories = set((b['category'] for b in active))
         for cat in categories:
-            mem_result = beliefs_to_memory_file(active, cat)
+            mem_result = beliefs_to_memory_file(active, cat, dry_run=dry_run)
             if mem_result:
                 results['actions'].append(mem_result)
 
@@ -432,16 +455,21 @@ def _apply_skill_improvement(content: str, detail: str) -> dict:
 
 
 def _apply_claude_md(content: str, detail: str) -> dict:
-    """Inject content into CLAUDE.md within the evolution markers."""
+    """Inject content into CLAUDE.md within the evolution markers.
+
+    S5：注入前移除内容中的 MARKER_START/MARKER_END 标记字符串，防止伪造结束
+    标记逃逸出受控区间，在 CLAUDE.md 里写入任意内容。
+    """
+    safe_content = _sanitize_markers(content).strip()
     existing = CLAUDE_MD.read_text() if CLAUDE_MD.exists() else ''
     if MARKER_START not in existing:
         existing = existing.rstrip() + '\n\n' + MARKER_START + '\n' + MARKER_END + '\n'
     start_idx = existing.index(MARKER_START)
     end_idx = existing.index(MARKER_END)
-    injection = existing[start_idx + len(MARKER_START):end_idx].rstrip() + f'\n- {content}'
+    injection = existing[start_idx + len(MARKER_START):end_idx].rstrip() + f'\n- {safe_content}'
     new_content = existing[:start_idx] + MARKER_START + injection + '\n' + existing[end_idx:]
     CLAUDE_MD.write_text(new_content)
-    return {'status': 'applied', 'type': 'claude_md_inject', 'content': content}
+    return {'status': 'applied', 'type': 'claude_md_inject', 'content': safe_content}
 
 
 def apply_approved_proposals() -> dict:

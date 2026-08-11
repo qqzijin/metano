@@ -68,6 +68,7 @@ class WeChatIlinkBot:
         self._stop = threading.Event()
         self._session = requests.Session()
         self._session.trust_env = False   # direct connection to a domestic endpoint
+        self._consecutive_failures = 0    # must init before _long_poll_loop increments it
         self._load_state()
 
     # --------------------------------------------------------------- public API

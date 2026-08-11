@@ -152,6 +152,9 @@ def _write_config(cfg: dict, home: Path, path: Path) -> None:
         yaml.safe_dump(_order_config(cfg), allow_unicode=True, sort_keys=False, default_flow_style=False),
         encoding="utf-8",
     )
+    # SECURITY (S2): config holds secrets (JWT secret, bcrypt password hashes,
+    # api_key) — force owner-only permissions instead of relying on umask.
+    os.chmod(path, 0o600)
 
 
 def _set_env(home: Path, key: str, value: str) -> Path:
@@ -174,6 +177,8 @@ def _set_env(home: Path, key: str, value: str) -> Path:
     if not found:
         out.append(f"{key}={value}")
     env_path.write_text("\n".join(out) + "\n", encoding="utf-8")
+    # SECURITY (S2): .env holds secrets (api_key etc.) — force owner-only perms.
+    os.chmod(env_path, 0o600)
     return env_path
 
 
