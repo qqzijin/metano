@@ -740,7 +740,13 @@ async def api_chat(body: dict):
     platform = body.get('platform', 'web')
     session_id = body.get('session_id', '')
     context = body.get('context', [])
-    if session_id:
+    reset = bool(body.get('reset', False))
+    if reset:
+        # Explicit "新对话": drop the in-memory session AND its bridge.db id so
+        # this exchange opens a brand-new session row instead of appending to
+        # the previous conversation.
+        router.reset_session(platform, user_id)
+    elif session_id:
         _inject_session_context(router, platform, user_id, session_id)
     elif context and isinstance(context, list):
         router.inject_history(platform, user_id, context)
@@ -786,9 +792,13 @@ def _inject_session_context(router, platform: str, user_id: str, session_id: str
             'SELECT role, content FROM messages WHERE session_id = ? ORDER BY timestamp ASC LIMIT 20',
             (session_id,)
         ).fetchall()
+        sess = router.get_or_create_session(platform, user_id)
         if rows:
             history = [{'role': r[0], 'content': r[1]} for r in rows if r[0] in ('user', 'assistant')]
-            router.inject_history(platform, user_id, history)
+            sess.history = history[-router.max_history * 2:]
+            # Pin the resumed session so this exchange appends to IT (not to
+            # whatever db_session_id the in-memory session was holding).
+            sess.db_session_id = session_id
     except Exception:
         logger.exception()
 

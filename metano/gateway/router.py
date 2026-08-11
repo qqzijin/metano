@@ -32,6 +32,10 @@ class GatewaySession:
     db_session_id: str = ''
     last_active: float = 0.0
     message_count: int = 0
+    # True when this is a deliberately-fresh conversation (web "新对话", /new,
+    # or idle reset). Suppresses _restore_history so the next exchange opens a
+    # brand-new bridge.db session instead of re-attaching the previous one.
+    start_new: bool = False
     history: list[dict] = field(default_factory=list)
 
 class MessageRouter:
@@ -50,9 +54,13 @@ class MessageRouter:
         if key in self.sessions:
             session = self.sessions[key]
             if time.time() - session.last_active > self.max_idle_minutes * 60:
+                # Conversation timed out: drop the Claude Code resume id AND the
+                # bridge.db session id so the next exchange opens a fresh session.
                 session.session_id = ''
+                session.db_session_id = ''
                 session.history = []
                 session.message_count = 0
+                session.start_new = True
             return session
         session = GatewaySession(platform=platform, user_id=user_id)
         self.sessions[key] = session
@@ -106,7 +114,7 @@ class MessageRouter:
         if cmd_response is not None:
             return cmd_response
         session = self.get_or_create_session(platform, user_id)
-        if not session.history:
+        if not session.history and not session.start_new:
             self._restore_history(session, platform, user_id)
         skill_prefix = ''
         remaining_message = message
@@ -157,6 +165,7 @@ class MessageRouter:
             )
             if sid:
                 session.db_session_id = sid
+                session.start_new = False
         except Exception:
             logger.exception('persist_exchange failed')
         return response
@@ -901,6 +910,8 @@ class MessageRouter:
         key = self._session_key(platform, user_id)
         if key in self.sessions:
             self.sessions[key].session_id = ''
+            self.sessions[key].db_session_id = ''
             self.sessions[key].history = []
             self.sessions[key].message_count = 0
+            self.sessions[key].start_new = True
 router = MessageRouter()

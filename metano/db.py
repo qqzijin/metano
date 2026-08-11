@@ -83,9 +83,11 @@ def persist_exchange(session_id: str, user_key: str, platform: str, msg: str, re
     """Persist one user + assistant exchange into bridge.db.
 
     Best-effort: any failure is logged and the caller's ``session_id`` is
-    returned unchanged. When no ``session_id`` is given, the most recent session
-    for the same ``user_key`` (last active within 30min) is reused, otherwise a
-    new session is created. Returns the session_id used (existing or new).
+    returned unchanged. When no ``session_id`` is given, a brand-new session is
+    created — a missing id means "this is a new conversation", never "continue
+    the most recent one" (that intent is carried explicitly by a non-empty
+    ``session_id``, set by the router's restore/inject paths). Returns the
+    session_id used (existing or new).
 
     Real usage (input/output/cache_read tokens) drives the per-message token
     columns and the accumulated session totals + estimated cost via
@@ -100,13 +102,6 @@ def persist_exchange(session_id: str, user_key: str, platform: str, msg: str, re
         in_tok = usage.get('input_tokens', 0) or 0
         out_tok = usage.get('output_tokens', 0) or 0
         cache_tok = usage.get('cache_read_tokens', 0) or 0
-        if not session_id:
-            row = conn.execute(
-                'SELECT id, last_active FROM sessions WHERE user_key = ? ORDER BY last_active DESC LIMIT 1',
-                (user_key,)
-            ).fetchone()
-            if row and (row['last_active'] or 0) > now - 1800:
-                session_id = row['id']
         if not session_id:
             session_id = uuid.uuid4().hex[:12]
             conn.execute(
