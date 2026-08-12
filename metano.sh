@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
-# metano: Start all services
-set -e
+# metano: 服务管理（systemd 用户服务）
+#
+# web/cron/gateway 由 systemd 用户服务托管（metano-web/cron/gateway），
+# 可单独重启任意服务而不影响其他——重启 web 不会中断进化定时任务。
+# cocoindex 仍用脚本方式（ccc daemon）。
+set -u
 
 BRIDGE_DIR="${METANO_HOME:-$HOME/.claude/metano}"
-PID_DIR="$BRIDGE_DIR"
 
 start_backup() {
     # 启动时做一次数据库备份，防误操作丢失数据。失败不阻断启动。
@@ -11,36 +14,13 @@ start_backup() {
     bash "$BRIDGE_DIR/backup.sh" || echo "Warning: startup backup failed (continuing)"
 }
 
-start_web() {
-    # Root-cause fix: `kill -0 PID` only checks the process exists, NOT that it
-    # bound :9120. A second instance that fails to bind (port held by another)
-    # "lives" without serving → every page request fails and the user is bounced
-    # to the login page. Detect by PORT, not pid.
-    if ss -tlnp 2>/dev/null | grep -q ':9120'; then
-        echo "Web dashboard already listening on :9120"
-        L=$(ss -tlnp 2>/dev/null | grep ':9120' | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2)
-        [ -n "$L" ] && echo "$L" > "$PID_DIR/web.pid"
-        return
-    fi
-    rm -f "$PID_DIR/web.pid"
-    echo "Starting web dashboard on http://0.0.0.0:9120 ..."
-    mkdir -p "$BRIDGE_DIR/logs"
-    cd "$BRIDGE_DIR"
-    nohup python3 -c "from metano.serve import main; main()" >> "$BRIDGE_DIR/logs/web.log" 2>&1 &
-    echo $! > "$PID_DIR/web.pid"
-    for i in $(seq 1 16); do
-        if ss -tlnp 2>/dev/null | grep -q ':9120'; then
-            echo "Web dashboard up on :9120"
-            return 0
-        fi
-        sleep 0.5
-    done
-    echo "Warning: web did not bind :9120 within 8s — see $BRIDGE_DIR/logs/web.log"
+_svc() { # _svc <web|cron|gateway> <start|stop|restart|status>
+    local name="metano-$1"
+    local action="$2"
+    systemctl --user "$action" "$name"
 }
 
 start_ccc_daemon() {
-    # Note: `ccc daemon status` auto-starts the daemon if it is not running,
-    # so guard on the actual process instead.
     if ps aux | grep -q "[c]cc run-daemon"; then
         echo "CocoIndex daemon already running"
         return
@@ -49,81 +29,58 @@ start_ccc_daemon() {
     HF_HUB_OFFLINE=1 ccc daemon restart
 }
 
-start_cron() {
-    if [ -f "$PID_DIR/cron.pid" ] && kill -0 "$(cat "$PID_DIR/cron.pid")" 2>/dev/null; then
-        echo "Cron daemon already running (PID $(cat "$PID_DIR/cron.pid"))"
-        return
-    fi
-    echo "Starting cron daemon..."
-    cd "$BRIDGE_DIR"
-    python3 -c "from metano.cron_daemon import run_daemon; run_daemon()" &
-    echo $! > "$PID_DIR/cron.pid"
-}
-
-start_gateway() {
-    if [ -f "$PID_DIR/gateway.pid" ] && kill -0 "$(cat "$PID_DIR/gateway.pid")" 2>/dev/null; then
-        echo "Gateway already running (PID $(cat "$PID_DIR/gateway.pid"))"
-        return
-    fi
-    echo "Starting message gateway..."
-    cd "$BRIDGE_DIR"
-    python3 -c "from metano.gateway.launcher import main; main()" &
-    echo $! > "$PID_DIR/gateway.pid"
-}
-
-stop_all() {
-    for svc in web cron gateway; do
-        if [ -f "$PID_DIR/$svc.pid" ]; then
-            PID=$(cat "$PID_DIR/$svc.pid")
-            if kill -0 "$PID" 2>/dev/null; then
-                echo "Stopping $svc (PID $PID)..."
-                kill "$PID"
-            fi
-            rm -f "$PID_DIR/$svc.pid"
-        fi
-    done
-    ccc daemon stop 2>/dev/null || true
-}
-
-status() {
-    for svc in web cron gateway; do
-        if [ -f "$PID_DIR/$svc.pid" ] && kill -0 "$(cat "$PID_DIR/$svc.pid")" 2>/dev/null; then
-            echo "$svc: running (PID $(cat "$PID_DIR/$svc.pid"))"
-        else
-            echo "$svc: stopped"
-        fi
-    done
-    if ps aux | grep -q "[c]cc run-daemon"; then
-        echo "cocoindex: running"
-    else
-        echo "cocoindex: stopped"
-    fi
-}
-
 case "${1:-start}" in
     start)
-        # Optional per-service start: `metano.sh start web|cron|gateway|cocoindex`
         if [ -n "${2:-}" ]; then
             case "$2" in
-                web)       start_web ;;
-                cron)      start_cron ;;
-                gateway)   start_gateway ;;
+                web|cron|gateway) _svc "$2" start ;;
                 cocoindex) start_ccc_daemon ;;
                 *) echo "Unknown service: $2 (web|cron|gateway|cocoindex)"; exit 1 ;;
             esac
             exit 0
         fi
         start_backup
-        start_web
+        echo "Starting metano services (systemd)..."
+        systemctl --user start metano-web metano-cron metano-gateway
         start_ccc_daemon
-        start_cron
-        start_gateway
         echo ""
         echo "Dashboard:  http://0.0.0.0:9120"
         ;;
-    stop)   stop_all ;;
-    status) status ;;
-    restart) stop_all; sleep 1; start_backup; start_web; start_ccc_daemon; start_cron; start_gateway ;;
+    stop)
+        if [ -n "${2:-}" ]; then
+            case "$2" in
+                web|cron|gateway) _svc "$2" stop ;;
+                cocoindex) ccc daemon stop 2>/dev/null || true ;;
+                *) echo "Unknown service: $2"; exit 1 ;;
+            esac
+            exit 0
+        fi
+        systemctl --user stop metano-web metano-cron metano-gateway
+        ccc daemon stop 2>/dev/null || true
+        ;;
+    restart)
+        if [ -n "${2:-}" ]; then
+            case "$2" in
+                web|cron|gateway) _svc "$2" restart ;;
+                cocoindex) ccc daemon restart 2>/dev/null || true ;;
+                *) echo "Unknown service: $2"; exit 1 ;;
+            esac
+            exit 0
+        fi
+        systemctl --user restart metano-web metano-cron metano-gateway
+        start_ccc_daemon
+        ;;
+    status)
+        for svc in web cron gateway; do
+            st=$(systemctl --user is-active "metano-$svc" 2>/dev/null)
+            echo "$svc: $st"
+        done
+        if ps aux | grep -q "[c]cc run-daemon"; then
+            echo "cocoindex: running"
+        else
+            echo "cocoindex: stopped"
+        fi
+        ;;
     setup)
         # 生成初始配置（gen_config.py 不存在时静默跳过），然后启动全部服务。
         if [ -f "$BRIDGE_DIR/gen_config.py" ]; then
@@ -134,5 +91,5 @@ case "${1:-start}" in
         echo "Running setup start..."
         "$0" start
         ;;
-    *) echo "Usage: $0 {start|stop|status|restart|setup}" ;;
+    *) echo "Usage: $0 {start|stop|restart|status|setup} [web|cron|gateway|cocoindex]" ;;
 esac
