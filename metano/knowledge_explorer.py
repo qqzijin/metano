@@ -449,7 +449,9 @@ def sink_evolution_knowledge(user_id: str = 'default') -> dict:
         try:
             honcho = get_honcho_db()
             obs = honcho.execute(
-                "SELECT category, content FROM observations WHERE user_id=? ORDER BY timestamp DESC LIMIT 40",
+                "SELECT category, content FROM observations "
+                "WHERE user_id=? AND category NOT IN ('tool_error','correction','code_quality','self_reflection') "
+                "ORDER BY timestamp DESC LIMIT 40",
                 (user_id,)
             ).fetchall()
             if obs:
