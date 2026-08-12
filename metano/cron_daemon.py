@@ -6,6 +6,7 @@ and executing registered actions or `claude -p "<prompt>"` when a job is due.
 import fcntl
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -165,7 +166,18 @@ def tick():
                                     if danger:
                                         result_holder[0] = danger
                                     else:
-                                        sp = subprocess.run(['bash', '-c', prompt], capture_output=True, text=True, timeout=job_timeout, cwd=str(CRON_DIR.parent), env={'PATH': '/usr/local/bin:/usr/bin:/bin:/home/dk/local/node/bin', 'HOME': str(Path.home())})
+                                        _env = os.environ.copy()
+                                        _env['HOME'] = str(Path.home())
+                                        # 动态补 claude/node bin 到 PATH（不硬编码本机路径）
+                                        _path = _env.get('PATH', '/usr/local/bin:/usr/bin:/bin')
+                                        for _tool in ('claude', 'node'):
+                                            _t = shutil.which(_tool)
+                                            if _t:
+                                                _dir = os.path.dirname(_t)
+                                                if _dir not in _path.split(':'):
+                                                    _path = f'{_dir}:{_path}'
+                                        _env['PATH'] = _path
+                                        sp = subprocess.run(['bash', '-c', prompt], capture_output=True, text=True, timeout=job_timeout, cwd=str(CRON_DIR.parent), env=_env)
                                         result_holder[0] = sp.stdout or sp.stderr or '(no output)'
                             elif prompt:
                                 sp = subprocess.run(['claude', '-p', prompt], capture_output=True, text=True, timeout=job_timeout)
