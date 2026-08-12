@@ -146,7 +146,10 @@ class MCPAuthMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
-        if not path.startswith(MCP_PATH_PREFIX):
+        # Guard only the exact /mcp mount and its subtree. startswith("/mcp")
+        # would also trap unrelated paths like /mcp-tools (a frontend route)
+        # and bounce them with a 401 JSON instead of the SPA.
+        if path != MCP_PATH_PREFIX and not path.startswith(MCP_PATH_PREFIX + "/"):
             return await call_next(request)
         # Let CORS preflight through to the CORS middleware.
         if request.method == "OPTIONS":

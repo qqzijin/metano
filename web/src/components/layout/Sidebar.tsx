@@ -28,7 +28,7 @@ const NAV_GROUPS = [
   {
     label: "能力",
     items: [
-      { to: "/skills", icon: Zap, label: "技能" },
+      { to: "/tools", icon: Zap, label: "工具" },
       { to: "/models", icon: Cpu, label: "模型" },
       { to: "/knowledge", icon: BookOpen, label: "知识库" },
       { to: "/knowledge-graph", icon: Network, label: "知识图谱" },
@@ -37,22 +37,20 @@ const NAV_GROUPS = [
       { to: "/voice", icon: Mic, label: "语音" },
       // 智能家居 /home 入口隐藏：未配置 HA 时无内容；配置后可从 URL 访问
       { to: "/memory", icon: Brain, label: "记忆系统" },
-      { to: "/mcp-tools", icon: Puzzle, label: "MCP工具" },
     ],
   },
   {
     label: "系统",
     items: [
-      { to: "/security", icon: Shield, label: "安全管理" },
+      { to: "/settings", icon: Shield, label: "设置" },
       // 用户画像已并入 记忆系统 → 画像 tab
       { to: "/cron", icon: Clock, label: "定时任务" },
-      { to: "/config", icon: Settings, label: "配置" },
     ],
   },
   {
     label: "数据",
     items: [
-      { to: "/analytics", icon: BarChart3, label: "数据统计" },
+      // 数据统计已并入仪表盘
       { to: "/logs", icon: FileText, label: "日志" },
       { to: "/search", icon: Search, label: "搜索" },
       { to: "/collab", icon: Users, label: "协作" },

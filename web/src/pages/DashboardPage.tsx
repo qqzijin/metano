@@ -4,6 +4,8 @@ import { cn } from "@/lib/utils";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { StatCard } from "@/components/shared/StatCard";
+import { AnalyticsView } from "@/components/shared/AnalyticsView";
 import { useStatus, useEvolution, useAnalytics } from "@/api/hooks";
 import { fmtCost, fmtTokens } from "@/api/client";
 
@@ -16,49 +18,6 @@ const SERVICE_PAGE: Record<string, string> = {
   browser: "/browser",
   home: "/home",
 };
-
-interface MiniStatProps {
-  icon: React.ReactNode;
-  label: string;
-  value: string | number;
-  sub?: string;
-  accent?: boolean;
-  /** 可选跳转目标：有值时可点击导航到对应页面 */
-  to?: string;
-}
-
-function MiniStat({ icon, label, value, sub, accent, to }: MiniStatProps) {
-  const navigate = useNavigate();
-  return (
-    <Card
-      className={cn(
-        "shadow-sm",
-        accent && "border-primary/25 bg-primary/5",
-        to && "cursor-pointer transition-colors hover:bg-muted/40"
-      )}
-      role={to ? "link" : undefined}
-      tabIndex={to ? 0 : undefined}
-      onClick={to ? () => navigate(to) : undefined}
-      onKeyDown={to ? (e) => { if (e.key === "Enter") navigate(to); } : undefined}
-    >
-      <CardContent className="p-4">
-        <div className="flex items-center gap-3">
-          <div className={cn(
-            "flex items-center justify-center size-9 rounded-lg shrink-0",
-            accent ? "bg-primary/10 text-primary" : "bg-muted text-muted-foreground"
-          )}>
-            {icon}
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className="text-xs text-muted-foreground mb-0.5">{label}</div>
-            <div className={cn("text-xl font-semibold tracking-tight", accent && "text-primary")}>{value}</div>
-            {sub && <div className="text-xs text-muted-foreground mt-0.5">{sub}</div>}
-          </div>
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
 
 export default function DashboardPage() {
   const navigate = useNavigate();
@@ -95,12 +54,12 @@ export default function DashboardPage() {
 
       {/* Primary metrics */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
-        <MiniStat icon={<Bot className="size-4" />} label="总会话" value={status?.sessions ?? 0} to="/sessions" />
-        <MiniStat icon={<MessageSquare className="size-4" />} label="总消息" value={(status?.messages ?? 0).toLocaleString()} to="/sessions" />
-        <MiniStat icon={<Zap className="size-4" />} label="技能数" value={status?.skills_count ?? 0} to="/skills" />
-        <MiniStat icon={<Brain className="size-4" />} label="信念数" value={evo?.profile_beliefs ?? 0} to="/profiles" />
-        <MiniStat icon={<Cpu className="size-4" />} label="行为规则" value={evo?.behavior_rules ?? 0} to="/evolution" />
-        <MiniStat icon={<DollarSign className="size-4" />} label="7日费用" value={fmtCost(totalCost7d)} sub={`今日 ${fmtCost(todayCost)}`} accent to="/analytics" />
+        <StatCard icon={<Bot className="size-4" />} label="总会话" value={status?.sessions ?? 0} to="/sessions" />
+        <StatCard icon={<MessageSquare className="size-4" />} label="总消息" value={(status?.messages ?? 0).toLocaleString()} to="/sessions" />
+        <StatCard icon={<Zap className="size-4" />} label="技能数" value={status?.skills_count ?? 0} to="/skills" />
+        <StatCard icon={<Brain className="size-4" />} label="信念数" value={evo?.profile_beliefs ?? 0} to="/memory" />
+        <StatCard icon={<Cpu className="size-4" />} label="行为规则" value={evo?.behavior_rules ?? 0} to="/evolution" />
+        <StatCard icon={<DollarSign className="size-4" />} label="7日费用" value={fmtCost(totalCost7d)} sub={`今日 ${fmtCost(todayCost)}`} accent to="/analytics" />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -222,6 +181,11 @@ export default function DashboardPage() {
             )}
           </CardContent>
         </Card>
+      </div>
+
+      {/* 数据统计（原 AnalyticsPage 并入仪表盘） */}
+      <div className="mt-8">
+        <AnalyticsView />
       </div>
     </>
   );

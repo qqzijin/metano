@@ -19,21 +19,18 @@ import DashboardPage from "@/pages/DashboardPage";
 import SessionsPage from "@/pages/SessionsPage";
 import ChatPage from "@/pages/ChatPage";
 import SearchPage from "@/pages/SearchPage";
-import AnalyticsPage from "@/pages/AnalyticsPage";
-import SkillsPage from "@/pages/SkillsPage";
+import ToolsPage from "@/pages/ToolsPage";
 import ModelsPage from "@/pages/ModelsPage";
 import KnowledgePage from "@/pages/KnowledgePage";
 import KnowledgeGraphPage from "@/pages/KnowledgeGraphPage";
-import ConfigPage from "@/pages/ConfigPage";
+import SettingsPage from "@/pages/SettingsPage";
 import EvolutionPage from "@/pages/EvolutionPage";
 import LogsPage from "@/pages/LogsPage";
 import CronPage from "@/pages/CronPage";
-import SecurityPage from "@/pages/SecurityPage";
 import BrowserPage from "@/pages/BrowserPage";
 import VoicePage from "@/pages/VoicePage";
 import SmartHomePage from "@/pages/SmartHomePage";
 import MemoryPage from "@/pages/MemoryPage";
-import McpToolsPage from "@/pages/McpToolsPage";
 import CollabPage from "@/pages/CollabPage";
 import LoginPage from "@/pages/LoginPage";
 
@@ -111,24 +108,27 @@ function MainLayout() {
             <Route path="/chat" element={<ChatPage />} />
             <Route path="/sessions" element={<SessionsPage />} />
             <Route path="/search" element={<SearchPage />} />
-            <Route path="/analytics" element={<AnalyticsPage />} />
-            <Route path="/skills" element={<SkillsPage />} />
+            {/* 数据统计已并入仪表盘 */}
+            <Route path="/analytics" element={<Navigate to="/" replace />} />
+            <Route path="/tools" element={<ToolsPage />} />
+            <Route path="/skills" element={<Navigate to="/tools" replace />} />
             <Route path="/models" element={<ModelsPage />} />
             <Route path="/knowledge" element={<KnowledgePage />} />
             <Route path="/knowledge-graph" element={<KnowledgeGraphPage />} />
-            <Route path="/config" element={<ConfigPage />} />
+            <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/config" element={<Navigate to="/settings" replace />} />
             <Route path="/evolution" element={<EvolutionPage />} />
             <Route path="/self-modify" element={<Navigate to="/evolution" replace />} />
             <Route path="/logs" element={<LogsPage />} />
             {/* 用户画像已并入记忆系统(画像 tab) */}
             <Route path="/profiles" element={<Navigate to="/memory" replace />} />
             <Route path="/cron" element={<CronPage />} />
-            <Route path="/security" element={<SecurityPage />} />
+            <Route path="/security" element={<Navigate to="/settings" replace />} />
             <Route path="/browser" element={<BrowserPage />} />
             <Route path="/voice" element={<VoicePage />} />
             <Route path="/home" element={<SmartHomePage />} />
             <Route path="/memory" element={<MemoryPage />} />
-            <Route path="/mcp-tools" element={<McpToolsPage />} />
+            <Route path="/mcp-tools" element={<Navigate to="/tools" replace />} />
             <Route path="/collab" element={<CollabPage />} />
           </Routes>
           </ErrorBoundary>

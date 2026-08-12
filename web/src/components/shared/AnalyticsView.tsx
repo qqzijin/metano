@@ -3,7 +3,6 @@ import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
   AreaChart, Area, PieChart, Pie, Cell,
 } from "recharts";
-import { PageHeader } from "@/components/layout/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -67,7 +66,7 @@ function StatCard({ icon, label, value, sub, tone = "primary" }: StatCardProps) 
   );
 }
 
-export default function AnalyticsPage() {
+export function AnalyticsView() {
   const [days, setDays] = useState<number>(7);
   const { data, isLoading, isError } = useAnalytics(days);
 
@@ -119,8 +118,6 @@ export default function AnalyticsPage() {
 
   return (
     <>
-      <PageHeader title="数据统计" description="使用统计与趋势分析" />
-
       {/* Period segmented control */}
       <div className="mb-5 inline-flex rounded-full border bg-muted/40 p-0.5">
         {DAYS.map((d) => (
