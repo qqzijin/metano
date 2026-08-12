@@ -58,8 +58,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
             new_access = try_refresh_from_request(request)
             if new_access:
                 response = await call_next(request)
-                # SECURITY (H-06): Secure flag — see auth.set_auth_cookies.
-                response.set_cookie('access_token', new_access, max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60, httponly=True, samesite='lax', path='/', secure=True)
+                # SECURITY (H-06): Secure flag — conditional (see _secure_cookie)
+                # so the 138 HTTP forward doesn't drop the cookie → 秒登出.
+                response.set_cookie('access_token', new_access, max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60, httponly=True, samesite='lax', path='/', secure=_secure_cookie(request))
                 return response
             return JSONResponse(status_code=401, content={'detail': '未登录'})
         return await call_next(request)
@@ -88,6 +89,21 @@ def _origin_allowed(source: str, host: str) -> bool:
     allowed = {urlparse(o).netloc for o in AuthMiddleware.ALLOWED_ORIGINS}
     return netloc in allowed or netloc == host
 
+
+def _secure_cookie(request: Request) -> bool:
+    """Whether auth cookies should carry the Secure flag.
+
+    Browsers drop Secure cookies over plain HTTP — exactly what the 138-device
+    port forward delivers — so an unconditional ``secure=True`` would log the
+    user out on the very next request ("登录秒登出"). Only enforce Secure when
+    the effective scheme is HTTPS (request scheme or ``X-Forwarded-Proto`` from
+    a TLS-terminating proxy).
+    """
+    if request.url.scheme == 'https':
+        return True
+    return (request.headers.get('x-forwarded-proto', '') or '').lower() == 'https'
+
+
 @app.post('/api/auth/login')
 async def auth_login(request: Request, response: Response):
     body = await request.json()
@@ -103,7 +119,7 @@ async def auth_login(request: Request, response: Response):
         _audit('login_failed', username, {'ip': ip})
         raise HTTPException(status_code=401, detail='用户名或密码错误')
     _audit('login_success', username, {'ip': ip})
-    return set_auth_cookies(response, user['username'], user['role'])
+    return set_auth_cookies(response, user['username'], user['role'], secure=_secure_cookie(request))
 
 @app.post('/api/auth/refresh')
 async def auth_refresh(request: Request, response: Response):
@@ -123,7 +139,7 @@ async def auth_refresh(request: Request, response: Response):
     # revoked immediately (anti-replay). set_auth_cookies reads the fresh
     # version, so the newly issued pair stays valid under the new tv.
     bump_token_version(user['username'])
-    return set_auth_cookies(response, user['username'], user['role'])
+    return set_auth_cookies(response, user['username'], user['role'], secure=_secure_cookie(request))
 
 @app.post('/api/auth/logout')
 async def auth_logout(request: Request, response: Response):
@@ -170,7 +186,7 @@ async def auth_change_password(request: Request, response: Response):
         raise HTTPException(status_code=400, detail='原密码不正确')
     # change_password bumped token_version (revoking old tokens). Re-issue the
     # cookies so this session stays authenticated under the new version.
-    return set_auth_cookies(response, user['username'], user['role'])
+    return set_auth_cookies(response, user['username'], user['role'], secure=_secure_cookie(request))
 
 def _error_response(message: str, status_code: int = 500, extra: dict | None = None) -> JSONResponse:
     """Standard error envelope for API responses.

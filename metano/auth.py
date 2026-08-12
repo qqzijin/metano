@@ -235,7 +235,7 @@ def record_login_attempt(ip: str):
     _login_attempts.setdefault(ip, []).append(now)
 
 
-def set_auth_cookies(response: Response, username: str, role: str) -> dict:
+def set_auth_cookies(response: Response, username: str, role: str, secure: bool = True) -> dict:
     rec = _current_user_record(username)
     tv = rec['token_version'] if rec else 0
     access_token = create_access_token(username, role, token_version=tv)
@@ -244,15 +244,18 @@ def set_auth_cookies(response: Response, username: str, role: str) -> dict:
     # SECURITY (H-06): Secure flag so the token is never sent over plain HTTP.
     # Loopback (127.0.0.1/localhost) is still a secure context in modern
     # browsers; non-loopback deployments MUST use HTTPS.
+    # Callers may pass secure=False when the connection is plain HTTP (e.g. the
+    # 138-device port forward) — otherwise the browser drops the Secure cookie
+    # and the user is logged out on the very next request ("登录秒登出").
     response.set_cookie(
         "access_token", access_token,
         max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-        httponly=True, samesite="lax", path="/", secure=True,
+        httponly=True, samesite="lax", path="/", secure=secure,
     )
     response.set_cookie(
         "refresh_token", refresh_token,
         max_age=REFRESH_TOKEN_EXPIRE_DAYS * 86400,
-        httponly=True, samesite="lax", path="/api/auth/refresh", secure=True,
+        httponly=True, samesite="lax", path="/api/auth/refresh", secure=secure,
     )
     return {"username": username, "role": role}
 
@@ -302,7 +305,7 @@ def try_refresh_from_request(request: Request) -> Optional[str]:
     return create_access_token(rec["username"], rec["role"], token_version=rec["token_version"])
 
 
-def rotate_refresh_tokens(response: Response, username: str, role: str) -> dict:
+def rotate_refresh_tokens(response: Response, username: str, role: str, secure: bool = True) -> dict:
     """Rotate an access/refresh pair on refresh AND bump the token_version.
 
     ``set_auth_cookies`` alone re-issues both cookies but leaves the old refresh
@@ -315,7 +318,7 @@ def rotate_refresh_tokens(response: Response, username: str, role: str) -> dict:
     ``set_auth_cookies`` (``web_server.auth_refresh``).
     """
     bump_token_version(username)
-    return set_auth_cookies(response, username, role)
+    return set_auth_cookies(response, username, role, secure=secure)
 
 
 # ── One-time WebSocket ticket (F-12) ──────────────────────────────────────
