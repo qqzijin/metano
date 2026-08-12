@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { NavLink } from "react-router-dom";
 import {
-  BarChart3, BookOpen, Bot, Brain, Clock, Cpu, Dna,
-  FileText, Globe, Home, LayoutDashboard, MessageSquare,
-  Mic, Network, Puzzle, Search, Settings, Shield, User, Users, Zap,
+  BookOpen, Bot, Brain, Clock, Cpu, Dna,
+  FileText, Globe, LayoutDashboard, MessageSquare,
+  Mic, Network, Search, Shield, Users, Zap,
   X, ChevronsLeft, ChevronsRight, Sun, Moon, Monitor, LogOut, KeyRound,
 } from "lucide-react";
 import { cn } from "@/lib/utils";

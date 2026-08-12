@@ -48,12 +48,14 @@ export default function BrowserPage() {
                       <SelectItem value="stealth">隐身</SelectItem>
                     </SelectContent>
                   </Select>
-                  <Button disabled={!url.trim() || browseMut.isPending} onClick={() => browseMut.mutate(url)}>
+                  <Button disabled={!url.trim() || browseMut.isPending} onClick={() => browseMut.mutate({ url, mode })}>
                     <Globe className="size-4 mr-1" /> Go
                   </Button>
                 </div>
               </div>
-              {browseMut.data && (
+              {browseMut.isError && <p className="text-sm text-destructive">{browseMut.error?.message || "抓取失败"}</p>}
+              {browseMut.data?.error && <p className="text-sm text-destructive">{browseMut.data.error}</p>}
+              {browseMut.data && !browseMut.data.error && (
                 <div className="bg-muted rounded-lg p-3 text-sm max-h-80 overflow-auto whitespace-pre-wrap break-words min-w-0">
                   {browseMut.data.title && <div className="font-medium mb-1">{browseMut.data.title}</div>}
                   {browseMut.data.content?.slice(0, 3000)}

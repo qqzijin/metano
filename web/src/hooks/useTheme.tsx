@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
 
 type Theme = "light" | "dark" | "system";
 
@@ -14,6 +14,7 @@ const ThemeContext = createContext<ThemeCtx>({
   setTheme: () => {},
 });
 
+// eslint-disable-next-line react-refresh/only-export-components -- context consumer hook must colocate with ThemeProvider
 export function useTheme() {
   return useContext(ThemeContext);
 }
@@ -22,34 +23,27 @@ function getSystemTheme(): "light" | "dark" {
   return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
+function subscribeSystemTheme(onChange: () => void): () => void {
+  const mq = window.matchMedia("(prefers-color-scheme: dark)");
+  mq.addEventListener("change", onChange);
+  return () => mq.removeEventListener("change", onChange);
+}
+
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [theme, setTheme] = useState<Theme>(
     () => (localStorage.getItem("theme") as Theme) || "system"
   );
-  const [resolved, setResolved] = useState<"light" | "dark">(() => {
-    const stored = localStorage.getItem("theme") as Theme;
-    if (stored === "light" || stored === "dark") return stored;
-    return getSystemTheme();
-  });
+  // `resolved` is derived state: the effective theme is the selected one, or
+  // the live OS preference when "system". useSyncExternalStore keeps the OS
+  // preference fresh without a synchronous setState-in-effect (the root cause
+  // of cascading renders that react-hooks/set-state-in-effect flags).
+  const systemTheme = useSyncExternalStore(subscribeSystemTheme, getSystemTheme, getSystemTheme);
+  const resolved = theme === "system" ? systemTheme : theme;
 
   useEffect(() => {
-    const r = theme === "system" ? getSystemTheme() : theme;
-    setResolved(r);
-    document.documentElement.classList.toggle("dark", r === "dark");
+    document.documentElement.classList.toggle("dark", resolved === "dark");
     localStorage.setItem("theme", theme);
-  }, [theme]);
-
-  useEffect(() => {
-    if (theme !== "system") return;
-    const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    const handler = (e: MediaQueryListEvent) => {
-      const r = e.matches ? "dark" : "light";
-      setResolved(r);
-      document.documentElement.classList.toggle("dark", r === "dark");
-    };
-    mq.addEventListener("change", handler);
-    return () => mq.removeEventListener("change", handler);
-  }, [theme]);
+  }, [resolved, theme]);
 
   return (
     <ThemeContext.Provider value={{ theme, resolved, setTheme }}>

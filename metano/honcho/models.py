@@ -71,25 +71,59 @@ class Observation:
     timestamp: float = 0.0
 
 
-def get_honcho_db() -> sqlite3.Connection:
-    HONCHO_DB.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(HONCHO_DB), check_same_thread=False)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.row_factory = sqlite3.Row
-    return conn
+def _ensure_schema(conn: sqlite3.Connection):
+    """Idempotently create the Honcho schema + run migrations.
 
-
-def init_honcho_db() -> sqlite3.Connection:
-    conn = get_honcho_db()
+    Safe to call on every connection open: DDL is CREATE ... IF NOT EXISTS and
+    migrations swallow the already-exists OperationalError.
+    """
     conn.executescript(SCHEMA)
-    # Run migrations for existing databases
     for migration in MIGRATIONS:
         try:
             conn.execute(migration)
             conn.commit()
         except sqlite3.OperationalError:
             pass  # Column already exists
+
+
+def get_honcho_db() -> sqlite3.Connection:
+    HONCHO_DB.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(HONCHO_DB), check_same_thread=False)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.row_factory = sqlite3.Row
+    # F-03: guarantee the schema exists on every open so first-run entry points
+    # (gateway/router, harvester, adapter, reflector) never hit missing tables.
+    _ensure_schema(conn)
     return conn
+
+
+def init_honcho_db() -> sqlite3.Connection:
+    return get_honcho_db()
+
+
+def user_key_to_honcho_user(user_key: str) -> str:
+    """Map a bridge.db ``sessions.user_key`` (e.g. ``telegram:12345``) to a
+    stable Honcho user id.
+
+    User keys are built by the gateway as ``<platform>:<user_id>``; some
+    platform adapters already prefix the raw id, producing keys like
+    ``qq:qq:<id>``. This helper collapses the duplicated platform segment so
+    multi-user data is never conflated under a single ``default`` profile.
+    """
+    if not user_key:
+        return 'default'
+    key = str(user_key).strip()
+    if not key or key == 'default':
+        return key or 'default'
+    parts = key.split(':')
+    if len(parts) < 2:
+        return key
+    # Collapse duplicate adjacent segments: qq:qq:12345 -> qq:12345.
+    cleaned = [parts[0]]
+    for p in parts[1:]:
+        if p and p != cleaned[-1]:
+            cleaned.append(p)
+    return ':'.join(cleaned)
 
 
 def create_user(conn: sqlite3.Connection, name: str = "user", user_id: str = "") -> dict:
@@ -139,6 +173,25 @@ def get_beliefs(conn: sqlite3.Connection, user_id: str) -> list[dict]:
 
 def add_belief(conn: sqlite3.Connection, user_id: str, category: str,
                content: str, confidence: float = 0.5, source_observations: list[str] | None = None) -> dict:
+    """Insert a belief. Signature is (conn, user_id, category, content, ...).
+
+    Raises ValueError when the arguments are clearly malformed — this guards
+    against the classic swapped-args regression where ``content`` was passed as
+    ``category`` (see reflector.apply_correction refine branch).
+    """
+    category = str(category or '').strip()
+    content = str(content or '').strip()
+    if not category:
+        raise ValueError('add_belief: category must be a non-empty string')
+    if not content:
+        raise ValueError('add_belief: content must be a non-empty string')
+    # Category is a short label (longest in use: 'temporal_abstraction', 19 chars).
+    # A full sentence here means the caller swapped category/content — the exact
+    # regression fixed in reflector.apply_correction (F-11).
+    if len(category) > 32:
+        raise ValueError(
+            f'add_belief: category looks like a content string (len={len(category)}); '
+            f'category/content args swapped? {category!r}')
     belief_id = uuid.uuid4().hex[:12]
     now = time.time()
     sources = json_dumps(source_observations or [])

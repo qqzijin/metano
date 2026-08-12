@@ -118,7 +118,9 @@ export default function SearchPage() {
 
         {/* ── 知识库搜索 ── */}
         <TabsContent value="knowledge">
-          {kbMut.isPending ? (
+          {kbMut.isError ? (
+            <div className="text-sm text-destructive">知识库检索失败: {kbMut.error?.message || "请检查服务后重试"}</div>
+          ) : kbMut.isPending ? (
             <div className="space-y-3">{Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-20 rounded-lg" />)}</div>
           ) : kbMut.data && (kbMut.data.results ?? []).length === 0 ? (
             <EmptyState title="未找到结果" description="请尝试不同的关键词" icon={<BookOpen className="size-10" />} />
@@ -141,7 +143,9 @@ export default function SearchPage() {
 
         {/* ── 网页搜索 ── */}
         <TabsContent value="web">
-          {webMut.isPending ? (
+          {webMut.isError ? (
+            <div className="text-sm text-destructive">网页搜索失败: {webMut.error?.message || "请检查服务后重试"}</div>
+          ) : webMut.isPending ? (
             <div className="space-y-3">{Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-20 rounded-lg" />)}</div>
           ) : webMut.data && (webMut.data.results ?? []).length === 0 ? (
             <EmptyState title="未找到结果" description="请尝试不同的关键词" icon={<Globe className="size-10" />} />

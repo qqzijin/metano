@@ -92,8 +92,15 @@ def parse_jsonl_file(filepath: Path, start_offset: int=0) -> list[dict]:
                 continue
     return records
 
-def process_records(conn: sqlite3.Connection, session_id: str, project: str, records: list[dict]):
-    """Process JSONL records and upsert into the database."""
+def process_records(conn: sqlite3.Connection, session_id: str, project: str, records: list[dict], incremental: bool = False):
+    """Process JSONL records and upsert into the database.
+
+    F-05: ``incremental=False`` (force/full rebuild or first index) wipes the
+    session's messages and rebuilds them from ``records``. ``incremental=True``
+    (delta append) only inserts messages not already present — old history is
+    NEVER deleted, and the session aggregates (message_count, tokens) are merged
+    on top of the existing row instead of overwritten.
+    """
     session_data = {'id': session_id, 'project': project, 'title': None, 'model': None, 'started_at': time.time(), 'ended_at': None, 'last_active': 0, 'message_count': 0, 'tool_call_count': 0, 'input_tokens': 0, 'output_tokens': 0, 'cache_read_tokens': 0, 'estimated_cost_usd': 0.0}
     messages = []
     for rec in records:
@@ -141,8 +148,51 @@ def process_records(conn: sqlite3.Connection, session_id: str, project: str, rec
     session_data['estimated_cost_usd'] = estimate_cost(
         session_data['model'] or '', session_data['input_tokens'],
         session_data['output_tokens'], session_data['cache_read_tokens'])
+
+    if incremental:
+        # Delta append: merge aggregates into the existing session row and
+        # drop messages already present (dedupe by role+content+timestamp).
+        row = conn.execute('SELECT * FROM sessions WHERE id = ?', (session_id,)).fetchone()
+        if row:
+            old = dict(row)
+            existing_keys = {
+                (e['role'], e['content'], float(e['timestamp'] or 0))
+                for e in conn.execute(
+                    'SELECT role, content, timestamp FROM messages WHERE session_id = ?',
+                    (session_id,)).fetchall()
+            }
+            new_messages = []
+            seen = set()
+            for m in messages:
+                key = (m['role'], m['content'], float(m['timestamp'] or 0))
+                if key in existing_keys or key in seen:
+                    continue
+                seen.add(key)
+                new_messages.append(m)
+            messages = new_messages
+            session_data['message_count'] = (old.get('message_count') or 0) + len(messages)
+            session_data['input_tokens'] = (old.get('input_tokens') or 0) + sum((m['input_tokens'] or 0) for m in messages)
+            session_data['output_tokens'] = (old.get('output_tokens') or 0) + sum((m['output_tokens'] or 0) for m in messages)
+            session_data['tool_call_count'] = (old.get('tool_call_count') or 0) + sum(1 for m in messages if m.get('tool_name'))
+            # cache_read_input_tokens is a cumulative per-session counter — keep the max.
+            session_data['cache_read_tokens'] = max(old.get('cache_read_tokens') or 0, session_data['cache_read_tokens'])
+            if old.get('started_at'):
+                session_data['started_at'] = min(old['started_at'], session_data['started_at'])
+            if old.get('last_active'):
+                session_data['last_active'] = max(old['last_active'], session_data['last_active'])
+            if not session_data['title'] and old.get('title'):
+                session_data['title'] = old['title']
+            if not session_data['model'] and old.get('model'):
+                session_data['model'] = old['model']
+            session_data['ended_at'] = session_data['last_active'] or old.get('ended_at')
+            session_data['estimated_cost_usd'] = estimate_cost(
+                session_data['model'] or '', session_data['input_tokens'],
+                session_data['output_tokens'], session_data['cache_read_tokens'])
+
     conn.execute('\n        INSERT INTO sessions (id, project, title, model, started_at, ended_at, last_active,\n                              message_count, tool_call_count, input_tokens, output_tokens,\n                              cache_read_tokens, estimated_cost_usd)\n        VALUES (:id, :project, :title, :model, :started_at, :ended_at, :last_active,\n                :message_count, :tool_call_count, :input_tokens, :output_tokens,\n                :cache_read_tokens, :estimated_cost_usd)\n        ON CONFLICT(id) DO UPDATE SET\n            title=COALESCE(excluded.title, sessions.title),\n            model=excluded.model,\n            ended_at=excluded.ended_at,\n            last_active=excluded.last_active,\n            message_count=excluded.message_count,\n            tool_call_count=excluded.tool_call_count,\n            input_tokens=excluded.input_tokens,\n            output_tokens=excluded.output_tokens,\n            cache_read_tokens=excluded.cache_read_tokens,\n            estimated_cost_usd=excluded.estimated_cost_usd\n    ', session_data)
-    conn.execute('DELETE FROM messages WHERE session_id = ?', (session_id,))
+    if not incremental:
+        # Full rebuild: only wipe prior messages when re-indexing the whole file.
+        conn.execute('DELETE FROM messages WHERE session_id = ?', (session_id,))
     for m in messages:
         conn.execute('\n            INSERT INTO messages (session_id, role, content, tool_name, tool_calls,\n                                  timestamp, input_tokens, output_tokens, duration_ms)\n            VALUES (:session_id, :role, :content, :tool_name, :tool_calls,\n                    :timestamp, :input_tokens, :output_tokens, :duration_ms)\n        ', m)
 
@@ -161,7 +211,10 @@ def index_file(conn: sqlite3.Connection, filepath: Path, project: str, force: bo
         start_offset = row['last_byte_offset']
     records = parse_jsonl_file(filepath, start_offset)
     if records:
-        process_records(conn, session_id, project, records)
+        # F-05: a resumed offset means we only have the appended delta — append
+        # those records instead of deleting the session's history. A truncation
+        # rewrite (offset reset to 0) or --force triggers a full rebuild.
+        process_records(conn, session_id, project, records, incremental=(start_offset > 0))
     conn.execute('INSERT OR REPLACE INTO _index_state (file_path, last_byte_offset, last_modified) VALUES (?, ?, ?)', (str(filepath), file_size, file_mtime))
     conn.commit()
 

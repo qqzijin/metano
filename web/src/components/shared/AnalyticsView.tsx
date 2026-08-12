@@ -1,10 +1,9 @@
 import { useState } from "react";
 import {
-  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
+  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
   AreaChart, Area, PieChart, Pie, Cell,
 } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAnalytics } from "@/api/hooks";
@@ -19,8 +18,6 @@ const DAYS = [7, 30, 90] as const;
 // Theme-derived styling — everything resolves against CSS variables so charts
 // follow the active light/dark theme automatically.
 const AXIS_TICK = { fontSize: 11, fill: "var(--muted-foreground)" };
-const AXIS_STROKE = "var(--border)";
-const GRID_STROKE = "var(--border)";
 const TOOLTIP_STYLE = {
   background: "var(--popover)",
   border: "1px solid var(--border)",
@@ -113,7 +110,6 @@ export function AnalyticsView() {
   }));
 
   const avgCost = daily.length > 0 ? (total.estimated_cost_usd ?? 0) / daily.length : 0;
-  const avgSessions = daily.length > 0 ? (total.session_count ?? 0) / daily.length : 0;
   const cacheRead = total.cache_read_tokens ?? 0;
 
   return (

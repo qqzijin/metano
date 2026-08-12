@@ -261,6 +261,26 @@ def is_local_target(target: str) -> bool:
     return t in ("", "local", "localhost", "127.0.0.1") or t.startswith("local")
 
 
+def _estimate_call_cost(prompt: str, response: str) -> float:
+    """Best-effort cost estimate from prompt/response text.
+
+    ``model_router.call_claude`` returns plain text (no usage object), so tokens
+    are approximated as ``chars / 4`` and priced with the default provider's
+    rates.  A structured-usage contract (needs a ``model_router`` change) would
+    give an exact figure; this at least keeps collab costs non-zero and
+    proportional to the actual work performed (F-18).
+    """
+    try:
+        from .model_router import model_router
+        provider = model_router.get_provider("")
+        model_name = (provider.model if provider else "") or "claude"
+        in_tokens = max(1, len(prompt or "") // 4)
+        out_tokens = max(1, len(response or "") // 4)
+        return round(model_router.estimate_cost(model_name, in_tokens, out_tokens), 6)
+    except Exception:
+        return 0.0
+
+
 def _dispatch_remote_task(task: dict, timeout: int = 120) -> dict:
     """Dispatch a task to a remote metano via A2A (message/send + tasks/get).
 
@@ -356,7 +376,8 @@ def execute_task(task_id: str, timeout: int = 120) -> dict:
             update_status(task_id, "running")
             exec_result = _dispatch_remote_task(task, timeout)
             if exec_result.get("status") == "completed":
-                record_result(task_id, result=exec_result.get("result", ""), cost=0.0, status="completed")
+                cost = _estimate_call_cost(task.get("prompt", ""), exec_result.get("result", ""))
+                record_result(task_id, result=exec_result.get("result", ""), cost=cost, status="completed")
             else:
                 record_result(task_id, result="", error=exec_result.get("error", exec_result.get("status", "")), status="failed")
             exec_result["duration_seconds"] = round(time.time() - started, 3)
@@ -397,7 +418,8 @@ def execute_task(task_id: str, timeout: int = 120) -> dict:
                              status="failed")
         execution_status = "failed"
     else:
-        task = record_result(task_id, result=response[:200000], cost=0.0,
+        cost = _estimate_call_cost(task["prompt"], response)
+        task = record_result(task_id, result=response[:200000], cost=cost,
                              status="completed")
         execution_status = "completed"
     return {
@@ -409,3 +431,17 @@ def execute_task(task_id: str, timeout: int = 120) -> dict:
             "timeout": timeout,
         },
     }
+
+
+async def execute_task_async(task_id: str, timeout: int = 120) -> dict:
+    """Run :func:`execute_task` without blocking the event loop.
+
+    F-18: the sync implementation makes a blocking subprocess / HTTP call that
+    would freeze the Web event loop for the whole execution.  Running it in an
+    executor keeps other page requests responsive.  For a fire-and-forget flow
+    the async endpoint should return the task id immediately and let the caller
+    poll ``get_task`` — switch the Web endpoint to this function via
+    ``await asyncio.to_thread`` semantics.
+    """
+    import asyncio
+    return await asyncio.to_thread(execute_task, task_id, timeout)

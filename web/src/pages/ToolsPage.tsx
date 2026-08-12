@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { Zap, Wrench, Search, Globe, Flame, Snowflake, Pencil, Trash2 } from "lucide-react";
+import { Zap, Wrench, Search, Globe, Flame, Snowflake, Pencil, Trash2, Terminal } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { EmptyState } from "@/components/shared/EmptyState";
+import { RoleGuard } from "@/components/auth/RoleGuard";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -10,7 +11,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { useSkills, useSkill, useSkillUsage, useSkillUpdate, useSkillDelete, useMcpTools, useWebSearch } from "@/api/hooks";
+import { useSkills, useSkill, useSkillUsage, useSkillUpdate, useSkillDelete, useMcpTools, useMcpCall, useWebSearch } from "@/api/hooks";
 import { toast } from "sonner";
 
 /**
@@ -18,7 +19,7 @@ import { toast } from "sonner";
  */
 export default function ToolsPage() {
   return (
-    <>
+    <RoleGuard role="admin">
       <PageHeader title="工具" description="技能与 MCP 工具统一管理" />
       <Tabs defaultValue="skills">
         <TabsList className="mb-4">
@@ -28,7 +29,7 @@ export default function ToolsPage() {
         <TabsContent value="skills"><SkillsView /></TabsContent>
         <TabsContent value="mcp"><McpToolsView /></TabsContent>
       </Tabs>
-    </>
+    </RoleGuard>
   );
 }
 
@@ -186,8 +187,14 @@ function SkillsView() {
 function McpToolsView() {
   const { data, isLoading, isError } = useMcpTools();
   const [searchQuery, setSearchQuery] = useState("");
-  const [searchResult, setSearchResult] = useState<any>(null);
+  const [searchResult, setSearchResult] = useState<{ answer?: string; results?: Array<{ title: string; url: string; snippet: string }> } | null>(null);
   const webSearchMut = useWebSearch();
+  // M-07: invoke a tool from its card instead of the registry being display-only.
+  const callMut = useMcpCall();
+  const [callTool, setCallTool] = useState<{ name: string; description?: string } | null>(null);
+  const [callArgs, setCallArgs] = useState("{}");
+  const [callResult, setCallResult] = useState<unknown>(null);
+  const [callError, setCallError] = useState<string | null>(null);
 
   const tools = data?.tools ?? [];
 
@@ -199,6 +206,38 @@ function McpToolsView() {
       toast.success("搜索完成");
     } catch {
       toast.error("搜索失败");
+    }
+  };
+
+  const openCall = (t: { name: string; description?: string }) => {
+    setCallTool(t);
+    setCallArgs("{}");
+    setCallResult(null);
+    setCallError(null);
+  };
+
+  const handleCall = async () => {
+    if (!callTool) return;
+    let args: Record<string, unknown>;
+    try {
+      args = JSON.parse(callArgs || "{}");
+    } catch {
+      setCallError("参数不是合法 JSON");
+      return;
+    }
+    try {
+      const res = await callMut.mutateAsync({ tool: callTool.name, args });
+      const payload = res as { result?: unknown; error?: string };
+      if (payload.error) {
+        setCallError(payload.error);
+        setCallResult(null);
+      } else {
+        setCallResult(payload.result ?? res);
+        setCallError(null);
+      }
+    } catch (e) {
+      setCallError(e instanceof Error ? e.message : "调用失败");
+      setCallResult(null);
     }
   };
 
@@ -233,7 +272,7 @@ function McpToolsView() {
                   <p className="text-sm">{searchResult.answer}</p>
                 </div>
               )}
-              {(searchResult.results ?? []).map((r: any, i: number) => (
+              {(searchResult.results ?? []).map((r, i) => (
                 <div key={i} className="bg-muted/50 rounded-lg p-3 min-w-0">
                   <div className="font-medium text-sm mb-1 break-words">{r.title}</div>
                   <p className="text-xs text-muted-foreground mb-1 break-words">{r.snippet}</p>
@@ -269,11 +308,53 @@ function McpToolsView() {
                   </Badge>
                 </div>
                 <p className="text-xs text-muted-foreground line-clamp-2 break-words">{t.description || "无描述"}</p>
+                <Button size="sm" variant="outline" className="mt-3" onClick={() => openCall(t)}>
+                  <Terminal className="size-3.5 mr-1" /> 调用
+                </Button>
               </CardContent>
             </Card>
           ))}
         </div>
       )}
+
+      {/* M-07: 工具调用对话框 */}
+      <Dialog open={!!callTool} onOpenChange={(o) => { if (!o) setCallTool(null); }}>
+        <DialogContent className="max-w-lg max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>调用工具 · {callTool?.name}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            {callTool?.description && (
+              <p className="text-xs text-muted-foreground break-words">{callTool.description}</p>
+            )}
+            <div>
+              <label className="block text-xs text-muted-foreground mb-1">参数 (JSON)</label>
+              <Textarea
+                value={callArgs}
+                onChange={(e) => setCallArgs(e.target.value)}
+                spellCheck={false}
+                className="font-mono text-xs min-h-[120px] max-h-64 resize-y"
+                placeholder='{ "query": "example" }'
+              />
+            </div>
+            {callError && <div className="text-sm text-destructive">调用失败: {callError}</div>}
+            {callResult != null && (
+              <div>
+                <label className="block text-xs text-muted-foreground mb-1">结果</label>
+                <pre className="text-xs bg-muted p-3 rounded-md overflow-auto max-h-60 whitespace-pre-wrap break-words">
+                  {typeof callResult === "string" ? callResult : JSON.stringify(callResult, null, 2)}
+                </pre>
+              </div>
+            )}
+            <div className="flex justify-end gap-2">
+              <Button size="sm" variant="ghost" onClick={() => setCallTool(null)}>关闭</Button>
+              <Button size="sm" onClick={handleCall} disabled={callMut.isPending}>
+                {callMut.isPending ? "调用中..." : "执行"}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }

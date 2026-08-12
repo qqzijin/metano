@@ -66,7 +66,7 @@ export function Markdown({ children }: { children: string }) {
             const codeText = toText(el?.props?.children ?? children);
             return <CodeBlock code={codeText} lang={match?.[1] ?? ""}>{children}</CodeBlock>;
           },
-          code({ className, children }) {
+          code({ children }) {
             // Inline code only — block code is handled by `pre` above.
             return (
               <code className="rounded bg-muted px-1 py-0.5 font-mono text-[0.9em]">{children}</code>

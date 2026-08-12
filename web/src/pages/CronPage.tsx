@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useCronJobs, useCronPause, useCronResume, useCronDelete, useCronTrigger, useCronCreate } from "@/api/hooks";
+import type { CronJob } from "@/api/client";
 import { RoleGuard } from "@/components/auth/RoleGuard";
 import { toast } from "sonner";
 
@@ -40,7 +41,7 @@ export default function CronPage() {
     }
   };
 
-  const handleToggle = async (j: any) => {
+  const handleToggle = async (j: CronJob) => {
     try {
       if (j.enabled) await pauseMut.mutateAsync(j.id);
       else await resumeMut.mutateAsync(j.id);
@@ -49,7 +50,7 @@ export default function CronPage() {
     }
   };
 
-  const handleTrigger = async (j: any) => {
+  const handleTrigger = async (j: CronJob) => {
     try {
       await triggerMut.mutateAsync(j.id);
       toast.info(`已触发 ${j.name}`);
@@ -58,7 +59,7 @@ export default function CronPage() {
     }
   };
 
-  const handleDelete = async (j: any) => {
+  const handleDelete = async (j: CronJob) => {
     if (!window.confirm(`确定删除定时任务 "${j.name}"？`)) return;
     try {
       await deleteMut.mutateAsync(j.id);

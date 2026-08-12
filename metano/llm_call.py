@@ -14,8 +14,14 @@ BROWSER_USER_AGENT = ('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 '
                       '(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36')
 
 
-def _resolve_provider() -> tuple[str, str, str]:
-    """Resolve (base_url, api_key, model) for the evolution LLM channel.
+# Phase under which llm_call records its audit-log cost. Kept in one place so
+# the cost-circuit breaker (evolution._estimate_daily_cost) can assert this
+# phase is actually included in its evo_phases set (F-10 regression check).
+LLM_AUDIT_PHASE = 'llm'
+
+
+def _resolve_provider() -> tuple[str, str, str, str]:
+    """Resolve (base_url, api_key, model, protocol) for the evolution LLM channel.
 
     Prefers the provider configured in gateway_config.yaml (via ModelRouter) so
     the evolution system uses the same model/endpoint as user-facing chat.
@@ -27,10 +33,11 @@ def _resolve_provider() -> tuple[str, str, str]:
         if p:
             return (p.base_url or ANTHROPIC_BASE_URL,
                     p.api_key or ANTHROPIC_API_KEY,
-                    p.model or ANTHROPIC_MODEL)
+                    p.model or ANTHROPIC_MODEL,
+                    (getattr(p, 'protocol', None) or 'anthropic').lower())
     except Exception:
         logger.exception("llm_call: provider resolution failed, using env")
-    return ANTHROPIC_BASE_URL, ANTHROPIC_API_KEY, ANTHROPIC_MODEL
+    return ANTHROPIC_BASE_URL, ANTHROPIC_API_KEY, ANTHROPIC_MODEL, 'anthropic'
 
 # Cost per million tokens (USD) — update as pricing changes
 _COST_PER_MILLION = {
@@ -60,16 +67,24 @@ def _estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
     return (input_tokens * input_price + output_tokens * output_price) / 1_000_000
 
 
-def call_llm(system_prompt: str, user_prompt: str, max_tokens: int = 3000,
-             timeout: int = 60) -> tuple[str, float]:
-    """Call Claude API and return (response_text, estimated_cost_usd).
+def _record_cost(model: str, protocol: str, input_tokens: int, output_tokens: int,
+                 cost: float):
+    """Write one audit entry for an LLM API call (best-effort)."""
+    try:
+        from .evo_models import add_audit
+        add_audit(LLM_AUDIT_PHASE, 'api_call', json.dumps({
+            'model': model,
+            'protocol': protocol,
+            'input_tokens': input_tokens,
+            'output_tokens': output_tokens,
+        }, ensure_ascii=False), cost=cost, model=model)
+    except Exception:
+        pass
 
-    All evolution system LLM calls should go through this function
-    so costs are consistently tracked.
-    """
-    base_url, api_key, model = _resolve_provider()
-    if not api_key:
-        return '[]', 0.0
+
+def _call_anthropic(base_url: str, api_key: str, model: str, system_prompt: str,
+                    user_prompt: str, max_tokens: int, timeout: int) -> tuple[str, dict]:
+    """POST /v1/messages (Anthropic format). Returns (text, usage)."""
     payload = {
         'model': model,
         'max_tokens': max_tokens,
@@ -82,41 +97,85 @@ def call_llm(system_prompt: str, user_prompt: str, max_tokens: int = 3000,
         'anthropic-version': '2023-06-01',
         'User-Agent': BROWSER_USER_AGENT,
     }
+    # base_url may or may not already end in /v1 (api.anthropic.com/v1 vs a proxy root).
+    endpoint = f'{base_url}/messages' if base_url.rstrip('/').endswith('/v1') else f'{base_url}/v1/messages'
+    req = urllib.request.Request(endpoint, data=json.dumps(payload).encode(), headers=headers)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        result = json.loads(resp.read().decode())
+    usage = result.get('usage', {})
+    content = result.get('content', [])
+    # Some providers (e.g. DeepSeek via proxy) emit a leading 'thinking' block —
+    # take the first real 'text' block instead.
+    text = next((c.get('text') for c in content if c.get('type') == 'text'), None)
+    if text is None and content and content[0].get('type') == 'thinking':
+        text = content[0].get('thinking', '')
+    if text is None:
+        text = str(content)
+    usage_norm = {
+        'input_tokens': usage.get('input_tokens', 0) or 0,
+        'output_tokens': usage.get('output_tokens', 0) or 0,
+    }
+    return text, usage_norm
+
+
+def _call_openai(base_url: str, api_key: str, model: str, system_prompt: str,
+                 user_prompt: str, max_tokens: int, timeout: int) -> tuple[str, dict]:
+    """POST /chat/completions (OpenAI-compatible format). Returns (text, usage)."""
+    base = (base_url or '').rstrip('/')
+    endpoint = base + '/chat/completions'
+    payload = {
+        'model': model,
+        'messages': [
+            {'role': 'system', 'content': system_prompt},
+            {'role': 'user', 'content': user_prompt},
+        ],
+        'max_tokens': max_tokens,
+    }
+    headers = {'Content-Type': 'application/json', 'User-Agent': BROWSER_USER_AGENT}
+    if api_key:
+        headers['Authorization'] = f'Bearer {api_key}'
+    req = urllib.request.Request(endpoint, data=json.dumps(payload).encode(), headers=headers)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        result = json.loads(resp.read().decode())
+    usage = result.get('usage', {})
+    choices = result.get('choices') or []
+    if choices:
+        msg = choices[0].get('message', {})
+        text = (msg.get('content') or '').strip() or '(empty response)'
+    else:
+        text = str(result)
+    usage_norm = {
+        'input_tokens': usage.get('prompt_tokens', 0) or 0,
+        'output_tokens': usage.get('completion_tokens', 0) or 0,
+    }
+    return text, usage_norm
+
+
+def call_llm(system_prompt: str, user_prompt: str, max_tokens: int = 3000,
+             timeout: int = 60) -> tuple[str, float]:
+    """Call the configured LLM and return (response_text, estimated_cost_usd).
+
+    All evolution system LLM calls should go through this function so costs are
+    consistently tracked. F-02: the request format/headers follow the provider's
+    ``protocol`` — Anthropic ``/v1/messages`` for ``anthropic``, OpenAI
+    ``/v1/chat/completions`` for ``openai`` (Ollama/DeepSeek/OpenRouter/…).
+    """
+    base_url, api_key, model, protocol = _resolve_provider()
+    if not api_key:
+        return '[]', 0.0
     cost = 0.0
     try:
-        # Anthropic SDK always posts to /v1/messages. base_url may or may not
-        # already end in /v1 (e.g. api.anthropic.com/v1 vs a custom proxy root).
-        endpoint = f'{base_url}/messages' if base_url.rstrip('/').endswith('/v1') else f'{base_url}/v1/messages'
-        req = urllib.request.Request(
-            endpoint,
-            data=json.dumps(payload).encode(),
-            headers=headers,
-        )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            result = json.loads(resp.read().decode())
-            content = result.get('content', [])
-            usage = result.get('usage', {})
-            input_tokens = usage.get('input_tokens', 0)
-            output_tokens = usage.get('output_tokens', 0)
-            cost = _estimate_cost(model, input_tokens, output_tokens)
-            # Record cost in audit log
-            try:
-                from .evo_models import add_audit
-                add_audit('llm', 'api_call', json.dumps({
-                    'model': model,
-                    'input_tokens': input_tokens,
-                    'output_tokens': output_tokens,
-                }, ensure_ascii=False), cost=cost, model=model)
-            except Exception:
-                pass
-            # Some providers (e.g. DeepSeek via proxy) emit a leading
-            # 'thinking' block — take the first real 'text' block instead.
-            text = next((c.get('text') for c in content if c.get('type') == 'text'), None)
-            if text is not None:
-                return text, cost
-            if content and content[0].get('type') == 'thinking':
-                return content[0].get('thinking', ''), cost
-            return str(content), cost
+        if protocol == 'openai':
+            text, usage = _call_openai(base_url, api_key, model, system_prompt,
+                                       user_prompt, max_tokens, timeout)
+        else:
+            text, usage = _call_anthropic(base_url, api_key, model, system_prompt,
+                                          user_prompt, max_tokens, timeout)
+        input_tokens = usage.get('input_tokens', 0) or 0
+        output_tokens = usage.get('output_tokens', 0) or 0
+        cost = _estimate_cost(model, input_tokens, output_tokens)
+        _record_cost(model, protocol, input_tokens, output_tokens, cost)
+        return text, cost
     except Exception:
         logger.exception("llm_call: API request failed")
         return '[]', cost
@@ -124,9 +183,10 @@ def call_llm(system_prompt: str, user_prompt: str, max_tokens: int = 3000,
 
 def get_llm_config() -> dict:
     """Return current LLM configuration."""
-    base_url, api_key, model = _resolve_provider()
+    base_url, api_key, model, protocol = _resolve_provider()
     return {
         'model': model,
         'base_url': base_url,
+        'protocol': protocol,
         'has_api_key': bool(api_key),
     }

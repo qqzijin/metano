@@ -35,11 +35,25 @@ def _find_similar_belief(conn, user_id: str, category: str, content: str, thresh
     if best and best_sim >= threshold:
         return dict(best)
     return None
-ANTHROPIC_API_KEY = os.environ.get('ANTHROPIC_API_KEY', '')
+def _llm_provider_available() -> bool:
+    """Whether a usable LLM provider exists, resolved at call time.
+
+    F-02: reads the current provider from ModelRouter (which reflects the
+    live gateway_config.yaml) instead of a process-startup environment
+    snapshot, so a provider added/changed at runtime takes effect immediately.
+    """
+    try:
+        from ..model_router import model_router
+        p = model_router.get_provider()
+        if p and getattr(p, 'api_key', ''):
+            return True
+    except Exception:
+        logger.exception("dialectic: provider resolution failed")
+    return bool(os.environ.get('ANTHROPIC_API_KEY', ''))
 
 def _call_llm(system_prompt: str, user_prompt: str) -> str:
     """Call Claude API for dialectic reasoning (with cost tracking)."""
-    if not ANTHROPIC_API_KEY:
+    if not _llm_provider_available():
         return _rule_based_reasoning(system_prompt, user_prompt)
     text, _ = call_llm(system_prompt, user_prompt, max_tokens=2000, timeout=30)
     if not text or text == '[]':

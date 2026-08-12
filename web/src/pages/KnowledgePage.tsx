@@ -2,6 +2,7 @@ import { useState } from "react";
 import { BookOpen, Upload, Search, Trash2, Loader2, Eye, Sparkles } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { EmptyState } from "@/components/shared/EmptyState";
+import { RoleGuard } from "@/components/auth/RoleGuard";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -46,11 +47,26 @@ export default function KnowledgePage() {
   const handleIngest = async () => {
     if (!ingestPath.trim()) return;
     try {
-      await ingestMut.mutateAsync({ path: ingestPath });
-      toast.success("文档已导入");
-      setIngestPath("");
+      // F-15: the backend returns HTTP 200 + {error} for unsupported inputs (e.g.
+      // URLs / non-allowed paths). Only claim success when the doc was actually
+      // ingested (single "ingested" or directory "batch" import).
+      const result = (await ingestMut.mutateAsync({ path: ingestPath })) as {
+        status?: string;
+        error?: string;
+        count?: number;
+      };
+      if (result.error) {
+        toast.error(result.error || "导入失败");
+        return;
+      }
+      if (result.status === "ingested" || (result.status === "batch" && Number(result.count) > 0)) {
+        toast.success(result.status === "batch" ? `批量导入完成: ${result.count} 个文件` : "文档已导入");
+        setIngestPath("");
+      } else {
+        toast.error("导入失败");
+      }
     } catch (e) {
-      toast.error("导入失败");
+      toast.error(`导入失败: ${e instanceof Error ? e.message : "未知错误"}`);
     }
   };
 
@@ -85,7 +101,7 @@ export default function KnowledgePage() {
   };
 
   return (
-    <>
+    <RoleGuard role="admin">
       <PageHeader title="知识库" description={`${docs.length} 份文档`} />
 
       <div className="flex flex-col gap-3 mb-4 lg:flex-row">
@@ -176,10 +192,10 @@ export default function KnowledgePage() {
       ) : (
         <div className="grid gap-3">
           {docs.map((d, i) => {
-            const id = (d as any).doc_id ?? (d as any).id;
+            const id = d.doc_id ?? (d.id as string | undefined);
             const title = d.title || id || `文档 ${i + 1}`;
-            const chunks = (d as any).chunk_count ?? (d as any).chunks;
-            const updatedAt = (d as any).updated_at ?? (d as any).indexed_at;
+            const chunks = d.chunk_count ?? (d.chunks as number | undefined);
+            const updatedAt = d.updated_at ?? (d.indexed_at as number | string | undefined);
             return (
               <Card key={id ?? i} className="p-4">
                 <div className="flex items-center gap-3">
@@ -234,6 +250,6 @@ export default function KnowledgePage() {
           ) : null}
         </DialogContent>
       </Dialog>
-    </>
+    </RoleGuard>
   );
 }

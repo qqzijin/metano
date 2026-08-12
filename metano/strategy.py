@@ -7,7 +7,7 @@ Implements explore-exploit balance: 90% exploit (known-effective rules),
 import json
 import os
 import time
-from .evo_models import log_action, get_recent_actions, get_action_stats, get_rules, add_rule, update_rule_effectiveness, get_meta, set_meta
+from .evo_models import log_action, get_recent_actions, get_action_stats, get_rules, add_rule, update_rule_effectiveness, get_meta, set_meta, parse_rule_ids
 from .evolution import _log
 from .llm_call import call_llm
 from metano.log import logger
@@ -20,7 +20,10 @@ def record_action(session_id: str, action_type: str, action_detail: str, rule_id
     Call this BEFORE the action executes. After outcome is known,
     call record_outcome() with the same action_id.
     """
-    action_id = log_action(session_id=session_id, action_type=action_type, action_detail=action_detail, rule_ids_applied=','.join(rule_ids) if rule_ids else '', outcome='pending')
+    # F-08: store rule ids as a JSON array so get_recent_actions / parse_rule_ids
+    # can round-trip them (legacy comma-strings still parse via parse_rule_ids).
+    rule_ids_str = json.dumps(list(rule_ids)) if rule_ids else json.dumps([])
+    action_id = log_action(session_id=session_id, action_type=action_type, action_detail=action_detail, rule_ids_applied=rule_ids_str, outcome='pending')
     return action_id
 
 def record_outcome(action_id: int, outcome: str, detail: str='') -> dict:
@@ -36,8 +39,8 @@ def record_outcome(action_id: int, outcome: str, detail: str='') -> dict:
         if not row:
             return {'status': 'not_found'}
         action = dict(row)
-        rule_ids_str = action.get('rule_ids_applied', '')
-        rule_ids = [r.strip() for r in rule_ids_str.split(',') if r.strip()]
+        # F-08: parse both JSON-array and legacy comma-separated storage.
+        rule_ids = parse_rule_ids(action.get('rule_ids_applied', ''))
         conn.execute('UPDATE action_log SET outcome = ? WHERE id = ?', (outcome, action_id))
         conn.commit()
         for rid in rule_ids:
@@ -135,13 +138,14 @@ def detect_strategy_patterns() -> list[dict]:
         success_rules: dict[str, int] = {}
         failure_rules: dict[str, int] = {}
         for a in successes:
-            for rid in (a.get('rule_ids_applied', '') or '').split(','):
-                rid = rid.strip()
+            # get_recent_actions already normalized rule_ids_applied to a list.
+            for rid in (a.get('rule_ids_applied') or []):
+                rid = str(rid).strip()
                 if rid:
                     success_rules[rid] = success_rules.get(rid, 0) + 1
         for a in failures:
-            for rid in (a.get('rule_ids_applied', '') or '').split(','):
-                rid = rid.strip()
+            for rid in (a.get('rule_ids_applied') or []):
+                rid = str(rid).strip()
                 if rid:
                     failure_rules[rid] = failure_rules.get(rid, 0) + 1
         for rid, s_count in success_rules.items():

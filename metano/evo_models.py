@@ -278,6 +278,28 @@ def log_action(session_id: str, action_type: str, action_detail: str = "",
     return action_id
 
 
+def parse_rule_ids(raw) -> list:
+    """Parse a ``rule_ids_applied`` cell into a list of rule id strings.
+
+    F-08: historical rows may store a JSON array (``'["1","2"]'``) or a legacy
+    comma-separated string (``'1,2'``); both must parse so Strategy can read the
+    full history instead of erroring on one format.
+    """
+    if raw is None:
+        return []
+    s = str(raw).strip()
+    if not s:
+        return []
+    if s.startswith('['):
+        try:
+            val = json.loads(s)
+            if isinstance(val, list):
+                return [str(x).strip() for x in val if str(x).strip()]
+        except (json.JSONDecodeError, ValueError):
+            pass
+    return [x.strip() for x in s.split(',') if x.strip()]
+
+
 def get_recent_actions(limit: int = 50, action_type: str = None) -> list[dict]:
     conn = _get_conn()
     sql = "SELECT * FROM action_log"
@@ -290,7 +312,7 @@ def get_recent_actions(limit: int = 50, action_type: str = None) -> list[dict]:
     rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
     conn.close()
     for r in rows:
-        r["rule_ids_applied"] = json.loads(r.get("rule_ids_applied") or "[]")
+        r["rule_ids_applied"] = parse_rule_ids(r.get("rule_ids_applied"))
     return rows
 
 

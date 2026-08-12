@@ -286,3 +286,62 @@ def seed_from_claude_memory() -> dict:
         if result.get('status') == 'added':
             imported += 1
     return {'status': 'seeded', 'imported': imported}
+
+
+def search_memories_for_context(query: str = '', tags=None, limit: int = 5) -> list[str]:
+    """Return prompt-ready context lines from memory.db relevant to ``query``/``tags``.
+
+    F-06: gateway/router's ``_build_system_context`` calls this so memories
+    written to memory.db actually reach the next chat prompt (closing the
+    write-inject loop). When both query and tags are empty, falls back to the
+    most important recent memories so the context is never empty if memories
+    exist.
+    """
+    tag_str = _normalize_tags(tags) if tags else ''
+    try:
+        if query or tag_str:
+            res = search_memories(query, limit=limit, tag=tag_str or None)
+            if res.get('results'):
+                return [f"- [{r['category']}] {r['content']}" for r in res['results']]
+    except Exception:
+        logger.exception("search_memories_for_context: search failed")
+    # Fallback: top by importance (or empty when nothing is stored yet).
+    try:
+        with _get_conn() as conn:
+            rows = conn.execute(
+                'SELECT content, category FROM memories '
+                'ORDER BY importance DESC, last_accessed DESC LIMIT ?',
+                (limit,)).fetchall()
+            return [f"- [{r['category']}] {r['content']}" for r in rows]
+    except Exception:
+        logger.exception("search_memories_for_context: fallback failed")
+    return []
+
+
+def rebuild_index_from_db(index_path=None) -> dict:
+    """Rebuild a Claude-readable markdown memory index from the memories table.
+
+    F-06: the adapter calls this when its ``MEMORY.md`` index file is missing,
+    so auto-learned pointers are not silently dropped. ``index_path`` may be a
+    ``str``/``Path``; when omitted only the generated text count is returned.
+    """
+    with _get_conn() as conn:
+        rows = conn.execute(
+            'SELECT content, category, tags FROM memories '
+            'ORDER BY importance DESC, last_accessed DESC LIMIT 100'
+        ).fetchall()
+    lines = ['# Memory Index (rebuilt from memory.db)', '']
+    for r in rows:
+        content = (r['content'] or '').strip().replace('\n', ' ')[:200]
+        if not content:
+            continue
+        tag = f" (tags: {r['tags']})" if r['tags'] else ''
+        lines.append(f"- [{r['category']}] {content}{tag}")
+    text = '\n'.join(lines) + '\n'
+    written = ''
+    if index_path:
+        p = Path(index_path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text)
+        written = str(p)
+    return {'status': 'rebuilt', 'entries': len(rows), 'path': written}

@@ -20,6 +20,12 @@ DEFAULT_COST_WARN = 10.0
 DEFAULT_COST_PAUSE = 50.0
 DEFAULT_COST_STOP = 100.0
 
+# Audit phases whose cost counts toward the EVOLUTION engine budget (not user
+# chat). MUST include LLM_AUDIT_PHASE ('llm') — llm_call records every evolution
+# LLM call there, so excluding it made the breaker blind to LLM spend (F-10).
+EVO_COST_PHASES = ('observe', 'act', 'maintain', 'architect', 'knowledge',
+                   'introspect', 'control', 'reflect', 'learn', 'evaluate', 'llm')
+
 
 def _load_cost_config() -> dict:
     """Load cost circuit breaker config from file."""
@@ -42,9 +48,29 @@ def _save_cost_config(config: dict):
     COST_CONFIG_FLAG.write_text(json.dumps(config, ensure_ascii=False, indent=2))
 
 
+def _cost_phase_regression_check() -> bool:
+    """F-10 regression guard: the phase llm_call records LLM cost under must be
+    part of EVO_COST_PHASES, or the breaker would keep ignoring all LLM spend.
+
+    Returns True when consistent; logs a maintenance warning otherwise.
+    """
+    try:
+        from .llm_call import LLM_AUDIT_PHASE
+    except Exception:
+        LLM_AUDIT_PHASE = 'llm'
+    ok = LLM_AUDIT_PHASE in EVO_COST_PHASES
+    if not ok:
+        _log('maintain', 'cost_phase_mismatch', {
+            'llm_phase': LLM_AUDIT_PHASE,
+            'evo_phases': list(EVO_COST_PHASES),
+        })
+    return ok
+
+
 def _get_circuit_state() -> dict:
     """Compute current circuit breaker state from cost vs thresholds."""
     config = _load_cost_config()
+    _cost_phase_regression_check()
     cost = _estimate_daily_cost()
     state = 'normal'
     if cost >= config.get('stop_threshold', DEFAULT_COST_STOP):
@@ -377,9 +403,10 @@ def _estimate_daily_cost() -> float:
     try:
         from .evo_models import get_audit_cost_since
         cutoff = time.time() - 86400
-        # 只计算进化引擎自身的成本，排除对话成本
-        evo_phases = ('observe', 'act', 'maintain', 'architect', 'knowledge', 'introspect', 'control')
-        return get_audit_cost_since(cutoff, evo_phases)
+        # 只计算进化引擎自身的成本，排除对话成本。
+        # F-10: EVO_COST_PHASES 必须包含 LLM_AUDIT_PHASE('llm')，否则 LLM 成本
+        # 不被熔断统计（见 _cost_phase_regression_check）。
+        return get_audit_cost_since(cutoff, EVO_COST_PHASES)
     except Exception:
         return 0.0
 

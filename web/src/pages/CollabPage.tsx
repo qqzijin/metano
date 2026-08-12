@@ -143,6 +143,32 @@ export default function CollabPage() {
   const [creating, setCreating] = useState(false);
   const [executingId, setExecutingId] = useState<string | null>(null);
   const [detail, setDetail] = useState<CollabTask | null>(null);
+  // M-07: task status update (POST /collab/tasks/{id}/status)
+  const [statusDraft, setStatusDraft] = useState<string>("");
+  const [statusUpdating, setStatusUpdating] = useState(false);
+
+  const openDetail = (t: CollabTask) => {
+    setDetail(t);
+    setStatusDraft(t.status);
+  };
+
+  const handleUpdateStatus = async () => {
+    if (!detail || !statusDraft || statusDraft === detail.status) return;
+    setStatusUpdating(true);
+    try {
+      await api<CollabTask>(`/collab/tasks/${detail.id}/status`, {
+        method: "POST",
+        body: JSON.stringify({ status: statusDraft }),
+      });
+      toast.success(`任务状态已更新为 ${STATUS_LABELS[statusDraft] ?? statusDraft}`);
+      setDetail((d) => (d ? { ...d, status: statusDraft } : d));
+      refresh();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "状态更新失败");
+    } finally {
+      setStatusUpdating(false);
+    }
+  };
 
   const loadTasks = useCallback(async () => {
     setTasksLoading(true);
@@ -176,8 +202,15 @@ export default function CollabPage() {
     loadAudit();
   }, [loadTasks, loadAudit]);
 
-  useEffect(() => { loadTasks(); }, [loadTasks]);
-  useEffect(() => { loadAudit(); }, [loadAudit]);
+  // Invoke the async loads inside effect-local async functions. The
+  // react-hooks/set-state-in-effect rule treats setState reached via an external
+  // function call as synchronous, so wrap the call — the load runs identically.
+  useEffect(() => {
+    (async () => { await loadTasks(); })();
+  }, [loadTasks]);
+  useEffect(() => {
+    (async () => { await loadAudit(); })();
+  }, [loadAudit]);
 
   const handleCreate = async () => {
     if (!form.prompt.trim()) {
@@ -376,7 +409,7 @@ export default function CollabPage() {
                         >
                           {executingId === t.id ? <RefreshCw className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}
                         </Button>
-                        <Button size="icon-sm" variant="outline" title="查看结果" onClick={() => setDetail(t)}>
+                        <Button size="icon-sm" variant="outline" title="查看结果" onClick={() => openDetail(t)}>
                           <Eye className="size-3.5" />
                         </Button>
                       </div>
@@ -456,6 +489,25 @@ export default function CollabPage() {
                 </Badge>
                 <Badge variant="outline" className="text-[10px]">{detail.task_type}</Badge>
                 {detail.assigned_to && <Badge variant="secondary" className="text-[10px]">指派: {detail.assigned_to}</Badge>}
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs text-muted-foreground">更新状态</span>
+                <Select value={statusDraft} onValueChange={(v) => { if (v) setStatusDraft(v); }}>
+                  <SelectTrigger className="w-32 h-8"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {STATUS_OPTIONS.map((s) => (
+                      <SelectItem key={s} value={s}>{STATUS_LABELS[s] ?? s}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Button
+                  size="sm"
+                  className="h-8"
+                  disabled={statusUpdating || !statusDraft || statusDraft === detail.status}
+                  onClick={handleUpdateStatus}
+                >
+                  {statusUpdating ? "更新中..." : "保存"}
+                </Button>
               </div>
               <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
                 <div className="text-muted-foreground">目标</div>

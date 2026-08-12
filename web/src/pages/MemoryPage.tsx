@@ -1,17 +1,29 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { Link } from "react-router-dom";
-import { Search, Zap, Download, Sparkles, ChevronRight, ChevronDown, Brain, Layers, User, ListChecks } from "lucide-react";
+import { Search, Zap, Download, Upload, Sparkles, ChevronRight, ChevronDown, Brain, Layers, User, ListChecks, Clock } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { ProfilesView } from "@/components/shared/ProfilesView";
-import { useMemoryStats, useMemorySearch, useMemoryCompress, useMemorySeed, useMemoryExport, useProfile, useAgentRules } from "@/api/hooks";
+import { fetchAPI } from "@/api/client";
+import { useMemoryStats, useMemorySearch, useMemoryCompress, useMemorySeed, useMemoryExport, useMemoryTimeline, useMemoryImport, useMemoryDetail, useProfile, useAgentRules } from "@/api/hooks";
 import { RoleGuard } from "@/components/auth/RoleGuard";
 import { toast } from "sonner";
+
+// A memory row as exported by /api/memory/export and re-imported via /import.
+interface ImportMemory {
+  id?: number;
+  content: string;
+  category?: string;
+  importance?: number;
+  created_at?: string;
+  tags?: string[];
+}
 
 // Belief lifecycle stage (same derivation as ProfilesPage / honcho.belief_stage).
 interface BeliefLike {
@@ -48,14 +60,22 @@ const RULE_KIND_NAMES: Record<string, string> = {
 
 export default function MemoryPage() {
   const [query, setQuery] = useState("");
-  const [allMemories, setAllMemories] = useState<any[]>([]);
+  const [allMemories, setAllMemories] = useState<ImportMemory[]>([]);
   const [loadingAll, setLoadingAll] = useState(true);
+  const [allError, setAllError] = useState<string | null>(null);
   const [expandedCats, setExpandedCats] = useState<Record<string, boolean>>({});
+  const [importOpen, setImportOpen] = useState(false);
+  const [detailOpen, setDetailOpen] = useState(false);
+  const importFileRef = useRef<HTMLInputElement>(null);
   const { data: stats, isLoading: statsLoading, isError: statsError, refetch } = useMemoryStats();
   const { data: searchResult, isLoading: searchLoading, isError: searchError } = useMemorySearch(query);
   const compressMut = useMemoryCompress();
   const seedMut = useMemorySeed();
   const exportMut = useMemoryExport();
+  const importMut = useMemoryImport();
+  // M-07: backend timeline / belief detail routes wired into the page.
+  const { data: timelineData, isLoading: timelineLoading, isError: timelineError } = useMemoryTimeline(30, 30);
+  const { data: detailData, isError: detailError } = useMemoryDetail("", "", detailOpen);
 
   // 记忆体系总览数据源：honcho 信念 + evo 规则
   const { data: profile } = useProfile();
@@ -86,40 +106,75 @@ export default function MemoryPage() {
   const byCategory = (memStats?.by_category as Record<string, number>) ?? {};
   const avgImportance = (memStats?.avg_importance as number) ?? 0;
 
-  // Fetch all memories on mount
+  // Fetch all memories on mount (M-04: use fetchAPI so a 401/500 surfaces an
+  // error instead of being silently treated as an empty list).
   useEffect(() => {
-    setLoadingAll(true);
-    fetch("/api/memory/export")
-      .then((r) => r.json())
-      .then((d) => {
+    (async () => {
+      setLoadingAll(true);
+      try {
+        const d = await fetchAPI<{ memories: ImportMemory[] }>("/memory/export");
         setAllMemories(d.memories ?? []);
-      })
-      .catch(() => setAllMemories([]))
-      .finally(() => setLoadingAll(false));
+        setAllError(null);
+      } catch (e) {
+        setAllMemories([]);
+        setAllError(e instanceof Error ? e.message : "加载失败，请检查服务或刷新重试");
+      } finally {
+        setLoadingAll(false);
+      }
+    })();
   }, [total]);
 
   const handleSeed = async () => {
-    const result = await seedMut.mutateAsync(undefined as any);
-    toast.success(`导入种子数据: ${(result as any)?.imported ?? 0} 条`);
-    refetch();
+    try {
+      const result = await seedMut.mutateAsync();
+      toast.success(`导入种子数据: ${(result as { imported?: number })?.imported ?? 0} 条`);
+      refetch();
+    } catch (e) {
+      toast.error(`导入种子失败: ${e instanceof Error ? e.message : "未知错误"}`);
+    }
   };
 
   const handleExport = async () => {
-    const result = await exportMut.mutateAsync(undefined as any);
-    const blob = new Blob([JSON.stringify(result, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `memory-export-${new Date().toISOString().slice(0, 10)}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-    toast.success("导出完成");
+    try {
+      const result = await exportMut.mutateAsync();
+      const blob = new Blob([JSON.stringify(result, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `memory-export-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success("导出完成");
+    } catch (e) {
+      toast.error(`导出失败: ${e instanceof Error ? e.message : "未知错误"}`);
+    }
+  };
+
+  // M-07: import a memory JSON export (same shape as /api/memory/export).
+  const handleImportFile = async (file: File) => {
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text) as { memories?: ImportMemory[] } | ImportMemory[];
+      const memories = Array.isArray(data) ? data : (data.memories ?? []);
+      if (memories.length === 0) {
+        toast.error("文件中没有可导入的记忆");
+        return;
+      }
+      const res = await importMut.mutateAsync({ memories, merge: true });
+      toast.success(`已导入 ${res.imported} 条记忆，跳过重复 ${res.skipped} 条`);
+      setImportOpen(false);
+      refetch();
+    } catch (e) {
+      toast.error(`导入失败: ${e instanceof Error ? e.message : "无法解析文件"}`);
+    } finally {
+      if (importFileRef.current) importFileRef.current.value = "";
+    }
   };
 
   const toggleCat = (cat: string) => setExpandedCats((prev) => ({ ...prev, [cat]: !prev[cat] }));
 
   // Group memories by category
-  const grouped: Record<string, any[]> = {};
+  const grouped: Record<string, ImportMemory[]> = {};
   for (const m of allMemories) {
     const cat = m.category || "general";
     if (!grouped[cat]) grouped[cat] = [];
@@ -201,9 +256,14 @@ export default function MemoryPage() {
                     ))}
                   {beliefs.length === 0 && <span className="text-[11px] text-muted-foreground">暂无信念</span>}
                 </div>
-                <Link to="/profiles" className="inline-flex items-center gap-1 text-[11px] text-primary hover:underline mt-2">
-                  查看用户画像 →
-                </Link>
+                <div className="flex items-center gap-3 mt-2">
+                  <Link to="/profiles" className="inline-flex items-center gap-1 text-[11px] text-primary hover:underline">
+                    查看用户画像 →
+                  </Link>
+                  <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={() => setDetailOpen(true)}>
+                    <ListChecks className="size-3 mr-1" /> 信念详情
+                  </Button>
+                </div>
               </CardContent>
             </Card>
 
@@ -277,13 +337,17 @@ export default function MemoryPage() {
                 <Button size="sm" variant="outline" onClick={handleExport} disabled={exportMut.isPending}>
                   <Download className="size-4 mr-1" /> 导出
                 </Button>
+                <Button size="sm" variant="outline" onClick={() => setImportOpen(true)}>
+                  <Upload className="size-4 mr-1" /> 导入
+                </Button>
                 <Button
                   size="sm"
                   variant="outline"
                   onClick={async () => {
                     try {
-                      await compressMut.mutateAsync(undefined as any);
+                      await compressMut.mutateAsync(undefined);
                       toast.success("压缩完成");
+                      refetch();
                     } catch {
                       toast.error("压缩失败");
                     }
@@ -321,7 +385,7 @@ export default function MemoryPage() {
           )}
           {query && searchResults.length > 0 && (
             <div className="space-y-2 mt-3">
-              {searchResults.map((r: any) => (
+              {searchResults.map((r) => (
                 <div key={r.id} className="bg-muted/50 rounded-lg p-3 min-w-0">
                   <div className="flex items-center gap-2 mb-1 flex-wrap">
                     <Badge variant="outline" className="text-xs">{r.category}</Badge>
@@ -335,6 +399,30 @@ export default function MemoryPage() {
         </CardContent>
       </Card>
 
+      {/* M-07: 记忆时间线（/api/memory/timeline） */}
+      {!query && (
+        <Card className="mb-4">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base flex items-center gap-2">
+              <Clock className="size-4" /> 观察时间线（近 30 天）
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {timelineError ? (
+              <div className="text-sm text-destructive">时间线加载失败，请检查服务或刷新重试</div>
+            ) : timelineLoading ? (
+              <div className="space-y-2">{Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-6 rounded-md" />)}</div>
+            ) : timelineData?.observations ? (
+              <pre className="text-xs whitespace-pre-wrap break-words leading-relaxed bg-muted/50 rounded-lg p-3 max-h-72 overflow-y-auto">
+                {timelineData.formatted}
+              </pre>
+            ) : (
+              <p className="text-sm text-muted-foreground">暂无观察记录</p>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
       {/* All Memories by Category */}
       {!query && (
         <Card>
@@ -342,7 +430,9 @@ export default function MemoryPage() {
             <CardTitle className="text-base">全部记忆</CardTitle>
           </CardHeader>
           <CardContent>
-            {loadingAll ? (
+            {allError ? (
+              <div className="text-sm text-destructive">{allError}</div>
+            ) : loadingAll ? (
               <div className="space-y-3">
                 {Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-16 rounded-md" />)}
               </div>
@@ -383,6 +473,57 @@ export default function MemoryPage() {
           </CardContent>
         </Card>
       )}
+
+      {/* M-07: 导入记忆 JSON（/api/memory/import） */}
+      <Dialog open={importOpen} onOpenChange={setImportOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>导入记忆</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <p className="text-xs text-muted-foreground">
+              选择一个由「导出」生成的 JSON 文件（含 memories 数组），或以 JSON 文本粘贴。
+            </p>
+            <input
+              ref={importFileRef}
+              type="file"
+              accept=".json,application/json"
+              className="block w-full text-xs file:mr-3 file:rounded-md file:border-0 file:bg-primary file:px-3 file:py-1.5 file:text-xs file:text-primary-foreground"
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) handleImportFile(f); }}
+            />
+            <div className="flex justify-end gap-2">
+              <Button size="sm" variant="ghost" onClick={() => setImportOpen(false)}>关闭</Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* M-07: 信念详情（/api/memory/detail） */}
+      <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
+        <DialogContent className="sm:max-w-lg max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>信念详情</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-2">
+            {detailError ? (
+              <div className="text-sm text-destructive">详情加载失败，请检查服务或刷新重试</div>
+            ) : (detailData?.beliefs ?? []).length === 0 ? (
+              <p className="text-sm text-muted-foreground">暂无信念记录</p>
+            ) : (
+              (detailData?.beliefs ?? []).map((b) => (
+                <div key={b.id} className="border-l-2 border-primary/40 pl-3 text-sm">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <Badge variant="outline" className="text-[10px]">{b.category}</Badge>
+                    <span className="text-xs text-muted-foreground">置信度: {((b.confidence ?? 0) * 100).toFixed(0)}%</span>
+                    {b.stage && <span className="text-xs text-muted-foreground">阶段: {b.stage}</span>}
+                  </div>
+                  <p className="mt-1 break-words">{b.content}</p>
+                </div>
+              ))
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
         </TabsContent>
         <TabsContent value="profile">
           <ProfilesView />

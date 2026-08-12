@@ -7,8 +7,9 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Markdown } from "@/components/Markdown";
+import { useAuth } from "@/contexts/AuthContext";
 import { useChatMutation, useSessions, useMessages, useUploadFile } from "@/api/hooks";
-import { subscribeChatStream, getStreamMessages, isChatStreamRunning } from "@/lib/chatStream";
+import { subscribeChatStream, getStreamMessages, isChatStreamRunning, cancelChatStream } from "@/lib/chatStream";
 import { fmtTime } from "@/api/client";
 
 interface ToolCall {
@@ -26,34 +27,72 @@ interface ChatMsg {
   tool_calls?: ToolCall[];
 }
 
-const STORAGE_KEY = "metano-chat-history";
-const DIRTY_KEY = "metano-chat-dirty";
+// M-07: chat body lives in localStorage under a per-user key so a shared
+// browser switching accounts cannot leak the previous user's conversation.
+// (The chat body could also be dropped entirely, but that would lose the
+// reconnect-after-refresh convenience this feature provides.)
+function storageKeys(username: string) {
+  return {
+    storageKey: `metano-chat-history:${username}`,
+    dirtyKey: `metano-chat-dirty:${username}`,
+  };
+}
 
-function loadHistory(): ChatMsg[] {
+function loadHistory(storageKey: string): ChatMsg[] {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(storageKey);
     if (raw) return JSON.parse(raw);
-  } catch {}
+  } catch {
+    /* malformed JSON — fall through to an empty conversation */
+  }
   return [];
 }
 
-function loadDirty(): boolean {
+function loadDirty(dirtyKey: string): boolean {
   try {
-    return localStorage.getItem(DIRTY_KEY) === "1";
-  } catch {}
+    return localStorage.getItem(dirtyKey) === "1";
+  } catch {
+    /* storage unavailable — assume clean */
+  }
   return false;
 }
 
-function saveHistory(msgs: ChatMsg[]) {
+function saveHistory(storageKey: string, msgs: ChatMsg[]) {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(msgs.slice(-200)));
-  } catch {}
+    localStorage.setItem(storageKey, JSON.stringify(msgs.slice(-200)));
+  } catch {
+    /* quota/security error — persistence is best-effort, ignore */
+  }
+}
+
+/**
+ * Initial chat state on mount. Persisted history wins; when none exists and a
+ * stream is still running (e.g. re-mount mid-generation after a route switch),
+ * restore the accumulated messages so the partially-generated reply survives.
+ */
+function initialMessages(storageKey: string): ChatMsg[] {
+  const hist = loadHistory(storageKey);
+  if (hist.length === 0 && isChatStreamRunning() && getStreamMessages().length) {
+    return getStreamMessages().map((m) => ({
+      role: m.role,
+      content: m.content,
+      thinking: m.thinking,
+      tool_calls: m.tool_calls,
+      ts: Date.now(),
+    }));
+  }
+  return hist;
 }
 
 export default function ChatPage() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
-  const [messages, setMessages] = useState<ChatMsg[]>(loadHistory);
+  const { user } = useAuth();
+  // Per-user localStorage namespace (M-07). AuthGuard guarantees `user` is set
+  // before this page renders, so the initializer sees the right username.
+  const username = user?.username ?? "default";
+  const { storageKey, dirtyKey } = storageKeys(username);
+  const [messages, setMessages] = useState<ChatMsg[]>(() => initialMessages(storageKey));
   const [input, setInput] = useState("");
   const [showSessionPicker, setShowSessionPicker] = useState(false);
   const [connectedSession, setConnectedSession] = useState<string | null>(null);
@@ -70,7 +109,7 @@ export default function ChatPage() {
   // Covers: failed sends (route_message threw -> _persist_chat never ran) and
   // in-flight requests. Survives page reloads via localStorage so disconnect
   // after a refresh still warns.
-  const [dirty, setDirty] = useState<boolean>(loadDirty);
+  const [dirty, setDirty] = useState<boolean>(() => loadDirty(dirtyKey));
   const failedSendRef = useRef(false);
   const clearedRef = useRef(false);
   // True after 新对话/清空/断开: the next message must open a brand-new DB
@@ -126,17 +165,22 @@ export default function ChatPage() {
   // token is wasteful. The final reply is persisted once on done/error.
   useEffect(() => {
     if (isChatStreamRunning()) return;
-    saveHistory(messages);
-  }, [messages]);
+    saveHistory(storageKey, messages);
+  }, [storageKey, messages]);
 
   useEffect(() => {
     try {
-      if (dirty) localStorage.setItem(DIRTY_KEY, "1");
-      else localStorage.removeItem(DIRTY_KEY);
-    } catch {}
-  }, [dirty]);
+      if (dirty) localStorage.setItem(dirtyKey, "1");
+      else localStorage.removeItem(dirtyKey);
+    } catch {
+      /* storage unavailable — dirty flag is best-effort, ignore */
+    }
+  }, [dirtyKey, dirty]);
 
   const handleConnectSession = (sessionId: string) => {
+    // F-13: switching to a different session while a stream is running must
+    // cancel the old request so its completion can't re-attach to this session.
+    cancelChatStream();
     setShowSessionPicker(false);
     setSession(sessionId);
     clearedRef.current = false;
@@ -164,7 +208,7 @@ export default function ChatPage() {
   useEffect(() => {
     if (connectedSession && msgData && !msgLoading && loadedSessionRef.current !== connectedSession) {
       loadedSessionRef.current = connectedSession;
-      const sessionMsgs = msgData.messages.map((m: any) => ({
+      const sessionMsgs = msgData.messages.map((m) => ({
         role: m.role as "user" | "assistant" | "system",
         content: m.content ?? "",
         ts: typeof m.timestamp === "number" ? m.timestamp * 1000 : Date.now(),
@@ -175,13 +219,16 @@ export default function ChatPage() {
 
   const handleDisconnect = () => {
     if (dirty && !window.confirm("当前有未成功保存到历史的消息，断开后将丢失这些消息。仍要断开吗？")) return;
+    // F-13: a running stream belongs to the session being dropped — cancel it so
+    // its late done/error events can't re-attach to a fresh session.
+    cancelChatStream();
     clearedRef.current = true;
     failedSendRef.current = false;
     freshRef.current = true;
     setDirty(false);
     setSession(null);
     setMessages([]);
-    localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(storageKey);
   };
 
   const handleSend = async () => {
@@ -232,18 +279,8 @@ export default function ChatPage() {
       return next;
     });
   useEffect(() => {
-    // Re-mount mid-stream: restore the accumulated user+assistant messages so
-    // the partially-generated reply is not lost when navigating back.
-    if (isChatStreamRunning() && getStreamMessages().length) {
-      const acc = getStreamMessages();
-      setMessages((prev) => {
-        // Only seed when we have nothing newer (e.g. no picked history loaded).
-        if (prev.length === 0) {
-          return acc.map((m) => ({ role: m.role, content: m.content, thinking: m.thinking, tool_calls: m.tool_calls, ts: Date.now() }));
-        }
-        return prev;
-      });
-    }
+    // Re-mount mid-stream: the accumulated user+assistant messages are restored
+    // in the `initialMessages` state initializer, so no setState is needed here.
     const unsub = subscribeChatStream((ev) => {
       if (ev.type === "thinking") {
         patchLast((a) => { a.thinking = (a.thinking ?? "") + (ev.text ?? ""); });
@@ -264,18 +301,26 @@ export default function ChatPage() {
           );
         });
       } else if (ev.type === "done") {
+        // F-13: a new conversation was started mid-stream — ignore the stale
+        // completion so it can't write back the old session id / dirty state.
+        if (clearedRef.current) return;
+        // F-12: command-style replies may emit no `text` events; ensure the
+        // done response becomes the visible assistant message.
+        if (ev.response) {
+          patchLast((a) => { if (!a.content) a.content = ev.response ?? ""; });
+        }
         setSession(ev.session_id || null);
         freshRef.current = false;
         setDirty(failedSendRef.current);
         // Stream over — persist the accumulated reply (skipped during streaming).
-        saveHistory(messagesRef.current);
+        // The post-render `messages` effect re-saves with the done response too.
+        saveHistory(storageKey, messagesRef.current);
       } else if (ev.type === "error") {
+        if (clearedRef.current) return;
         failedSendRef.current = true;
         setDirty(true);
-        if (!clearedRef.current) {
-          patchLast((a) => { a.content = `错误: ${ev.message ?? "请求失败"}`; });
-        }
-        saveHistory(messagesRef.current);
+        patchLast((a) => { a.content = `错误: ${ev.message ?? "请求失败"}`; });
+        saveHistory(storageKey, messagesRef.current);
       }
     });
     return unsub;
@@ -284,16 +329,18 @@ export default function ChatPage() {
 
   const handleClear = () => {
     if (dirty && !window.confirm("当前有未成功保存到历史的消息，清空后将丢失这些消息。仍要清空吗？")) return;
+    cancelChatStream();
     clearedRef.current = true;
     failedSendRef.current = false;
     freshRef.current = true;
     setDirty(false);
     setMessages([]);
     setSession(null);
-    localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(storageKey);
   };
 
   const handleNewChat = () => {
+    cancelChatStream();
     clearedRef.current = true;
     failedSendRef.current = false;
     freshRef.current = true;
@@ -302,7 +349,7 @@ export default function ChatPage() {
     setDirty(false);
     setSession(null);
     setMessages([]);
-    localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(storageKey);
     toast.success("已开启新对话");
   };
 

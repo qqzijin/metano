@@ -35,34 +35,52 @@ export function SelfModifyPanel() {
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
   const [expanded, setExpanded] = useState<number | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
       const res = await fetch("/api/self-modify/events?limit=50", { credentials: "include" });
       if (res.status === 401) { window.dispatchEvent(new Event("auth:unauthorized")); return; }
+      // M-04: don't treat a 403/500 as an empty list — surface the failure.
+      if (!res.ok) {
+        setLoadError(`加载失败 (HTTP ${res.status})`);
+        setEvents([]);
+        return;
+      }
       const data = await res.json();
       setEvents(data.items ?? []);
+      setLoadError(null);
     } catch {
-      // keep current events; just stop the spinner below
+      setLoadError("加载失败，请检查服务或刷新重试");
     } finally {
       setLoading(false);
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    (async () => { await load(); })();
+  }, [load]);
 
   const handleRun = async (dry: boolean) => {
     setRunning(true);
     setLoading(true);
+    setLoadError(null);
     try {
       const res = await fetch(`/api/self-modify/run?dry_run=${dry}`, {
         method: "POST", credentials: "include",
       });
+      if (res.status === 401) { window.dispatchEvent(new Event("auth:unauthorized")); return; }
       const data = await res.json();
+      if (!res.ok) {
+        setLoadError(data?.detail || data?.error?.message || `运行失败 (HTTP ${res.status})`);
+        load();
+        return;
+      }
       toast.success(`完成: 扫描 ${data.scanned ?? 0} 问题, 应用 ${data.applied ?? 0}`);
       load();
     } catch {
       toast.error("触发失败");
+      setLoadError("触发失败");
     } finally {
       setRunning(false);
     }
@@ -75,7 +93,13 @@ export function SelfModifyPanel() {
       const res = await fetch(`/api/self-modify/revert/${id}`, {
         method: "POST", credentials: "include",
       });
+      if (res.status === 401) { window.dispatchEvent(new Event("auth:unauthorized")); return; }
       const data = await res.json();
+      if (!res.ok) {
+        toast.error(data?.detail || data?.error?.message || `回滚失败 (HTTP ${res.status})`);
+        load();
+        return;
+      }
       toast.success(data.status === "reverted" ? "已回滚" : (data.reason || "操作失败"));
       load();
     } catch {
@@ -103,7 +127,9 @@ export function SelfModifyPanel() {
           </CardAction>
         </CardHeader>
         <CardContent>
-          {loading ? (
+          {loadError ? (
+            <div className="text-sm text-destructive">{loadError}</div>
+          ) : loading ? (
             <div className="text-sm text-muted-foreground">加载中…</div>
           ) : events.length === 0 ? (
             <div className="text-sm text-muted-foreground">

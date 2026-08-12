@@ -93,6 +93,25 @@ _cfg_ts = 0.0
 
 
 _init_path = None  # DB path whose schema has already been applied this process
+_evo_schema_path = None  # DB path whose action_log bridge schema is already applied
+
+
+def _ensure_action_log(conn: sqlite3.Connection):
+    """Ensure the evo.db ``action_log`` table exists on ``conn`` (idempotent).
+
+    F-08: the route-event -> action_log bridge writes into the same DB, so the
+    table must exist even if evo_models.init_db() hasn't run in this process yet.
+    """
+    global _evo_schema_path
+    if _evo_schema_path == str(DB_PATH):
+        return
+    try:
+        from . import evo_models
+        conn.executescript(evo_models.SCHEMA)
+        conn.commit()
+        _evo_schema_path = str(DB_PATH)
+    except Exception:
+        logger.exception('route_events: action_log schema ensure failed')
 
 
 def _get_conn() -> sqlite3.Connection:
@@ -324,6 +343,20 @@ def record_event(task_signature: str, task_type: str, strategy: str,
              time.time()),
         )
         eid = cur.lastrowid
+        # F-08: bridge the route event into evo.db.action_log so Strategy can
+        # read real routing feedback (action_log is Strategy's data source).
+        # action_detail carries the event id so record_outcome can sync back.
+        try:
+            _ensure_action_log(conn)
+            conn.execute(
+                'INSERT INTO action_log (session_id, action_type, action_detail, '
+                'rule_ids_applied, outcome, timestamp) VALUES (?,?,?,?,?,?)',
+                (session_id, f'route:{task_type}',
+                 f'route_event:{eid}:{task_signature}',
+                 json.dumps([strategy]), outcome, time.time()),
+            )
+        except Exception:
+            logger.exception('route_events: action_log bridge failed')
         conn.commit()
     finally:
         conn.close()
@@ -379,6 +412,17 @@ def record_outcome(event_id: int, outcome: str, error_class: str = '', cost: flo
     quality = _quality_for_outcome(outcome)
     reward = compute_reward(quality, cost, latency_ms / 1000.0)
     _update_strategy_stats(ev['task_type'], ev['strategy'], reward, outcome)
+    # F-08: sync the outcome to the action_log row bridged by record_event, so
+    # Strategy's effectiveness/pattern detection sees the real routing result.
+    try:
+        _ensure_action_log(conn)
+        conn.execute(
+            "UPDATE action_log SET outcome=? WHERE action_detail LIKE ? AND outcome='pending'",
+            (outcome, f'route_event:{event_id}:%'),
+        )
+        conn.commit()
+    except Exception:
+        logger.exception('route_events: action_log outcome bridge failed')
     conn.close()
 
     try:
@@ -421,8 +465,19 @@ def _detect_error_class(response: str) -> str:
     return 'generic'
 
 
+_FAILURE_MARKERS = ('处理失败', '请求失败', '调用失败', '执行失败', '生成失败', '获取失败',
+                    '无法完成', '发生错误')
+_EMPTY_PLACEHOLDERS = ('(no response)', '(empty response)', '(empty)')
+
 def _judge_outcome(response: str) -> str:
-    """Default independent heuristic: a non-empty, non-error response is success."""
+    """Default independent heuristic: a non-empty, non-error response is success.
+
+    F-09: recognizes generic Chinese failure markers (the router surfaces model
+    failures as ``处理失败: ...`` text) and empty/placeholder bodies, which the
+    old check treated as success — so failed providers were rewarded and bandit
+    kept selecting them. Callers may override text inference entirely by passing
+    an explicit ``outcome``/``error_class`` to :func:`end_route`.
+    """
     if _JUDGE is not None:
         try:
             return _JUDGE(response or '')
@@ -431,12 +486,18 @@ def _judge_outcome(response: str) -> str:
     r = (response or '').strip()
     if not r:
         return 'failure'
-    if r.startswith('Error:'):
+    if r in _EMPTY_PLACEHOLDERS:
         return 'failure'
-    if r.startswith('Response timed out'):
+    lower = r.lower()
+    if lower.startswith('error:'):
+        return 'failure'
+    if lower.startswith('response timed out'):
         return 'failure'
     if r.startswith('⚠️'):
         return 'failure'
+    for marker in _FAILURE_MARKERS:
+        if marker in r:
+            return 'failure'
     return 'success'
 
 

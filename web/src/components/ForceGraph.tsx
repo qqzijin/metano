@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { GraphEntity, GraphRelationship } from "@/api/client";
+import { ENTITY_TYPE_LABELS, REL_TYPE_LABELS, entityColor, relColor, relWidth } from "@/components/graphMeta";
 
 /**
  * 轻量 SVG 力导向图（无外部依赖）。
@@ -8,56 +9,6 @@ import type { GraphEntity, GraphRelationship } from "@/api/client";
  * 交互：拖拽节点、悬停高亮邻居并显示名称、点击节点回调 onSelect。
  * 颜色全部走语义 token（var(--chart-*) / var(--muted-foreground)），自动适配明暗主题。
  */
-
-export const ENTITY_TYPE_LABELS: Record<string, string> = {
-  technology: "技术",
-  concept: "概念",
-  module: "模块",
-  file: "文件",
-};
-
-export const REL_TYPE_LABELS: Record<string, string> = {
-  related_to: "相关",
-  imports: "导入",
-  implements: "实现",
-  implemented_by: "被实现",
-  co_occurs_with: "共现",
-};
-
-const ENTITY_COLORS: Record<string, string> = {
-  technology: "var(--chart-1)",
-  concept: "var(--chart-2)",
-  module: "var(--chart-4)",
-  file: "var(--chart-3)",
-};
-
-const REL_COLORS: Record<string, string> = {
-  imports: "var(--chart-3)",
-  implements: "var(--chart-2)",
-  implemented_by: "var(--chart-2)",
-  related_to: "var(--muted-foreground)",
-  co_occurs_with: "var(--chart-4)",
-};
-
-const REL_WIDTHS: Record<string, number> = {
-  imports: 2,
-  implements: 2,
-  implemented_by: 2,
-  related_to: 1.2,
-  co_occurs_with: 1.5,
-};
-
-export function entityColor(type: string): string {
-  return ENTITY_COLORS[type] ?? "var(--chart-5)";
-}
-
-export function relColor(type: string): string {
-  return REL_COLORS[type] ?? "var(--muted-foreground)";
-}
-
-export function relWidth(type: string): number {
-  return REL_WIDTHS[type] ?? 1.2;
-}
 
 interface FNode {
   id: string;
@@ -82,6 +33,49 @@ interface FEdge {
 const W = 920;
 const H = 520;
 
+/**
+ * Build the initial graph layout (pure): node/edge arrays derived from the
+ * props, with node radii scaled by degree and starting positions spread on a
+ * circle so the graph is legible before the physics simulation warms up.
+ */
+function buildGraph(entities: GraphEntity[], relationships: GraphRelationship[]): { nodes: FNode[]; edges: FEdge[] } {
+  const nodes: FNode[] = entities.map((e) => ({
+    id: e.entity_id,
+    name: e.name,
+    type: e.entity_type,
+    confidence: e.confidence,
+    x: 0,
+    y: 0,
+    vx: 0,
+    vy: 0,
+    r: 6,
+    degree: 0,
+  }));
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const edges: FEdge[] = [];
+  for (const r of relationships) {
+    if (r.source_id === r.target_id) continue;
+    if (byId.has(r.source_id) && byId.has(r.target_id)) {
+      edges.push({ source: r.source_id, target: r.target_id, rel_type: r.rel_type, confidence: r.confidence });
+    }
+  }
+  for (const e of edges) {
+    byId.get(e.source)!.degree++;
+    byId.get(e.target)!.degree++;
+  }
+  for (const n of nodes) n.r = 6 + Math.min(n.degree, 6);
+
+  const count = nodes.length;
+  const radius = count === 1 ? 0 : Math.min(200, 70 + count * 4);
+  nodes.forEach((n, i) => {
+    const angle = count === 1 ? 0 : (i / count) * Math.PI * 2;
+    n.x = W / 2 + Math.cos(angle) * radius + (Math.random() - 0.5) * 30;
+    n.y = H / 2 + Math.sin(angle) * radius + (Math.random() - 0.5) * 30;
+  });
+
+  return { nodes, edges };
+}
+
 interface ForceGraphProps {
   entities: GraphEntity[];
   relationships: GraphRelationship[];
@@ -100,13 +94,27 @@ export function ForceGraph({ entities, relationships, selectedId, onSelect }: Fo
 
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [tooltip, setTooltip] = useState<{ x: number; y: number; name: string; type: string } | null>(null);
-  const [frame, setFrame] = useState(0);
   // Render snapshot. Using STATE (not a ref) for the rendered nodes/edges is
   // the key: a ref change never triggers a React render, so on first mount the
   // SVG was empty (nodesRef populated by the effect, but no re-render happened
   // with the new ref value). We write both the ref (for the physics loop) and
   // this snapshot (for rendering).
   const [graphSnapshot, setGraphSnapshot] = useState<{ nodes: FNode[]; edges: FEdge[] }>({ nodes: [], edges: [] });
+  // `frame` value is intentionally never read — bumping it alone re-renders the
+  // SVG after each physics tick. Node positions are mutated in place on the
+  // `graphSnapshot` objects, so the render reads fresh coordinates each time.
+  const [, setFrame] = useState(0);
+
+  // Rebuild the graph whenever the data changes. This commits state DURING
+  // render (the React-sanctioned "adjust state while rendering" pattern) rather
+  // than in an effect, so the physics snapshot is ready before the first paint
+  // and react-hooks/set-state-in-effect has nothing to flag. `entities` /
+  // `relationships` come from the parent memoized, so the comparison settles.
+  const [builtFor, setBuiltFor] = useState<{ entities: GraphEntity[]; relationships: GraphRelationship[] } | null>(null);
+  if (builtFor?.entities !== entities || builtFor?.relationships !== relationships) {
+    setBuiltFor({ entities, relationships });
+    setGraphSnapshot(buildGraph(entities, relationships));
+  }
 
   // One physics tick: repulsion + spring attraction + centering + damping.
   const step = useCallback((): number => {
@@ -154,8 +162,8 @@ export function ForceGraph({ entities, relationships, selectedId, onSelect }: Fo
       const a = byId.get(e.source);
       const b = byId.get(e.target);
       if (!a || !b) continue;
-      let dx = b.x - a.x;
-      let dy = b.y - a.y;
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
       const d = Math.sqrt(dx * dx + dy * dy) || 1;
       const f = SPRING_K * (d - REST);
       const fx = (dx / d) * f;
@@ -207,59 +215,20 @@ export function ForceGraph({ entities, relationships, selectedId, onSelect }: Fo
     rafRef.current = requestAnimationFrame(loop);
   }, [step]);
 
-  // Rebuild graph + restart simulation when data changes.
+  // Simulation lifecycle: keep the physics refs in sync with the committed
+  // graph and restart the animation whenever the graph is rebuilt.
   useEffect(() => {
+    nodesRef.current = graphSnapshot.nodes;
+    edgesRef.current = graphSnapshot.edges;
     if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
     rafRef.current = null;
     draggingRef.current = null;
-
-    const nodes: FNode[] = entities.map((e) => ({
-      id: e.entity_id,
-      name: e.name,
-      type: e.entity_type,
-      confidence: e.confidence,
-      x: 0,
-      y: 0,
-      vx: 0,
-      vy: 0,
-      r: 6,
-      degree: 0,
-    }));
-    const byId = new Map(nodes.map((n) => [n.id, n]));
-    const edges: FEdge[] = [];
-    for (const r of relationships) {
-      if (r.source_id === r.target_id) continue;
-      if (byId.has(r.source_id) && byId.has(r.target_id)) {
-        edges.push({ source: r.source_id, target: r.target_id, rel_type: r.rel_type, confidence: r.confidence });
-      }
-    }
-    for (const e of edges) {
-      byId.get(e.source)!.degree++;
-      byId.get(e.target)!.degree++;
-    }
-    for (const n of nodes) n.r = 6 + Math.min(n.degree, 6);
-
-    // Spread initial positions on a circle so the graph starts legible.
-    const count = nodes.length;
-    const radius = count === 1 ? 0 : Math.min(200, 70 + count * 4);
-    nodes.forEach((n, i) => {
-      const angle = count === 1 ? 0 : (i / count) * Math.PI * 2;
-      n.x = W / 2 + Math.cos(angle) * radius + (Math.random() - 0.5) * 30;
-      n.y = H / 2 + Math.sin(angle) * radius + (Math.random() - 0.5) * 30;
-    });
-
-    nodesRef.current = nodes;
-    edgesRef.current = edges;
-    // Commit to render state so the SVG actually draws nodes/edges (refs alone
-    // don't trigger a render — this was why the graph stayed empty).
-    setGraphSnapshot({ nodes, edges });
-    setFrame((f) => f + 1);
     startSim();
 
     return () => {
       if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
     };
-  }, [entities, relationships, startSim]);
+  }, [graphSnapshot, startSim]);
 
   // Hover highlight set: the node itself + its direct neighbors.
   const highlightId = hoveredId ?? selectedId ?? null;
@@ -267,15 +236,14 @@ export function ForceGraph({ entities, relationships, selectedId, onSelect }: Fo
     const set = new Set<string>();
     if (!highlightId) return set;
     set.add(highlightId);
-    for (const e of edgesRef.current) {
+    for (const e of graphSnapshot.edges) {
       if (e.source === highlightId) set.add(e.target);
       if (e.target === highlightId) set.add(e.source);
     }
     return set;
-    // frame: recompute after data/sim changes keep it in sync.
-  }, [highlightId, frame]);
+  }, [highlightId, graphSnapshot]);
 
-  const nodeById = useMemo(() => new Map(graphSnapshot.nodes.map((n) => [n.id, n])), [graphSnapshot, frame]);
+  const nodeById = useMemo(() => new Map(graphSnapshot.nodes.map((n) => [n.id, n])), [graphSnapshot]);
 
   // ── drag / pointer helpers ──
   const toSvgPoint = (clientX: number, clientY: number) => {

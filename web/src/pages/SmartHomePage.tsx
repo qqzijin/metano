@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Home, Lightbulb, Power, PowerOff, AlertTriangle, Settings2 } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { EmptyState } from "@/components/shared/EmptyState";
+import { RoleGuard } from "@/components/auth/RoleGuard";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -76,11 +77,30 @@ export default function SmartHomePage() {
 
   const handleControl = async (entityId: string, service: string) => {
     try {
-      await fetchAPI("/home/control", {
+      // M-01: the backend returns HTTP 200 + {error} for a failed HA call —
+      // treat that as a failure instead of toasting "成功".
+      const res = await fetchAPI<{ entity_id: string; action: string; result?: unknown; error?: string }>("/home/control", {
         method: "POST",
         body: JSON.stringify({ entity_id: entityId, service }),
       });
+      if (res?.error) {
+        toast.error(`${entityId}: ${res.error}`);
+        return;
+      }
       toast.success(`${entityId} → ${service}`);
+      // M-05: reflect the new state immediately instead of waiting for the 15s
+      // status poll (and optimistically flip the toggle button).
+      queryClient.invalidateQueries({ queryKey: ["home", "status"] });
+      queryClient.setQueryData<HomeStatus>(["home", "status"], (old) => {
+        if (!old) return old;
+        const target = service === "turn_on" ? "on" : service === "turn_off" ? "off" : "on";
+        return {
+          ...old,
+          entities: (old.entities ?? []).map((e) =>
+            e.entity_id === entityId ? { ...e, state: target } : e
+          ),
+        };
+      });
     } catch {
       toast.error("控制失败");
     }
@@ -103,7 +123,7 @@ export default function SmartHomePage() {
       : `${entities.length} 个设备`;
 
   return (
-    <>
+    <RoleGuard role="admin">
       <PageHeader title="智能家居" description={headerDesc} />
 
       {!configured ? (
@@ -227,6 +247,6 @@ export default function SmartHomePage() {
           </div>
         </>
       )}
-    </>
+    </RoleGuard>
   );
 }

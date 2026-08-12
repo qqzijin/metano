@@ -15,6 +15,8 @@ import {
   useProposalReject,
   useProposalApply,
   useProposalsApplyApproved,
+  useBehaviorApprove,
+  useBehaviorReject,
   useEvolutionRun,
   useEvolutionPause,
   useEvolutionResume,
@@ -23,7 +25,7 @@ import {
   useUpdateCostCircuitConfig,
   useBehaviorAnalyze,
 } from '../api/hooks';
-import type { AgentRule, KnowledgeGap, ActionLogEntry, Proposal } from '../api/client';
+import type { AgentRule, KnowledgeGap, ActionLogEntry, Proposal, StrategyPattern, ExploreResult } from '../api/client';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { RoleGuard } from '@/components/auth/RoleGuard';
 import { SelfModifyPanel } from '@/components/SelfModifyPanel';
@@ -419,7 +421,7 @@ function StrategyTab() {
   const [context, setContext] = useState('');
   const { data: strategyData, isLoading, isError } = useStrategy(context || undefined);
   const detect = useDetectPatterns();
-  const [detectedPatterns, setDetectedPatterns] = useState<any[]>([]);
+  const [detectedPatterns, setDetectedPatterns] = useState<StrategyPattern[]>([]);
 
   const handleDetect = async () => {
     const patterns = await detect.mutateAsync();
@@ -484,7 +486,7 @@ function StrategyTab() {
             <CardTitle className="text-sm">检测到的策略模式</CardTitle>
           </CardHeader>
           <CardContent className="space-y-2 pt-0">
-            {detectedPatterns.map((p: any, i: number) => (
+            {detectedPatterns.map((p, i) => (
               <div key={i} className="border-l-2 border-primary/40 pl-3">
                 <div className="text-sm text-foreground break-words">{p.pattern || p.rule_content || p.rule_suggestion}</div>
                 <div className="flex flex-wrap items-center gap-2 mt-1">
@@ -506,7 +508,7 @@ function KnowledgeTab() {
   const [topic, setTopic] = useState('');
   const explore = useExploreKnowledge();
   const { data: gapsData, isLoading: gapsLoading, isError: gapsError } = useKnowledgeGaps();
-  const [exploreResult, setExploreResult] = useState<any>(null);
+  const [exploreResult, setExploreResult] = useState<ExploreResult | null>(null);
 
   const handleExplore = async () => {
     if (!topic.trim()) return;
@@ -540,7 +542,7 @@ function KnowledgeTab() {
 
           {exploreResult && (
             <div className="mt-3 space-y-2">
-              {(exploreResult.findings || []).map((f: any, i: number) => (
+              {(exploreResult.findings || []).map((f, i) => (
                 <div key={i} className="border-l-2 border-primary/40 pl-3">
                   <div className="text-sm font-medium text-foreground">{f.title}</div>
                   <div className="text-sm text-muted-foreground break-words">{f.summary}</div>
@@ -634,7 +636,7 @@ function ArchitectureTab() {
                     <span className="truncate text-sm text-foreground">{j.name || j.id}</span>
                   </div>
                   <div className="flex items-center gap-2 sm:shrink-0 sm:pl-4">
-                    <span className="truncate text-xs text-muted-foreground">{(j.schedule as any)?.expr || JSON.stringify(j.schedule)}</span>
+                    <span className="truncate text-xs text-muted-foreground">{(j.schedule as { expr?: string })?.expr || JSON.stringify(j.schedule)}</span>
                     {j.last_error && <span className="shrink-0 text-xs text-destructive">错误</span>}
                   </div>
                 </div>
@@ -733,6 +735,9 @@ function ProposalsTab() {
   const reject = useProposalReject();
   const apply = useProposalApply();
   const applyAll = useProposalsApplyApproved();
+  // M-07: 行为建议走专门的 approve/reject 后端路由（写入 Claude Code 记忆）。
+  const behaviorApprove = useBehaviorApprove();
+  const behaviorReject = useBehaviorReject();
 
   if (isError) return <div className="text-sm text-destructive">加载失败，请检查服务或刷新重试</div>;
   if (isLoading) return <LoadingBlock />;
@@ -763,7 +768,14 @@ function ProposalsTab() {
             onClick={async () => {
               try {
                 const res = await applyAll.mutateAsync();
-                toast.success(`已应用 ${res.applied} 个提案`);
+                // M-03: backend returns {total, results:[{proposal_id,type,outcome}]}.
+                const applied = (res.results ?? []).filter(r => r.outcome === 'applied').length;
+                const failed = (res.results ?? []).filter(r => r.outcome === 'failed').length;
+                if (failed > 0) {
+                  toast.error(`批量应用完成：成功 ${applied}，失败 ${failed}（共 ${res.total}）`);
+                } else {
+                  toast.success(`已应用 ${applied} 个提案（共 ${res.total}）`);
+                }
               } catch {
                 toast.error('批量应用失败');
               }
@@ -831,6 +843,30 @@ function ProposalsTab() {
                     }} disabled={apply.isPending}>
                     {apply.isPending ? '执行中...' : '应用'}
                   </Button>
+                )}
+                {p.proposal_type === 'behavior_improvement' && p.status === 'pending' && (
+                  <>
+                    <Button size="xs" variant="outline" title="批准为行为规则并写入 Claude Code 记忆" onClick={async () => {
+                        try {
+                          await behaviorApprove.mutateAsync(String(p.id));
+                          toast.success('行为建议已批准并应用');
+                        } catch {
+                          toast.error('行为建议批准失败');
+                        }
+                      }} disabled={behaviorApprove.isPending}>
+                      批准规则
+                    </Button>
+                    <Button size="xs" variant="outline" title="拒绝该行为建议" onClick={async () => {
+                        try {
+                          await behaviorReject.mutateAsync(String(p.id));
+                          toast.success('行为建议已拒绝');
+                        } catch {
+                          toast.error('行为建议拒绝失败');
+                        }
+                      }} disabled={behaviorReject.isPending}>
+                      拒绝建议
+                    </Button>
+                  </>
                 )}
               </div>
             </CardContent>

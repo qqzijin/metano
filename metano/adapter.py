@@ -4,7 +4,7 @@ import re
 import time
 from pathlib import Path
 from .honcho.models import get_honcho_db, get_beliefs, belief_stage
-from .evo_models import get_rules as get_agent_rules, rule_count, add_proposal, get_proposals, update_proposal_status
+from .evo_models import get_rules as get_agent_rules, rule_count, add_proposal, get_proposals, update_proposal_status, add_audit
 from metano.log import logger
 from .paths import EVOLUTION_DIR, SUGGESTIONS_FILE, LOG_FILE, CONFIG_PATH as CONFIG_FILE
 
@@ -121,9 +121,22 @@ def beliefs_to_memory_file(beliefs: list[dict], category: str, dry_run: bool = T
     return {'action': 'memory_file', 'category': category, 'file': str(filepath), 'belief_count': len(eligible)}
 
 def _add_to_memory_index(slug: str, description: str):
-    """Add a pointer to the memory index file."""
+    """Add a pointer to the memory index file.
+
+    F-06: when the index file is missing, rebuild a loadable index from
+    memory.db (via memory.rebuild_index_from_db) instead of silently dropping
+    the pointer; if even that produces nothing, log a clear warning.
+    """
     if not MEMORY_INDEX.exists():
-        return
+        try:
+            from .memory import rebuild_index_from_db
+            rebuilt = rebuild_index_from_db(MEMORY_INDEX)
+            if not rebuilt.get('entries'):
+                logger.warning(f"memory index missing: {MEMORY_INDEX}; rebuild produced nothing")
+                return
+        except Exception:
+            logger.exception(f"memory index missing and rebuild failed: {MEMORY_INDEX}")
+            return
     content = MEMORY_INDEX.read_text()
     link = f'- [{slug}]({slug}.md)'
     if link in content:
@@ -238,6 +251,9 @@ def approve_suggestion(suggestion_id: str) -> dict | None:
         if str(p['id']) == suggestion_id:
             update_proposal_status(p['id'], 'approved')
             _log('suggestion_approve', {'suggestion_id': suggestion_id})
+            add_audit('proposal', 'approved', json.dumps(
+                {'proposal_id': p['id'], 'type': p['proposal_type'],
+                 'content': (p.get('content') or '')[:120]}, ensure_ascii=False))
             return p
     return None
 
@@ -248,6 +264,9 @@ def reject_suggestion(suggestion_id: str) -> dict | None:
         if str(p['id']) == suggestion_id:
             update_proposal_status(p['id'], 'rejected')
             _log('suggestion_reject', {'suggestion_id': suggestion_id})
+            add_audit('proposal', 'rejected', json.dumps(
+                {'proposal_id': p['id'], 'type': p['proposal_type'],
+                 'content': (p.get('content') or '')[:120]}, ensure_ascii=False))
             return p
     return None
 
@@ -257,6 +276,12 @@ def execute_adaptation_cycle(dry_run: bool=True) -> dict:
 
     Generates proposals from beliefs, behavior rules, and strategy patterns.
     Proposals are stored in evo.db proposals table and pending_suggestions.json.
+
+    F-04: ``dry_run=True`` (the automatic cron path) no longer suppresses
+    proposal creation — pending proposals are persisted so the admin has
+    something to review/approve. ``dry_run`` only gates the *direct* writes
+    (CLAUDE.md injection and per-category memory files), which still require an
+    explicit non-dry-run run. Applying always goes through admin approval.
     """
     conn = get_honcho_db()
     try:
@@ -275,12 +300,15 @@ def execute_adaptation_cycle(dry_run: bool=True) -> dict:
             if mem_result:
                 results['actions'].append(mem_result)
 
-        # 3. Create proposals from setting suggestions
+        # 3. Create proposals from setting suggestions.
+        # F-04: proposals are persisted as 'pending' even in dry_run so the
+        # automatic cron produces something the admin can actually approve;
+        # dry_run only gates the direct CLAUDE.md / memory-file writes.
         from .evo_models import get_proposals as _get_proposals
         all_proposals = _get_proposals()
         existing_contents = {p['content'] for p in all_proposals}
         suggestions = beliefs_to_setting_suggestions(active)
-        if suggestions and not dry_run:
+        if suggestions:
             for s in suggestions:
                 content = s.get('suggestion', s.get('content', ''))
                 if content in existing_contents:
@@ -294,7 +322,7 @@ def execute_adaptation_cycle(dry_run: bool=True) -> dict:
 
         # 4. Create proposals from behavior improvements
         behavior_suggestions = beliefs_to_behavior_improvements(active)
-        if behavior_suggestions and not dry_run:
+        if behavior_suggestions:
             for s in behavior_suggestions:
                 content = s.get('content', '')
                 if content in existing_contents:
@@ -310,7 +338,7 @@ def execute_adaptation_cycle(dry_run: bool=True) -> dict:
         try:
             from .strategy import detect_strategy_patterns
             strategy_patterns = detect_strategy_patterns()
-            if strategy_patterns and not dry_run:
+            if strategy_patterns:
                 for p in strategy_patterns:
                     if p.get('rule_suggestion') and p.get('confidence', 0) >= 0.8:
                         ptype = _classify_strategy(p)
@@ -396,13 +424,19 @@ def apply_proposal(proposal_id: int) -> dict:
             result = {'status': 'unknown_type', 'type': ptype}
 
         outcome = result.get('status', 'failed')
-        update_proposal_status(proposal_id, outcome if outcome in ('applied', 'failed') else 'applied',
+        final_status = outcome if outcome in ('applied', 'failed') else 'applied'
+        update_proposal_status(proposal_id, final_status,
                                json.dumps(result, ensure_ascii=False))
-        _log('proposal_apply', {'proposal_id': proposal_id, 'type': ptype, 'outcome': outcome})
+        _log('proposal_apply', {'proposal_id': proposal_id, 'type': ptype, 'outcome': final_status})
+        add_audit('proposal', final_status, json.dumps(
+            {'proposal_id': proposal_id, 'type': ptype, 'outcome': result}, ensure_ascii=False))
         return result
     except Exception:
         logger.exception()
         update_proposal_status(proposal_id, 'failed', 'execution error')
+        add_audit('proposal', 'failed', json.dumps(
+            {'proposal_id': proposal_id, 'type': ptype, 'error': 'execution error'},
+            ensure_ascii=False))
         return {'status': 'failed', 'type': ptype}
 
 

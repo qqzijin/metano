@@ -4,12 +4,24 @@ const BASE = "/api";
 async function handleResponse<T>(res: Response): Promise<T> {
   if (!res.ok) {
     // Prefer the backend's `detail` message (validation errors, etc.) over the
-    // generic status text. Body may be empty or non-JSON — fall back quietly.
+    // generic status text. M-01: the backend also returns `{error: {message}}`
+    // for many errors — read that too so users see the actionable reason rather
+    // than a bare `API 500`. Body may be empty or non-JSON — fall back quietly.
     let detail = "";
     try {
       const body = await res.json();
-      if (body && typeof body === "object" && "detail" in body) {
-        detail = String((body as { detail: unknown }).detail ?? "");
+      if (body && typeof body === "object") {
+        const b = body as { detail?: unknown; error?: unknown };
+        if (b.detail) {
+          detail = String(b.detail);
+        } else if (b.error) {
+          if (typeof b.error === "string") {
+            detail = b.error;
+          } else if (b.error && typeof b.error === "object") {
+            const msg = (b.error as { message?: unknown }).message;
+            if (msg) detail = String(msg);
+          }
+        }
       }
     } catch {
       /* empty / non-JSON error body */

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { FileText } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { EmptyState } from "@/components/shared/EmptyState";
+import { RoleGuard } from "@/components/auth/RoleGuard";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -48,7 +49,7 @@ export default function LogsPage() {
   const entries = data?.[source] ?? [];
 
   return (
-    <>
+    <RoleGuard role="admin">
       <PageHeader title="日志" description={`${entries.length} 条记录`} />
 
       <div className="flex flex-wrap gap-2 mb-4">
@@ -108,6 +109,6 @@ export default function LogsPage() {
           </CardContent>
         </Card>
       )}
-    </>
+    </RoleGuard>
   );
 }

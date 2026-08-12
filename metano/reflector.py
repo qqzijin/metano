@@ -9,6 +9,21 @@ from metano.log import logger
 ANTHROPIC_API_KEY = os.environ.get('ANTHROPIC_API_KEY', '')
 ANTHROPIC_MODEL = os.environ.get('HONCHO_MODEL', 'claude-sonnet-4-6')
 
+def _llm_provider_available() -> bool:
+    """Whether a usable LLM provider exists, resolved at call time.
+
+    F-02: reads the current provider from ModelRouter (which reflects the live
+    gateway_config.yaml) instead of a process-startup env snapshot.
+    """
+    try:
+        from .model_router import model_router
+        p = model_router.get_provider()
+        if p and getattr(p, 'api_key', ''):
+            return True
+    except Exception:
+        logger.exception("reflector: provider resolution failed")
+    return bool(os.environ.get('ANTHROPIC_API_KEY', ''))
+
 def _call_llm(system_prompt: str, user_prompt: str) -> str:
     """Call Claude API for reflection reasoning (with cost tracking)."""
     text, _ = call_llm(system_prompt, user_prompt)
@@ -16,7 +31,7 @@ def _call_llm(system_prompt: str, user_prompt: str) -> str:
 
 def _check_coherence(beliefs: list[dict]) -> list[dict]:
     """Check for contradictions between beliefs in the same category."""
-    if not ANTHROPIC_API_KEY or len(beliefs) < 2:
+    if not _llm_provider_available() or len(beliefs) < 2:
         return []
     by_category: dict[str, list[dict]] = {}
     for b in beliefs:
@@ -40,7 +55,7 @@ def _check_coherence(beliefs: list[dict]) -> list[dict]:
 
 def _check_coverage(user_id: str, beliefs: list[dict], days: int=7) -> list[dict]:
     """Check if recent observations should be beliefs but aren't."""
-    if not ANTHROPIC_API_KEY:
+    if not _llm_provider_available():
         return []
     conn = get_honcho_db()
     try:
@@ -66,7 +81,7 @@ def _check_coverage(user_id: str, beliefs: list[dict], days: int=7) -> list[dict
 
 def _check_accuracy(beliefs: list[dict]) -> list[dict]:
     """Sample beliefs and ask LLM to rate their accuracy."""
-    if not ANTHROPIC_API_KEY or len(beliefs) < 3:
+    if not _llm_provider_available() or len(beliefs) < 3:
         return []
     import random
     sample = random.sample(beliefs, min(5, len(beliefs)))
@@ -166,7 +181,7 @@ def apply_correction(user_id: str, correction: str, category: str='') -> dict:
     """
     conn = get_honcho_db()
     beliefs = get_beliefs(conn, user_id)
-    if not beliefs or not ANTHROPIC_API_KEY:
+    if not beliefs or not _llm_provider_available():
         conn.close()
         return {'status': 'no_action', 'reason': 'no beliefs or no API key'}
     system = 'You are a belief correction matcher. Given existing beliefs and a user\'s correction, identify which belief(s) the correction targets and whether it contradicts or refines them.\n\nReturn JSON: {"targets": [{"id": "belief_id", "action": "contradict" or "refine", "updated_content": "new belief content if refine"}]}\nIf no match, return {"targets": []}'
@@ -202,7 +217,9 @@ def apply_correction(user_id: str, correction: str, category: str='') -> dict:
         elif action == 'refine':
             updated = t.get('updated_content', correction)
             contradict_belief(conn, bid)
-            add_belief(conn, user_id, updated, category or belief['category'], confidence=0.7)
+            # F-11: add_belief(conn, user_id, category, content, ...) — the
+            # refined content is the new belief body, NOT the category.
+            add_belief(conn, user_id, category or belief['category'], updated, confidence=0.7)
             actions_taken.append({'id': bid, 'action': 'refined', 'old': belief['content'][:80], 'new': updated[:80]})
     conn.close()
     return {'status': 'corrected', 'targets_matched': len(targets), 'actions': actions_taken}

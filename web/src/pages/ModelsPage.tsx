@@ -3,16 +3,23 @@ import { Cpu, Star, ExternalLink, Plus, Check, X, Pencil, Save } from "lucide-re
 import { PageHeader } from "@/components/layout/PageHeader";
 import { StatCard } from "@/components/shared/StatCard";
 import { EmptyState } from "@/components/shared/EmptyState";
+import { RoleGuard } from "@/components/auth/RoleGuard";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useModels, useProxyProviders, useModelSetDefault, useProxyAdd, useProxyUpdate } from "@/api/hooks";
+import type { ModelProvider } from "@/api/client";
 import { toast } from "sonner";
 
 // 这些预设依赖外部 API，启用时必须提供 API Key；ollama-local 为本地服务无需 Key。
 const NEEDS_API_KEY_PRESETS = new Set(["nvidia-nim", "deepseek", "kimi", "openrouter", "siliconflow"]);
+
+// Presets from /proxy/providers carry extra fields (protocol/api_key/note) that
+// ModelProvider only exposes through its index signature.
+type ProxyPreset = ModelProvider & { protocol?: string; api_key?: string; note?: string };
 
 export default function ModelsPage() {
   const { data: modelsData, isLoading: modelsLoading, isError: modelsError } = useModels();
@@ -21,13 +28,13 @@ export default function ModelsPage() {
   const addProxyMut = useProxyAdd();
   const updateProxyMut = useProxyUpdate();
   const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({ name: "", base_url: "", api_key: "", model: "", max_tokens: 4096 });
+  const [form, setForm] = useState({ name: "", base_url: "", api_key: "", model: "", max_tokens: 4096, protocol: "anthropic" });
   const [editingPrice, setEditingPrice] = useState<string | null>(null);
   const [priceForm, setPriceForm] = useState({ input: "", output: "", cache_read: "" });
 
   const fmtPrice = (v?: number) => (v == null ? "—" : `$${v}/M`);
 
-  const startEditPrice = (p: any) => {
+  const startEditPrice = (p: ModelProvider) => {
     const pr = p.price ?? {};
     setPriceForm({
       input: pr.input != null ? String(pr.input) : "",
@@ -50,14 +57,14 @@ export default function ModelsPage() {
       await updateProxyMut.mutateAsync({ name, body: { price } });
       toast.success(`已更新价格: ${name}`);
       setEditingPrice(null);
-    } catch (e: any) {
-      toast.error(`更新失败: ${e.message ?? "未知错误"}`);
+    } catch (e) {
+      toast.error(`更新失败: ${e instanceof Error ? e.message : "未知错误"}`);
     }
   };
 
   const providers = modelsData?.providers ?? [];
-  const presets = proxyData?.providers ?? [];
-  const currentDefault = providers.find((p: any) => p.is_default)?.name ?? "";
+  const presets = (proxyData?.providers ?? []) as ProxyPreset[];
+  const currentDefault = providers.find((p) => p.is_default)?.name ?? "";
 
   const handleSetDefault = async (name: string) => {
     try {
@@ -69,10 +76,10 @@ export default function ModelsPage() {
   };
 
   // Presets are display-only; "启用" must register the provider first, then set default.
-  const handleEnablePreset = async (p: any) => {
-    const payload: { name: string; base_url: string; model: string; api_key?: string; protocol?: string } = {
+  const handleEnablePreset = async (p: ProxyPreset) => {
+    const payload: { name: string; base_url: string; model?: string; api_key?: string; protocol?: string } = {
       name: p.name,
-      base_url: p.base_url,
+      base_url: p.base_url as string,
       model: p.model,
       // OpenAI-compatible presets must be marked openai, else the router would
       // send them to the claude CLI (Anthropic protocol) and fail.
@@ -104,17 +111,27 @@ export default function ModelsPage() {
       await addProxyMut.mutateAsync(form);
       toast.success(`已添加: ${form.name}`);
       setShowForm(false);
-      setForm({ name: "", base_url: "", api_key: "", model: "", max_tokens: 4096 });
-    } catch (e: any) {
-      toast.error(`添加失败: ${e.message ?? "未知错误"}`);
+      setForm({ name: "", base_url: "", api_key: "", model: "", max_tokens: 4096, protocol: "anthropic" });
+    } catch (e) {
+      toast.error(`添加失败: ${e instanceof Error ? e.message : "未知错误"}`);
     }
+  };
+
+  // F-14: infer the protocol from the endpoint so a /v1/chat/completions URL is
+  // not silently treated as Anthropic (/v1/messages) by the backend.
+  const setBaseUrl = (base_url: string) => {
+    const lower = base_url.toLowerCase();
+    let protocol = form.protocol;
+    if (lower.includes("/chat/completions")) protocol = "openai";
+    else if (lower.includes("/v1/messages")) protocol = "anthropic";
+    setForm({ ...form, base_url, protocol });
   };
 
   const isLoading = modelsLoading || proxyLoading;
   const isError = modelsError || proxyError;
 
   return (
-    <>
+    <RoleGuard role="admin">
       <PageHeader
         title="模型管理"
         description="管理 AI 模型提供商与免费预设"
@@ -146,7 +163,17 @@ export default function ModelsPage() {
               </div>
               <div className="min-w-0">
                 <label className="block text-xs text-muted-foreground mb-1.5">Base URL *</label>
-                <Input placeholder="如: https://api.openai.com/v1" value={form.base_url} onChange={(e) => setForm({ ...form, base_url: e.target.value })} />
+                <Input placeholder="如: https://api.openai.com/v1" value={form.base_url} onChange={(e) => setBaseUrl(e.target.value)} />
+              </div>
+              <div className="min-w-0">
+                <label className="block text-xs text-muted-foreground mb-1.5">协议</label>
+                <Select value={form.protocol} onValueChange={(v) => { if (v) setForm({ ...form, protocol: v }); }}>
+                  <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="anthropic">anthropic (/v1/messages)</SelectItem>
+                    <SelectItem value="openai">openai (/v1/chat/completions)</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
               <div className="min-w-0">
                 <label className="block text-xs text-muted-foreground mb-1.5">API Key</label>
@@ -181,7 +208,7 @@ export default function ModelsPage() {
               <EmptyState title="暂无配置" description="点击上方「添加提供商」配置模型" />
             ) : (
               <div className="grid gap-3">
-                {providers.map((p: any) => (
+                {providers.map((p) => (
                   <Card key={p.name}>
                     <CardContent className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center">
                       <div className="flex items-center gap-3 min-w-0 flex-1">
@@ -239,7 +266,7 @@ export default function ModelsPage() {
             <div>
               <h3 className="text-sm font-medium text-muted-foreground mb-3">免费模型预设</h3>
               <div className="grid gap-3 sm:grid-cols-2">
-                {presets.map((p: any) => (
+                {presets.map((p) => (
                   <Card key={p.name}>
                     <CardContent className="p-4">
                       <div className="flex items-center gap-2 mb-1.5 min-w-0">
@@ -271,6 +298,6 @@ export default function ModelsPage() {
           )}
         </>
       )}
-    </>
+    </RoleGuard>
   );
 }

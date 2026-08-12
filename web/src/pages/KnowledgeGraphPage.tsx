@@ -17,7 +17,8 @@ import {
   useGraphStats, useGraphQuery, useGraphExtract,
 } from "@/api/hooks";
 import type { GraphEntity, GraphRelationship } from "@/api/client";
-import { ForceGraph, ENTITY_TYPE_LABELS, REL_TYPE_LABELS } from "@/components/ForceGraph";
+import { ForceGraph } from "@/components/ForceGraph";
+import { ENTITY_TYPE_LABELS, REL_TYPE_LABELS } from "@/components/graphMeta";
 import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "sonner";
 

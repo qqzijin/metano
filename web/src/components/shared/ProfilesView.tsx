@@ -12,7 +12,20 @@ const STAGE_NAMES: Record<string, string> = {
   draft: "草稿",
 };
 
-function computeStage(b: any): string {
+interface Belief {
+  id: string;
+  category?: string;
+  content: string;
+  confidence: number;
+  stage?: string;
+  contradicted?: boolean;
+  reinforcement_count?: number;
+  timestamp?: number;
+  created_at?: number;
+  updated_at?: number;
+}
+
+function computeStage(b: Belief): string {
   if (b.stage) return b.stage;
   const c = b.confidence ?? 0;
   const r = b.reinforcement_count ?? 0;
@@ -32,10 +45,10 @@ export function ProfilesView() {
   if (isLoading) return <div className="space-y-4">{Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-28 rounded-lg" />)}</div>;
   if (profile?.error) return <EmptyState title="用户画像不可用" description={profile.error} icon={<User className="size-10" />} />;
 
-  const rawBeliefs: any[] = (profile as any)?.beliefs ?? [];
-  const beliefs = rawBeliefs.filter((b: any) => !b.contradicted).map((b: any) => ({ ...b, stage: computeStage(b) }));
+  const rawBeliefs: Belief[] = profile?.beliefs ?? [];
+  const beliefs = rawBeliefs.filter((b) => !b.contradicted).map((b) => ({ ...b, stage: computeStage(b) }));
 
-  const byStage: Record<string, any[]> = {};
+  const byStage: Record<string, Belief[]> = {};
   for (const b of beliefs) {
     const stage = b.stage;
     (byStage[stage] = byStage[stage] || []).push(b);
@@ -72,12 +85,12 @@ export function ProfilesView() {
                 {STAGE_NAMES[stage] ?? stage} ({byStage[stage].length})
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                {byStage[stage].map((b: any) => (
+                {byStage[stage].map((b) => (
                   <Card key={b.id}>
                     <CardContent className="p-4">
                       <div className="text-sm break-words">{b.content}</div>
                       <div className="flex gap-2 flex-wrap mt-2">
-                        <Badge variant="secondary" className="text-[10px]">{STAGE_NAMES[b.stage] ?? b.stage}</Badge>
+                        <Badge variant="secondary" className="text-[10px]">{STAGE_NAMES[b.stage ?? ""] ?? b.stage}</Badge>
                         {b.category && <Badge variant="outline" className="text-[10px]">{b.category}</Badge>}
                         <Badge variant="outline" className="text-[10px] ml-auto" title="置信度：该信念被证据支持的程度">置信度 {((b.confidence ?? 0) * 100).toFixed(0)}%</Badge>
                       </div>
@@ -95,7 +108,7 @@ export function ProfilesView() {
             最近观察 ({profile.recent_observations.length})
           </div>
           <div className="space-y-2">
-            {profile.recent_observations.map((o: any) => (
+            {profile.recent_observations.map((o) => (
               <Card key={o.id}>
                 <CardContent className="p-3 flex items-center gap-3">
                   <div className="text-sm text-muted-foreground flex-1 min-w-0 break-words">{o.content}</div>

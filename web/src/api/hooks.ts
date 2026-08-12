@@ -12,7 +12,6 @@ import {
   type KnowledgeDoc,
   type EvolutionStatus,
   type CostCircuitState,
-  type Suggestion,
   type ModelProvider,
   type SystemStatus,
   type LogData,
@@ -27,12 +26,18 @@ import {
   type ExploreResult,
   type ApplyResult,
   type Proposal,
-  type EffectivenessData,
   type GraphStats,
   type GraphQueryResult,
 } from "./client";
 
 /* ---- query key factory ---- */
+
+interface SecurityUser {
+  user_id: string;
+  tier: string;
+  rate_limit_remaining?: number;
+  blocked_count?: number;
+}
 
 export const qk = {
   status: ["status"] as const,
@@ -72,7 +77,7 @@ export function useStatus() {
 export function useSessions(search?: string, limit = 20, refetchInterval: number | false = 10000) {
   return useQuery<{ sessions: Session[] }>({
     queryKey: qk.sessions({ search, limit }),
-    queryFn: () => fetchAPI(`/sessions?limit=${limit}${search ? `&search=${encodeURIComponent(search)}` : ""}`).then((d: any) => ({ sessions: d.items ?? [] })),
+    queryFn: () => fetchAPI<{ items?: Session[] }>(`/sessions?limit=${limit}${search ? `&search=${encodeURIComponent(search)}` : ""}`).then((d) => ({ sessions: d.items ?? [] })),
     refetchInterval,
   });
 }
@@ -88,7 +93,7 @@ export function useSession(id: string) {
 export function useMessages(sessionId: string) {
   return useQuery<{ messages: Message[] }>({
     queryKey: qk.messages(sessionId),
-    queryFn: () => fetchAPI(`/sessions/${sessionId}/messages`).then((d: any) => ({ messages: d.items ?? [] })),
+    queryFn: () => fetchAPI<{ items?: Message[] }>(`/sessions/${sessionId}/messages`).then((d) => ({ messages: d.items ?? [] })),
     enabled: !!sessionId,
   });
 }
@@ -112,14 +117,14 @@ export function useSearch(query: string, limit = 20, offset = 0) {
 export function useCronJobs() {
   return useQuery<{ jobs: CronJob[] }>({
     queryKey: qk.cron,
-    queryFn: () => fetchAPI("/cron/jobs").then((d: any) => ({ jobs: Array.isArray(d) ? d : d.jobs ?? d.items ?? [] })),
+    queryFn: () => fetchAPI<CronJob[] | { jobs?: CronJob[]; items?: CronJob[] }>("/cron/jobs").then((d) => ({ jobs: Array.isArray(d) ? d : d.jobs ?? d.items ?? [] })),
   });
 }
 
 export function useSkills() {
   return useQuery<{ skills: Skill[] }>({
     queryKey: qk.skills,
-    queryFn: () => fetchAPI("/skills").then((d: any) => ({ skills: d.items ?? [] })),
+    queryFn: () => fetchAPI<{ items?: Skill[] }>("/skills").then((d) => ({ skills: d.items ?? [] })),
   });
 }
 
@@ -165,7 +170,7 @@ export function useSkillDelete() {
 export function useKnowledge() {
   return useQuery<{ documents: KnowledgeDoc[] }>({
     queryKey: qk.knowledge,
-    queryFn: () => fetchAPI("/knowledge").then((d: any) => ({ documents: d.items ?? [] })),
+    queryFn: () => fetchAPI<{ items?: KnowledgeDoc[] }>("/knowledge").then((d) => ({ documents: d.items ?? [] })),
   });
 }
 
@@ -180,7 +185,7 @@ export function useEvolution() {
 export function useModels() {
   return useQuery<{ providers: ModelProvider[] }>({
     queryKey: qk.models,
-    queryFn: () => fetchAPI("/models").then((d: any) => ({ providers: d.items ?? [] })),
+    queryFn: () => fetchAPI<{ items?: ModelProvider[] }>("/models").then((d) => ({ providers: d.items ?? [] })),
   });
 }
 
@@ -202,7 +207,7 @@ export function useProfile(userId = "default") {
 export function useConfig() {
   return useQuery<Record<string, unknown>>({
     queryKey: qk.config,
-    queryFn: () => fetchAPI("/config").then((d: any) => d.config ?? d),
+    queryFn: () => fetchAPI<{ config?: Record<string, unknown> }>("/config").then((d) => d.config ?? d),
   });
 }
 
@@ -356,11 +361,13 @@ export function useBrowserSearch() {
 }
 
 export function useBrowserBrowse() {
+  // M-06: the mode selector (static/dynamic/stealth) must reach the backend —
+  // pass it through the request body instead of being a no-op UI control.
   return useMutation({
-    mutationFn: (url: string) =>
-      fetchAPI<{ content: string; title: string }>("/browser/browse", {
+    mutationFn: ({ url, mode }: { url: string; mode: string }) =>
+      fetchAPI<{ content: string; title: string; error?: string }>("/browser/browse", {
         method: "POST",
-        body: JSON.stringify({ url }),
+        body: JSON.stringify({ url, mode }),
       }),
   });
 }
@@ -368,10 +375,19 @@ export function useBrowserBrowse() {
 export function useVoiceTTS() {
   return useMutation({
     mutationFn: (data: { text: string; voice?: string; rate?: string }) =>
-      fetchAPI<{ path: string; status: string }>("/voice/tts", {
+      fetchAPI<{ path: string; status: string; error?: string }>("/voice/tts", {
         method: "POST",
         body: JSON.stringify(data),
       }),
+  });
+}
+
+/** M-07: dynamic voice list from /api/voice/voices (replaces hardcoded options). */
+export function useVoiceVoices() {
+  return useQuery<{ count: number; voices: Array<{ name: string; gender?: string; locale?: string }> }>({
+    queryKey: ["voice", "voices"],
+    queryFn: () => fetchAPI("/voice/voices"),
+    staleTime: 60000,
   });
 }
 
@@ -388,16 +404,9 @@ export function useSecuritySetTier() {
 }
 
 export function useSecurityUsers() {
-  return useQuery<{
-    users: Array<{
-      user_id: string;
-      tier: string;
-      rate_limit_remaining?: number;
-      blocked_count?: number;
-    }>;
-  }>({
+  return useQuery<{ users: SecurityUser[] }>({
     queryKey: qk.securityUsers,
-    queryFn: () => fetchAPI("/security/users").then((d: any) => ({ users: Array.isArray(d) ? d : d.users ?? d.items ?? [] })),
+    queryFn: () => fetchAPI<SecurityUser[] | { users?: SecurityUser[]; items?: SecurityUser[] }>("/security/users").then((d) => ({ users: Array.isArray(d) ? d : d.users ?? d.items ?? [] })),
   });
 }
 
@@ -418,7 +427,15 @@ export function useWebSearch() {
 export function useMcpTools() {
   return useQuery<{ tools: Array<{ name: string; source: string; description: string }> }>({
     queryKey: ["mcp", "tools"],
-    queryFn: () => fetchAPI("/mcp/tools").then((d: any) => ({ tools: d.tools ?? [] })),
+    queryFn: () => fetchAPI<{ tools?: Array<{ name: string; source: string; description: string }> }>("/mcp/tools").then((d) => ({ tools: d.tools ?? [] })),
+  });
+}
+
+/** M-07: invoke an MCP tool from the tool registry card. */
+export function useMcpCall() {
+  return useMutation<{ result: unknown; error?: string }, Error, { tool: string; args: Record<string, unknown> }>({
+    mutationFn: ({ tool, args }) =>
+      fetchAPI("/mcp/call", { method: "POST", body: JSON.stringify({ tool, args }) }),
   });
 }
 
@@ -436,6 +453,41 @@ export function useMemorySearch(q: string) {
     queryKey: ["memory", "search", q],
     queryFn: () => fetchAPI(`/memory/search?q=${encodeURIComponent(q)}`),
     enabled: !!q,
+  });
+}
+
+/* M-07: memory timeline / detail / import (backend routes already exist). */
+
+export function useMemoryTimeline(days = 7, limit = 20) {
+  return useQuery<{ observations: number; formatted: string }>({
+    queryKey: ["memory", "timeline", days, limit],
+    queryFn: () => fetchAPI(`/memory/timeline?days=${days}&limit=${limit}`),
+  });
+}
+
+export function useMemoryDetail(category: string, beliefId: string, enabled = true) {
+  return useQuery<{ beliefs?: Array<{ id: number; content: string; category: string; confidence: number; stage: string; created_at: number }> }>({
+    queryKey: ["memory", "detail", category, beliefId],
+    queryFn: () => {
+      const p = new URLSearchParams();
+      if (category) p.set("category", category);
+      if (beliefId) p.set("belief_id", beliefId);
+      const qs = p.toString();
+      return fetchAPI(`/memory/detail${qs ? "?" + qs : ""}`);
+    },
+    enabled,
+  });
+}
+
+export function useMemoryImport() {
+  const qc = useQueryClient();
+  return useMutation<{ imported: number; skipped: number; total: number }, Error, { memories: Array<{ content: string; category?: string; importance?: number; tags?: string[] }>; merge?: boolean }>({
+    mutationFn: (data) =>
+      fetchAPI("/memory/import", { method: "POST", body: JSON.stringify(data) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["memory", "stats"] });
+      qc.invalidateQueries({ queryKey: ["memory", "timeline"] });
+    },
   });
 }
 
@@ -482,7 +534,7 @@ export function useEvolutionCorrect() {
 export function useProxyProviders() {
   return useQuery<{ providers: ModelProvider[] }>({
     queryKey: ["proxy", "providers"],
-    queryFn: () => fetchAPI("/proxy/providers").then((d: any) => ({ providers: d.providers ?? d.items ?? [] })),
+    queryFn: () => fetchAPI<{ providers?: ModelProvider[]; items?: ModelProvider[] }>("/proxy/providers").then((d) => ({ providers: d.providers ?? d.items ?? [] })),
   });
 }
 
@@ -568,8 +620,8 @@ export function useStrategy(context?: string) {
 export function useDetectPatterns() {
   return useMutation<StrategyPattern[], Error, void>({
     mutationFn: async () => {
-      const d = await fetchAPI("/evolution/strategy-detect", { method: "POST" });
-      return (d as any).patterns ?? [];
+      const d = await fetchAPI<{ patterns?: StrategyPattern[] }>("/evolution/strategy-detect", { method: "POST" });
+      return d.patterns ?? [];
     },
   });
 }
@@ -656,7 +708,8 @@ export function useProposalApply() {
 
 export function useProposalsApplyApproved() {
   const qc = useQueryClient();
-  return useMutation<{ applied: number }, Error, void>({
+  // M-03: the backend returns {total, results:[{proposal_id,type,outcome}]}, not {applied}.
+  return useMutation<{ total: number; results: Array<{ proposal_id: number; type: string; outcome: string }> }, Error, void>({
     mutationFn: () => fetchAPI("/evolution/proposals/apply-approved", { method: "POST" }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["proposals"] }),
   });
@@ -731,7 +784,7 @@ export function useUpdateCostCircuitConfig() {
 
 export function useProxyAdd() {
   const qc = useQueryClient();
-  return useMutation<{ status: string }, Error, { name: string; base_url: string; api_key?: string; model?: string }>({
+  return useMutation<{ status: string }, Error, { name: string; base_url: string; api_key?: string; model?: string; protocol?: string; max_tokens?: number }>({
     mutationFn: (data) =>
       fetchAPI("/proxy/add", { method: "POST", body: JSON.stringify(data) }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["proxy", "providers"] }),

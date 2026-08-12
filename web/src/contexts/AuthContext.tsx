@@ -1,6 +1,8 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
+import { useQueryClient } from "@tanstack/react-query";
 import { refreshAuthSession } from "@/api/client";
+import { cancelChatStream, resetChatStreamState } from "@/lib/chatStream";
 
 interface User {
   username: string;
@@ -24,13 +26,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
 
+  // F-12: an open page may sit across the 15-min access-token expiry. Try a
+  // silent refresh BEFORE trusting a negative `/api/auth/me` so a merely
+  // expired token does not boot the user to the login screen on reload.
   useEffect(() => {
-    fetch("/api/auth/me", { credentials: "include" })
-      .then((res) => res.ok ? res.json() : null)
-      .then((data) => setUser(data))
-      .catch(() => setUser(null))
-      .finally(() => setLoading(false));
+    let cancelled = false;
+    (async () => {
+      await refreshAuthSession();
+      if (cancelled) return;
+      try {
+        const res = await fetch("/api/auth/me", { credentials: "include" });
+        if (cancelled) return;
+        setUser(res.ok ? await res.json() : null);
+      } catch {
+        if (!cancelled) setUser(null);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
   }, []);
 
   // Proactively renew the access token before it expires. The refresh token
@@ -49,12 +65,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const handler = () => {
+      // Session died mid-use (401 even after refresh): purge per-user caches and
+      // stop any in-flight stream so the next account cannot see this user's data.
+      queryClient.clear();
+      cancelChatStream();
+      resetChatStreamState();
       setUser(null);
       navigate("/login");
     };
     window.addEventListener("auth:unauthorized", handler);
     return () => window.removeEventListener("auth:unauthorized", handler);
-  }, [navigate]);
+  }, [navigate, queryClient]);
 
   const login = useCallback(async (username: string, password: string) => {
     const res = await fetch("/api/auth/login", {
@@ -68,14 +89,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       throw new Error(data.detail || "登录失败");
     }
     const data = await res.json();
+    // M-07: an account switch must never inherit the previous account's cached
+    // queries or module-level stream state.
+    queryClient.clear();
+    cancelChatStream();
+    resetChatStreamState();
     setUser(data);
-  }, []);
+  }, [queryClient]);
 
   const logout = useCallback(async () => {
     await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
+    queryClient.clear();
+    cancelChatStream();
+    resetChatStreamState();
     setUser(null);
     navigate("/login");
-  }, [navigate]);
+  }, [navigate, queryClient]);
 
   return (
     <AuthContext.Provider value={{ user, loading, login, logout }}>
@@ -84,6 +113,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 }
 
+// eslint-disable-next-line react-refresh/only-export-components -- context consumer hook must colocate with AuthProvider
 export function useAuth() {
   const ctx = useContext(AuthContext);
   if (!ctx) throw new Error("useAuth must be used within AuthProvider");

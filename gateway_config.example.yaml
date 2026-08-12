@@ -42,12 +42,16 @@ feishu:
 
 qq:
   enabled: false
-  ws_url: "ws://127.0.0.1:3001"
+  ws_url: "ws://127.0.0.1:3001"   # 默认仅 loopback；远程必须 wss + token
+  token: ""                        # OneBot 访问令牌（远程必填）
+  self_id: ""                      # 固定机器人 QQ 号，用于身份校验
   allowed_groups: []
+  allowed_users: []                # 空白 = 拒绝全部（H-08 fail-closed）
 
 wechat:
   enabled: false
   method: wcferry
+  allowed_users: []                # 空白 = 拒绝全部（H-08 fail-closed）
 
 # 会话管理
 session:

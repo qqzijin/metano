@@ -178,17 +178,26 @@ class ModelRouter:
         return presets
 
     def call_claude(self, prompt: str, provider_name: str='', session_id: str='', timeout: int=120) -> str:
-        """Call a model with a specific provider.
+        """Call a model with a specific provider — the unified call entry point.
 
         ``protocol`` on the provider selects the transport:
         - 'anthropic': invoke the claude CLI (ANTHROPIC_BASE_URL + /v1/messages)
         - 'openai':    HTTP POST to base_url + /v1/chat/completions (OpenAI-compatible
                       endpoints: OpenRouter/Kimi/SiliconFlow/Ollama/DeepSeek/NVIDIA)
+
+        Returns a plain text response (callers that need structured outcome
+        classification wrap this with their own error handling).
         """
+        if not prompt or not str(prompt).strip():
+            return '(empty response)'
+        if not timeout or timeout <= 0:
+            timeout = 120
         provider = self.get_provider(provider_name)
         if (provider.protocol or 'anthropic').lower() == 'openai':
             return self._call_openai(prompt, provider, timeout=timeout)
-        claude_bin = os.environ.get('CLAUDE_BIN') or shutil.which('claude') or '/home/dk/local/node/bin/claude'
+        claude_bin = os.environ.get('CLAUDE_BIN') or shutil.which('claude')
+        if not claude_bin:
+            return 'Error: claude CLI not found (set CLAUDE_BIN or add claude to PATH)'
         cmd = [claude_bin, '-p', prompt]
         if session_id:
             cmd = [claude_bin, '--resume', session_id, '-p', prompt]

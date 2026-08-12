@@ -21,6 +21,8 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr('metano.db.DB_PATH', tmp_path / 'bridge.db')
     monkeypatch.setattr('metano.gateway.router.GATEWAY_LOG', tmp_path / 'gateway_log.jsonl')
     monkeypatch.setattr('metano.gateway.router.AUTH_STATE', tmp_path / 'authorizations.json')
+    from metano import db as metano_db
+    metano_db.init_db()
     route_events.init_db()
     route_events.set_enabled(True)
     return tmp_path

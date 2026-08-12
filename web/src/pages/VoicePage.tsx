@@ -1,12 +1,13 @@
 import { useState } from "react";
 import { Volume2 } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
+import { RoleGuard } from "@/components/auth/RoleGuard";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { useVoiceTTS } from "@/api/hooks";
+import { useVoiceTTS, useVoiceVoices } from "@/api/hooks";
 import { toast } from "sonner";
 
 export default function VoicePage() {
@@ -16,14 +17,17 @@ export default function VoicePage() {
   const [audioPath, setAudioPath] = useState<string | null>(null);
 
   const ttsMut = useVoiceTTS();
+  // M-07: pull the voice list from the backend instead of hardcoding three voices.
+  const { data: voicesData, isLoading: voicesLoading, isError: voicesError } = useVoiceVoices();
+  const voices = voicesData?.voices ?? [];
 
   const handleTTS = async () => {
     if (!ttsText.trim()) return;
     try {
       const result = await ttsMut.mutateAsync({ text: ttsText, voice, rate });
       // Backend returns HTTP 200 with { error } when TTS is unavailable — treat as failure.
-      if ((result as any)?.error || !result?.path) {
-        toast.error((result as any)?.error || "语音生成失败");
+      if (result.error || !result?.path) {
+        toast.error(result.error || "语音生成失败");
         return;
       }
       setAudioPath(result.path);
@@ -34,7 +38,7 @@ export default function VoicePage() {
   };
 
   return (
-    <>
+    <RoleGuard role="admin">
       <PageHeader title="语音" description="TTS 工具" />
 
       <Tabs defaultValue="tts" className="space-y-4">
@@ -53,11 +57,19 @@ export default function VoicePage() {
               <Textarea placeholder="输入要朗读的文字..." value={ttsText} onChange={(e) => setTtsText(e.target.value)} className="min-h-24" />
               <div className="flex flex-wrap gap-2">
                 <Select value={voice} onValueChange={(v) => { if (v) setVoice(v); }}>
-                  <SelectTrigger className="w-full sm:w-48"><SelectValue /></SelectTrigger>
+                  <SelectTrigger className="w-full sm:w-64"><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="zh-CN-YunxiNeural">Yunxi (Chinese)</SelectItem>
-                    <SelectItem value="en-US-AriaNeural">Aria (English)</SelectItem>
-                    <SelectItem value="ja-JP-NanamiNeural">Nanami (Japanese)</SelectItem>
+                    {voicesLoading ? (
+                      <SelectItem value={voice}>{voice}</SelectItem>
+                    ) : voicesError || voices.length === 0 ? (
+                      <SelectItem value="zh-CN-YunxiNeural">YunxiNeural (默认)</SelectItem>
+                    ) : (
+                      voices.map((v) => (
+                        <SelectItem key={v.name} value={v.name}>
+                          {v.name}{v.locale ? ` · ${v.locale}` : ""}
+                        </SelectItem>
+                      ))
+                    )}
                   </SelectContent>
                 </Select>
                 <Select value={rate} onValueChange={(v) => { if (v) setRate(v); }}>
@@ -83,6 +95,6 @@ export default function VoicePage() {
         </TabsContent>
 
       </Tabs>
-    </>
+    </RoleGuard>
   );
 }

@@ -34,8 +34,8 @@
 | 🧭 **经验记忆 + 路由反馈** | 任务签名分类 + ε-greedy bandit 路由 + Reflexion 反思经验注入（`DO:/AVOID:`），让 AI 越用越聪明 |
 | 🤝 **多设备协作** | A2A v1.0 AgentCard（JWS 签名）+ 跨设备协同页（CollabPage）；跨设备任务执行（A2A message/send + tasks/get 轮询，本地/远程均可派发） |
 | 🧪 **Be-ACTIVE 即时学习** | 检测到用户纠正后立即生成规则/技能提案，不等定时任务 |
-| 🔬 **自我进化（Self-Modify）** | 进化系统自主修改自己的代码：扫描反模式 → LLM 生成修复 → 隔离验证（全量测试）→ 应用 → git 回滚；每次变异有记录，验证门 + 回滚保障系统永不写死 |
-| 🛠️ **运维** | `healthcheck.sh` 健康检查 · `backup.sh` 数据库备份 · `maintain_daily.sh` 每日维护（备份+健康+VACUUM+清理）· 定时任务 11 个 · 会话保留（180天/512MB）· 每周知识主动探索 |
+| 🔬 **自我进化（Self-Modify）** | 进化系统自主修改自己的代码：扫描反模式 → LLM 生成修复 → 沙箱隔离验证（bwrap，无网络/无真实密钥）→ 人工审批 → 应用 → git 回滚；默认停用，需显式开启 + 审批 |
+| 🛠️ **运维** | `healthcheck.sh` 健康检查 · `backup.sh` 数据库备份 · `maintain_daily.sh` 每日维护（备份+健康+VACUUM+清理）· 定时任务 9 个 · 会话保留（180天/512MB）· 每周知识主动探索 |
 
 ## 🧬 自我进化系统
 
@@ -82,7 +82,7 @@ Maintain (维护)     信念衰减、合并、归档、时间趋势抽象、成�
 
 **Be-ACTIVE 即时学习**：SessionEnd 检测到纠正信号（"不对/错了/重复/必须验证..."）→ 立即在后台分析并生成行为规则 + 技能改进提案，无需等待每日 cron。
 
-**内置定时任务**（`cron/jobs.json`）：harvest（每 30min）· introspect（每 2h）· adapt（每日 03:00）· reflect / maintain（每日 04:00）· evaluate（每 6h）· architect（周日 05:00）· **explore** 知识主动探索（周日 03:00）· **db-backup** 数据库备份（每日 02:00）· **healthcheck** 健康检查（每小时）· **maintain-daily** 每日维护（每日 02:30，健康检查+DB VACUUM+清理）· **session-retention** 会话保留清理（周日 06:00）。
+**内置定时任务**（`cron/jobs.json`，9 项）：harvest（每 30min）· introspect（每 2h）· maintenance（每日 03:03，信念生命周期）· self-modify（每日 04:30，默认停用）· knowledge-sink（每日 05:30）· evaluate（每 6h）· explore（周日 03:00）· architect（周日 05:00）· session-retention（周日 06:00）。运维脚本（`backup.sh`/`healthcheck.sh`/`maintain_daily.sh`）由 `metano.sh`/手工运行，不注册为默认 cron 任务。
 
 **安全机制**：
 - CLAUDE.md 注入用 `<!-- LEARNED-PREFS-START/END -->` 标记隔离，可原子回滚
@@ -365,23 +365,21 @@ metano/
 
 **A2A**：`/.well-known/agent-card.json` 暴露 AgentCard，`/a2a` 支持 JSON-RPC task 委派（跨设备协作）。
 
-## ⏰ 定时任务（cron 11 个）
+## ⏰ 定时任务（cron 9 个）
 
 | 任务 | 调度 | 职责 |
 |------|------|------|
 | `harvest` | 每 30 分钟 | 收割未处理会话 → 观察/纠正/工具错误 |
 | `introspect` | 每 2 小时 | 代码反模式扫描 → 生成提案 |
 | `evaluate` | 每 6 小时 | 评估已应用提案的效果 |
-| `healthcheck` | 每小时 | 服务健康检查（shell） |
-| `maintain-daily` | 每日 02:30 | 备份 + 健康修复 + VACUUM + 清理（shell） |
 | `maintenance` | 每日 03:03 | 进化维护一次跑完：信念衰减/压缩/合并 → LLM 反思 → 信念适应 |
-| `self-modify` | 每日 04:30 | 自举：扫描反模式 → 修复 → 验证 → 应用 |
+| `self-modify` | 每日 04:30 | 自举：扫描反模式 → 修复 → 沙箱验证 → 审批 → 应用（**默认停用**，需显式开启） |
 | `knowledge-sink` | 每日 05:30 | 进化经验沉淀知识库 + 成功经验综合为规则 |
 | `explore` | 周日 03:00 | 主动探索知识缺口（2 主题/次） |
 | `architect` | 周日 05:00 | 架构自审 + 重构提案 |
 | `session-retention` | 周日 06:00 | 会话保留清理（180 天/512MB） |
 
-调度分散避开整点批量。
+调度分散避开整点批量。运维脚本（`backup.sh` / `healthcheck.sh` / `maintain_daily.sh`）不注册为默认 cron 任务，由 `metano.sh` 启动或手工运行。
 
 ## 🧪 测试
 
