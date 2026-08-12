@@ -45,12 +45,15 @@ def test_record_reflection_dedupes_same_lesson(exp_db):
                                      response='Response timed out.')
     stats = experience.get_experience_stats()
     assert stats['total'] == 2  # deduped, not 6
-    # reinforcement bumped effectiveness above the base 0.5
+    # M7: a repeated failure of the SAME source (same task_signature) means the
+    # deterministic template lesson failed to prevent this exact failure, so it
+    # is WEAKENED (not reinforced) toward deactivation.
     conn = experience._get_conn()
     effs = [r['effectiveness'] for r in
             conn.execute('SELECT effectiveness FROM route_experiences').fetchall()]
     conn.close()
-    assert all(e > 0.5 for e in effs)
+    assert len(effs) == 2
+    assert all(0 < e < 0.5 for e in effs)
 
 
 def test_record_reflection_skip_without_task_type(exp_db):
@@ -127,19 +130,30 @@ def test_reward_relevant_decays_avoid_reinforces_do(exp_db):
     assert after['do'] > before['do']
 
 
-def test_reward_relevant_failure_boosts_all(exp_db):
-    experience.record_reflection('code', '', error_class='timeout', response='x')
+def test_reward_relevant_failure_boosts_other_source_only(exp_db):
+    """M7: a failure reinforces lessons from a DIFFERENT source but weakens the
+    lesson whose signature matches the current failure (the same-source lesson
+    failed to prevent it)."""
     conn = experience._get_conn()
-    before = {r['direction']: r['effectiveness']
-              for r in conn.execute('SELECT direction, effectiveness FROM route_experiences').fetchall()}
+    conn.execute(
+        'INSERT INTO route_experiences (task_type, task_signature, direction, summary, detail, '
+        'outcome, source_event_id, effectiveness, active, created_at) VALUES (?,?,?,?,?,?,?,?,1,?)',
+        ('code', 'sig:same', 'avoid', 'same-source lesson', '', 'failure', 0, 0.5, time.time()),
+    )
+    conn.execute(
+        'INSERT INTO route_experiences (task_type, task_signature, direction, summary, detail, '
+        'outcome, source_event_id, effectiveness, active, created_at) VALUES (?,?,?,?,?,?,?,?,1,?)',
+        ('code', 'sig:other', 'avoid', 'cross-source lesson', '', 'failure', 0, 0.5, time.time()),
+    )
+    conn.commit()
     conn.close()
-    experience.reward_relevant('code', 'failure')
+    experience.reward_relevant('code', 'failure', task_signature='sig:same')
     conn = experience._get_conn()
-    after = {r['direction']: r['effectiveness']
-             for r in conn.execute('SELECT direction, effectiveness FROM route_experiences').fetchall()}
+    eff = {r['summary']: r['effectiveness']
+           for r in conn.execute('SELECT summary, effectiveness FROM route_experiences').fetchall()}
     conn.close()
-    assert after['avoid'] > before['avoid']
-    assert after['do'] > before['do']
+    assert eff['same-source lesson'] < 0.5    # matched signature → weakened
+    assert eff['cross-source lesson'] > 0.5    # different signature → reinforced
 
 
 def test_cleanup_caps_per_task_type(exp_db):

@@ -31,11 +31,10 @@ def test_chunk_text_paragraph_boundary():
     assert len(chunks) >= 2
 
 
-def test_validate_ingest_path_allowed():
+def test_validate_ingest_path_allowed(tmp_path):
     from metano.knowledge import _validate_ingest_path
-    import os
-    home = os.path.expanduser("~")
-    result = _validate_ingest_path(f"{home}/.claude/metano/test.txt")
+    # The autouse isolated_env fixture grants tmp_path as an allowed prefix.
+    result = _validate_ingest_path(str(tmp_path / "test.txt"))
     assert result is None
 
 
@@ -124,7 +123,11 @@ def test_knowledge_ingest_binary(tmp_path, monkeypatch):
     monkeypatch.setattr("metano.knowledge.KB_DB", tmp_path / "knowledge.db")
 
     binary = tmp_path / "test.bin"
-    binary.write_bytes(b"\x00\x01\x02\x03")
+    # Genuinely invalid UTF-8 → read_text() raises UnicodeDecodeError and the
+    # ingest must refuse the file.  (The old \x00\x01\x02\x03 bytes are valid
+    # UTF-8 control characters, so they no longer trigger the binary guard now
+    # that tmp_path is inside ALLOWED_INGEST_PREFIXES.)
+    binary.write_bytes(b"\xff\xfe\x00\x01")
 
     result = knowledge_ingest(str(binary))
     assert "error" in result

@@ -18,6 +18,27 @@ function toText(node: ReactNode): string {
   return "";
 }
 
+/**
+ * Protocol whitelist for markdown links (XSS hardening, M-10 / 全检7).
+ *
+ * The custom `a` component below bypasses react-markdown's default
+ * `urlTransform` (which strips `javascript:` / `data:` hrefs), so we must
+ * sanitize here. Only http/https/mailto survive; any other scheme (javascript:,
+ * data:, vbscript:, ...) is dropped and the link renders as inert plain text.
+ * Relative URLs resolve against the current origin and pass (same-origin nav).
+ */
+const SAFE_LINK_PROTOCOLS = ["http:", "https:", "mailto:"];
+
+function sanitizeHref(href: string | undefined): string | null {
+  if (!href || /^\s*$/.test(href)) return null;
+  try {
+    const url = new URL(href, window.location.href);
+    return SAFE_LINK_PROTOCOLS.includes(url.protocol) ? href : null;
+  } catch {
+    return null;
+  }
+}
+
 function CodeBlock({ code, lang, children }: { code: string; lang: string; children?: ReactNode }) {
   const [copied, setCopied] = useState(false);
   const copy = async () => {
@@ -83,9 +104,15 @@ export function Markdown({ children }: { children: string }) {
           ol: ({ children }) => <ol className="my-2 list-decimal space-y-1 pl-5">{children}</ol>,
           li: ({ children }) => <li className="leading-relaxed">{children}</li>,
           a({ href, children }) {
+            const safe = sanitizeHref(href);
+            if (!safe) {
+              // Blocked scheme (javascript:/data:/...) — render as plain text so
+              // a hostile markdown link can't navigate or execute anything.
+              return <span className="text-primary underline underline-offset-2">{children}</span>;
+            }
             return (
               <a
-                href={href}
+                href={safe}
                 target="_blank"
                 rel="noreferrer"
                 className="text-primary underline underline-offset-2"

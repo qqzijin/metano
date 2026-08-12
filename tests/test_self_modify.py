@@ -59,7 +59,9 @@ def test_generate_candidate_deterministic_silent_except():
     cand = generate_candidate(se)
     assert cand is not None
     assert cand['method'] == 'deterministic'
-    assert 'logger.exception' in cand['diff'] or cand['diff']
+    # The deterministic silent-except fix must actually add a logging call to
+    # the diff (N4: the old `'logger.exception' in diff or diff` was always true).
+    assert 'logger.exception' in cand['diff']
 
 
 def test_generate_candidate_llm_fallback(no_llm):
@@ -94,15 +96,17 @@ def test_verify_candidate_accepts_good_diff(no_llm):
     assert verdict['verdict'] in ('verified', 'rejected'), verdict
 
 
-def test_revert_mutation_requires_applied(monkeypatch, tmp_path):
-    """Reverting a non-applied mutation returns wrong_state."""
+def test_revert_mutation_requires_applied(tmp_path):
+    """Reverting a non-applied mutation returns wrong_state.
+
+    Isolation comes from the ``isolated_env`` autouse fixture in conftest.py
+    (EVO_DB_PATH is already redirected to tmp_path).  Reloading evo_models here
+    would be counter-productive: paths.py constants are frozen at import time,
+    so a reload after setting METANO_HOME does NOT re-resolve them (audit
+    cross-conclusion #1).
+    """
     from metano import evo_models
     from metano.self_modify import revert_mutation
-    # Use an isolated DB so tests never touch the real evolution data.
-    monkeypatch.setenv('METANO_HOME', str(tmp_path))
-    import importlib
-    importlib.reload(evo_models)
-    evo_models.init_db()
     eid = evo_models.add_self_modify_event('issue', 'metano/__init__.py', 'diff')
     result = revert_mutation(eid)
     assert result['status'] == 'wrong_state'

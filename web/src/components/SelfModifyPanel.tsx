@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { RefreshCw, Undo2, Play } from "lucide-react";
+import { RefreshCw, Undo2, Play, Check, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -20,6 +20,7 @@ interface SelfModifyEvent {
 const STATUS_BADGE: Record<string, { label: string; cls: string }> = {
   candidate: { label: "候选", cls: "bg-muted text-muted-foreground" },
   verified: { label: "已验证", cls: "bg-chart-2/10 text-chart-2" },
+  pending_approval: { label: "待审批", cls: "bg-chart-4/10 text-chart-4" },
   applied: { label: "已应用", cls: "bg-chart-3/10 text-chart-3" },
   rejected: { label: "已淘汰", cls: "bg-destructive/10 text-destructive" },
   reverted: { label: "已回滚", cls: "bg-muted text-muted-foreground" },
@@ -76,7 +77,10 @@ export function SelfModifyPanel() {
         load();
         return;
       }
-      toast.success(`完成: 扫描 ${data.scanned ?? 0} 问题, 应用 ${data.applied ?? 0}`);
+      toast.success(
+        `完成: 扫描 ${data.scanned ?? 0} 问题, 应用 ${data.applied ?? 0}` +
+        (data.pending_approval ? `, 待审批 ${data.pending_approval}` : "")
+      );
       load();
     } catch {
       toast.error("触发失败");
@@ -104,6 +108,49 @@ export function SelfModifyPanel() {
       load();
     } catch {
       toast.error("回滚失败");
+    }
+  };
+
+  /** C2 (audit 2026-08-12): human approval gate for a verified mutation. */
+  const handleApprove = async (id: number) => {
+    if (!window.confirm("确认批准并应用这次自我修改？将通过 git commit 应用代码改动并同步到运行时。")) return;
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/self-modify/approve/${id}`, {
+        method: "POST", credentials: "include",
+      });
+      if (res.status === 401) { window.dispatchEvent(new Event("auth:unauthorized")); return; }
+      const data = await res.json();
+      if (!res.ok) {
+        toast.error(data?.detail || data?.error?.message || `批准失败 (HTTP ${res.status})`);
+        load();
+        return;
+      }
+      toast.success(data.status === "applied" ? "已批准并应用" : (data.reason || "操作完成"));
+      load();
+    } catch {
+      toast.error("批准失败");
+    }
+  };
+
+  const handleReject = async (id: number) => {
+    if (!window.confirm("确认驳回这次自我修改？该候选将被标记为已淘汰。")) return;
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/self-modify/reject/${id}`, {
+        method: "POST", credentials: "include",
+      });
+      if (res.status === 401) { window.dispatchEvent(new Event("auth:unauthorized")); return; }
+      const data = await res.json();
+      if (!res.ok) {
+        toast.error(data?.detail || data?.error?.message || `驳回失败 (HTTP ${res.status})`);
+        load();
+        return;
+      }
+      toast.success(data.status === "rejected" ? "已驳回" : (data.reason || "操作完成"));
+      load();
+    } catch {
+      toast.error("驳回失败");
     }
   };
 
@@ -148,6 +195,28 @@ export function SelfModifyPanel() {
                       <span className="text-xs text-muted-foreground font-mono">#{ev.id}</span>
                       <span className="flex-1 text-sm truncate">{ev.issue || ev.file}</span>
                       <Badge variant="outline" className={`text-[10px] ${badge.cls}`}>{badge.label}</Badge>
+                      {ev.status === "pending_approval" && (
+                        <>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="text-chart-3 hover:text-chart-3"
+                            onClick={(e) => { e.stopPropagation(); handleApprove(ev.id); }}
+                            title="批准并应用"
+                          >
+                            <Check className="size-3.5" />
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="text-destructive hover:text-destructive"
+                            onClick={(e) => { e.stopPropagation(); handleReject(ev.id); }}
+                            title="驳回"
+                          >
+                            <X className="size-3.5" />
+                          </Button>
+                        </>
+                      )}
                       {ev.status === "applied" && (
                         <Button
                           size="sm"

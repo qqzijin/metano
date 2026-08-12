@@ -27,25 +27,18 @@ interface ChatMsg {
   tool_calls?: ToolCall[];
 }
 
-// M-07: chat body lives in localStorage under a per-user key so a shared
-// browser switching accounts cannot leak the previous user's conversation.
-// (The chat body could also be dropped entirely, but that would lose the
-// reconnect-after-refresh convenience this feature provides.)
-function storageKeys(username: string) {
-  return {
-    storageKey: `metano-chat-history:${username}`,
-    dirtyKey: `metano-chat-dirty:${username}`,
-  };
-}
-
-function loadHistory(storageKey: string): ChatMsg[] {
-  try {
-    const raw = localStorage.getItem(storageKey);
-    if (raw) return JSON.parse(raw);
-  } catch {
-    /* malformed JSON — fall through to an empty conversation */
-  }
-  return [];
+// M-10 (audit 2026-08-12): chat BODY is deliberately NOT persisted to
+// localStorage — the full conversation text would be stored in plaintext and
+// is scoped to whatever browser profile reads it. Chat history now lives only
+// in React memory for the lifetime of the page. Reconnecting to a past
+// conversation goes through the DB-backed session picker instead.
+//
+// The only thing still stored is a per-user "dirty" flag (a "1" marker, no
+// message content) so a browser refresh mid-send still warns about unsaved
+// messages. The key stays per-user so a shared browser switching accounts
+// cannot leak the previous user's flag.
+function dirtyKeyFor(username: string): string {
+  return `metano-chat-dirty:${username}`;
 }
 
 function loadDirty(dirtyKey: string): boolean {
@@ -57,22 +50,14 @@ function loadDirty(dirtyKey: string): boolean {
   return false;
 }
 
-function saveHistory(storageKey: string, msgs: ChatMsg[]) {
-  try {
-    localStorage.setItem(storageKey, JSON.stringify(msgs.slice(-200)));
-  } catch {
-    /* quota/security error — persistence is best-effort, ignore */
-  }
-}
-
 /**
- * Initial chat state on mount. Persisted history wins; when none exists and a
- * stream is still running (e.g. re-mount mid-generation after a route switch),
- * restore the accumulated messages so the partially-generated reply survives.
+ * Initial chat state on mount. There is no persisted history (see M-10); when
+ * a stream is still running (e.g. re-mount mid-generation after a route
+ * switch), restore the accumulated in-memory messages so the partially
+ * generated reply survives the remount.
  */
-function initialMessages(storageKey: string): ChatMsg[] {
-  const hist = loadHistory(storageKey);
-  if (hist.length === 0 && isChatStreamRunning() && getStreamMessages().length) {
+function initialMessages(): ChatMsg[] {
+  if (isChatStreamRunning() && getStreamMessages().length) {
     return getStreamMessages().map((m) => ({
       role: m.role,
       content: m.content,
@@ -81,18 +66,19 @@ function initialMessages(storageKey: string): ChatMsg[] {
       ts: Date.now(),
     }));
   }
-  return hist;
+  return [];
 }
 
 export default function ChatPage() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const { user } = useAuth();
-  // Per-user localStorage namespace (M-07). AuthGuard guarantees `user` is set
-  // before this page renders, so the initializer sees the right username.
+  // Per-user dirty-flag key (M-10). AuthGuard guarantees `user` is set before
+  // this page renders, so the initializer sees the right username. The chat
+  // body itself is in-memory only (see M-10 above).
   const username = user?.username ?? "default";
-  const { storageKey, dirtyKey } = storageKeys(username);
-  const [messages, setMessages] = useState<ChatMsg[]>(() => initialMessages(storageKey));
+  const dirtyKey = dirtyKeyFor(username);
+  const [messages, setMessages] = useState<ChatMsg[]>(() => initialMessages());
   const [input, setInput] = useState("");
   const [showSessionPicker, setShowSessionPicker] = useState(false);
   const [connectedSession, setConnectedSession] = useState<string | null>(null);
@@ -120,9 +106,6 @@ export default function ChatPage() {
   const bottomRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
-  // Latest committed messages, used to persist the final reply once the stream
-  // finishes (the "done" event itself does not change the `messages` reference).
-  const messagesRef = useRef<ChatMsg[]>([]);
 
   const autoGrow = () => {
     const ta = taRef.current;
@@ -153,20 +136,6 @@ export default function ChatPage() {
     if (!container) return;
     autoScrollRef.current = container.scrollHeight - container.scrollTop - container.clientHeight < 80;
   };
-
-  // Keep a live copy of messages for the stream "done"/"error" handlers, which
-  // run outside a render and otherwise couldn't see the latest messages.
-  useEffect(() => {
-    messagesRef.current = messages;
-  }, [messages]);
-
-  // SKIP localStorage writes while a stream is running: every streamed text
-  // event triggers a render, and JSON.stringify of the whole history on each
-  // token is wasteful. The final reply is persisted once on done/error.
-  useEffect(() => {
-    if (isChatStreamRunning()) return;
-    saveHistory(storageKey, messages);
-  }, [storageKey, messages]);
 
   useEffect(() => {
     try {
@@ -228,7 +197,6 @@ export default function ChatPage() {
     setDirty(false);
     setSession(null);
     setMessages([]);
-    localStorage.removeItem(storageKey);
   };
 
   const handleSend = async () => {
@@ -312,19 +280,15 @@ export default function ChatPage() {
         setSession(ev.session_id || null);
         freshRef.current = false;
         setDirty(failedSendRef.current);
-        // Stream over — persist the accumulated reply (skipped during streaming).
-        // The post-render `messages` effect re-saves with the done response too.
-        saveHistory(storageKey, messagesRef.current);
+        // M-10: chat body is in-memory only — no localStorage write on done.
       } else if (ev.type === "error") {
         if (clearedRef.current) return;
         failedSendRef.current = true;
         setDirty(true);
         patchLast((a) => { a.content = `错误: ${ev.message ?? "请求失败"}`; });
-        saveHistory(storageKey, messagesRef.current);
       }
     });
     return unsub;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleClear = () => {
@@ -336,7 +300,6 @@ export default function ChatPage() {
     setDirty(false);
     setMessages([]);
     setSession(null);
-    localStorage.removeItem(storageKey);
   };
 
   const handleNewChat = () => {
@@ -349,7 +312,6 @@ export default function ChatPage() {
     setDirty(false);
     setSession(null);
     setMessages([]);
-    localStorage.removeItem(storageKey);
     toast.success("已开启新对话");
   };
 

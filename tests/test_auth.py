@@ -23,19 +23,24 @@ def test_verify_password_correct_hash():
     assert verify_password("wrong", hashed) is False
 
 
-def test_get_jwt_secret_no_hardcoded_fallback():
+def test_get_jwt_secret_no_hardcoded_fallback(tmp_path):
     """S2: get_jwt_secret must NOT return hardcoded fallback."""
-    from metano.auth import get_jwt_secret
-    # Either reads from env var or from config file — never returns 'fallback-secret-change-me'
+    import yaml
+    from metano.auth import CONFIG_PATH, get_jwt_secret
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    # A too-short secret in config must be refused, never silently used and
+    # never replaced by a hardcoded fallback.
+    CONFIG_PATH.write_text(yaml.dump({"auth": {"jwt_secret": "short"}}))
     with patch.dict(os.environ, {}, clear=True):
-        # If config file has a valid secret, it should work
-        # If not, it should raise RuntimeError
-        try:
-            secret = get_jwt_secret()
-            assert secret != "fallback-secret-change-me"
-            assert len(secret) >= 32
-        except RuntimeError as e:
-            assert "jwt_secret" in str(e).lower() or "refuse" in str(e).lower()
+        with pytest.raises(RuntimeError) as exc_info:
+            get_jwt_secret()
+        assert "jwt_secret" in str(exc_info.value).lower()
+    # A valid config secret is returned as-is (still never the fallback).
+    CONFIG_PATH.write_text(yaml.dump({"auth": {"jwt_secret": "v" * 40}}))
+    with patch.dict(os.environ, {}, clear=True):
+        secret = get_jwt_secret()
+        assert secret == "v" * 40
+        assert secret != "fallback-secret-change-me"
 
 
 def test_get_jwt_secret_env_var_takes_priority():
