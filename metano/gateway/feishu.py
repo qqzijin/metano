@@ -108,6 +108,7 @@ class FeishuBot:
             verification_token=self.verification_token,
         ) \
             .register_p2_im_message_receive_v1(self._on_message) \
+            .register_p2_im_message_message_read_v1(self._on_message_read) \
             .build()
 
         # Start WebSocket client
@@ -123,6 +124,11 @@ class FeishuBot:
             ws_client.start()
         except Exception as e:
             logger.error(f"Feishu bot error: {e}")
+
+    def _on_message_read(self, data) -> None:
+        """Benign 'message read' receipt — no action needed, but registering it
+        stops the SDK from logging 'processor not found' on every read event."""
+        pass
 
     def _on_message(self, data: P2ImMessageReceiveV1) -> None:
         """Handle incoming Feishu message event (schedules async processing)."""
