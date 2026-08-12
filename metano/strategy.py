@@ -11,8 +11,24 @@ from .evo_models import log_action, get_recent_actions, get_action_stats, get_ru
 from .evolution import _log
 from .llm_call import call_llm
 from metano.log import logger
-ANTHROPIC_API_KEY = os.environ.get('ANTHROPIC_API_KEY', '')
 ANTHROPIC_MODEL = os.environ.get('HONCHO_MODEL', 'claude-sonnet-4-6')
+
+
+def _llm_provider_available() -> bool:
+    """Whether a usable LLM provider exists, resolved at call time.
+
+    M6: the old gate read a module-level ANTHROPIC_API_KEY env snapshot that is
+    unset under the cron/daemon process, so the LLM strategy-pattern branch was
+    dead at runtime. Reflect the live ModelRouter instead.
+    """
+    try:
+        from .model_router import model_router
+        p = model_router.get_provider()
+        if p and getattr(p, 'api_key', ''):
+            return True
+    except Exception:
+        logger.exception("strategy: provider resolution failed")
+    return bool(os.environ.get('ANTHROPIC_API_KEY', ''))
 
 def record_action(session_id: str, action_type: str, action_detail: str, rule_ids: list[str] | None=None) -> int:
     """Record an agent action for strategy tracking.
@@ -163,7 +179,7 @@ def detect_strategy_patterns() -> list[dict]:
 
 def _llm_detect_patterns(actions: list[dict]) -> list[dict]:
     """Use LLM to detect subtle strategy patterns from action log."""
-    if not ANTHROPIC_API_KEY:
+    if not _llm_provider_available():
         return []
     system = 'You are a strategy pattern detector. Given an AI agent\'s action log with outcomes,\nidentify patterns where specific approaches or rule combinations consistently lead to success or failure.\n\nReturn a JSON array of patterns:\n[{"pattern": "description", "rule_suggestion": "concrete rule to add/modify", "confidence": 0.7-0.95, "evidence": "what data supports this"}]\n\nFocus on:\n- Rule combinations that work well together\n- Contexts where certain strategies fail\n- Timing or sequencing patterns'
     summary = []

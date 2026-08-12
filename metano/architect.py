@@ -20,11 +20,29 @@ from .evolution import _log
 from .llm_call import call_llm
 from metano.log import logger
 from .paths import home_dir, CRON_JOBS_FILE as CRON_FILE, CONFIG_PATH as GATEWAY_CONFIG, ARCH_SNAP_DIR
-ANTHROPIC_API_KEY = os.environ.get('ANTHROPIC_API_KEY', '')
 ANTHROPIC_MODEL = os.environ.get('HONCHO_MODEL', 'claude-sonnet-4-6')
 PROJECT_DIR = home_dir()
 SRC_DIR = Path(__file__).resolve().parent
 MODIFIABLE_FILES = {'cron/jobs.json', 'skills/*/SKILL.md trigger', 'gateway_config.yaml'}
+
+
+def _llm_provider_available() -> bool:
+    """Whether a usable LLM provider exists, resolved at call time.
+
+    M6: the old gate read a module-level ANTHROPIC_API_KEY env snapshot captured
+    at import time — under the cron/daemon process that env is unset, so the
+    deep-analysis LLM branch never ran. Reflect the live ModelRouter (same
+    pattern as reflector._llm_provider_available).
+    """
+    try:
+        from .model_router import model_router
+        p = model_router.get_provider()
+        if p and getattr(p, 'api_key', ''):
+            return True
+    except Exception:
+        logger.exception("architect: provider resolution failed")
+    return bool(os.environ.get('ANTHROPIC_API_KEY', ''))
+
 
 def _call_llm(system_prompt: str, user_prompt: str) -> str:
     text, _ = call_llm(system_prompt, user_prompt)
@@ -96,7 +114,7 @@ def detect_bottlenecks(model: dict) -> list[dict]:
     disabled = [j for j in model.get('cron_jobs', []) if not j.get('enabled', True)]
     if len(disabled) > 2:
         findings.append({'type': 'many_disabled_crons', 'count': len(disabled), 'severity': 'low', 'suggestion': f'有 {len(disabled)} 个 cron jobs 被禁用，检查是否需要重新启用或清理'})
-    if len(findings) >= 2 and ANTHROPIC_API_KEY:
+    if len(findings) >= 2 and _llm_provider_available():
         llm_findings = _llm_analyze_architecture(model, findings)
         findings.extend(llm_findings)
     _log('architect', 'detect_bottlenecks', {'findings': len(findings)})

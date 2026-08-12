@@ -173,6 +173,17 @@ def _ensure_user():
         conn.close()
 
 
+def _normalize_observation(text: str) -> str:
+    """Strip ``file:line`` fragments from an observation for stable dedup.
+
+    A3: the observations dedup key included the source line number, so any line
+    shift turned an existing finding into a "new" observation (146 rows were
+    really 30 findings). Stripping ``path.py:NN`` makes the key stable across
+    edits — both for newly written content and for legacy line-numbered rows.
+    """
+    return re.sub(r'([\w./\\-]+\.(?:py|tsx|jsx)):\d+', r'\1', text or '')
+
+
 def scan_source_tree() -> list[dict]:
     """Scan all Python and TSX source files, return findings."""
     all_findings = []
@@ -234,9 +245,11 @@ def introspect_and_report() -> dict:
     try:
         new_obs = 0
 
-        # Get existing observations to avoid duplicates
+        # Get existing observations to avoid duplicates (A3: dedup on the
+        # normalized content — line numbers stripped — so a line shift does not
+        # re-flag an existing finding as new).
         existing = {
-            o['content'] for o in conn.execute(
+            _normalize_observation(o['content']) for o in conn.execute(
                 "SELECT content FROM observations WHERE user_id = ? AND category = 'code_quality'",
                 (AGENT_USER_ID,)
             ).fetchall()
@@ -252,10 +265,13 @@ def introspect_and_report() -> dict:
         new_proposals = 0
 
         for f in findings:
-            obs_text = f"[code_quality:{f['severity']}] {f['file']}:{f['line']} — {f['pattern']}: {f['detail']}"
-            if obs_text not in existing:
+            # A3: observation content is stable (no line number), so the same
+            # finding re-detected after a line shift dedups against the old one.
+            obs_text = f"[code_quality:{f['severity']}] {f['file']} — {f['pattern']}: {f['detail']}"
+            key = _normalize_observation(obs_text)
+            if key not in existing:
                 add_observation(conn, AGENT_USER_ID, obs_text, category='code_quality')
-                existing.add(obs_text)
+                existing.add(key)
                 new_obs += 1
 
             # Only surface critical findings as approval proposals. Everything

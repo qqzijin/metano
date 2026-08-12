@@ -496,8 +496,19 @@ def sink_evolution_knowledge(user_id: str = 'default') -> dict:
             synthesized = len(synthesize_from_experience())
         except Exception:
             logger.exception('sink: synthesize_from_experience failed')
+        # B4: populate_embeddings was a dead function with zero callers — the
+        # sink doc chunks stayed embedding=NULL and were invisible to vector
+        # retrieval. Wire it into the sink write path so the ingested doc is
+        # searchable semantically.
+        embeddings = {}
+        try:
+            from .knowledge import populate_embeddings
+            embeddings = populate_embeddings()
+        except Exception:
+            logger.exception('sink: populate_embeddings failed')
         return {'status': 'ingested', 'sections': len(sections),
-                'synthesized_patterns': synthesized, 'result': result}
+                'synthesized_patterns': synthesized, 'result': result,
+                'embeddings': embeddings}
     except Exception:
         logger.exception('sink_evolution_knowledge failed')
         return {'status': 'error'}

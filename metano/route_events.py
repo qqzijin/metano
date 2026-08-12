@@ -426,7 +426,9 @@ def record_outcome(event_id: int, outcome: str, error_class: str = '', cost: flo
     conn.close()
 
     try:
-        experience_mod.reward_relevant(ev['task_type'], outcome)
+        # M7: pass the failure signature so reward is attributed per-source and
+        # the deterministic-template infinite reinforcement loop is broken.
+        experience_mod.reward_relevant(ev['task_type'], outcome, ev.get('task_signature', ''))
         if outcome == 'failure':
             experience_mod.record_reflection(
                 task_type=ev['task_type'], task_signature=ev['task_signature'],

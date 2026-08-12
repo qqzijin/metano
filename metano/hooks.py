@@ -106,8 +106,15 @@ def _evaluate_rule_effectiveness(event_data: dict):
                 continue
             success = _check_rule_followed(content, tool_name, file_path,
                                            prev_tool, prev_file, edits, event_data)
+            # A4: only the FIRST decisive rule per event gets its counter
+            # updated. Previously EVERY matching rule was incremented on the
+            # same event, so overlapping rules (e.g. several "read before edit"
+            # / "verify after edit" variants) accumulated in perfect lockstep
+            # (1420/954/466 — one Edit flushed all three). Each event now
+            # contributes to at most one rule.
             if success is not None:
                 update_rule_effectiveness(rule_id, success=success)
+                break
 
         _save_state(new_state)
     except Exception:

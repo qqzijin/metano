@@ -167,12 +167,21 @@ def record_reflection(task_type: str, task_signature: str = '', error_class: str
             if not summary or not summary.strip():
                 continue
             row = conn.execute(
-                'SELECT id, effectiveness FROM route_experiences '
+                'SELECT id, effectiveness, task_signature FROM route_experiences '
                 'WHERE task_type=? AND direction=? AND summary=? AND active=1',
                 (task_type, direction, summary),
             ).fetchone()
             if row:
-                eff = min(1.0, (row['effectiveness'] or 0.5) + 0.1)
+                # M7: a repeated failure of the SAME source (same task_signature)
+                # means the deterministic template lesson failed to prevent this
+                # exact failure — reinforcing it would push it to 1.0 forever
+                # (inject → fail → reinforce). Weaken it slightly instead so it
+                # can eventually deactivate; lessons from a DIFFERENT source that
+                # happen to share the summary still get reinforced.
+                if row['task_signature'] and row['task_signature'] == task_signature:
+                    eff = max(0.0, (row['effectiveness'] or 0.5) - 0.05)
+                else:
+                    eff = min(1.0, (row['effectiveness'] or 0.5) + 0.1)
                 conn.execute(
                     'UPDATE route_experiences SET effectiveness=?, created_at=?, outcome=?, source_event_id=? WHERE id=?',
                     (eff, now, outcome, source_event_id, row['id']),
@@ -192,12 +201,22 @@ def record_reflection(task_type: str, task_signature: str = '', error_class: str
         conn.close()
 
 
-def reward_relevant(task_type: str, outcome: str) -> dict:
+def reward_relevant(task_type: str, outcome: str, task_signature: str = '') -> dict:
     """Adjust experience effectiveness after an outcome for a task type.
 
     - success: AVOID lessons lose a little weight (the warned failure mode did
       not recur), DO lessons gain weight (they worked).
-    - failure: all lessons of the task type gain weight (they were relevant).
+    - failure: lessons from a DIFFERENT failure source gain weight (they were
+      relevant); lessons whose signature matches the current failure (same
+      source) are weakened slightly instead of reinforced.
+
+    M7: previously EVERY failure reinforced ALL lessons of the task type. The
+    heuristic templates are deterministic per (task_type, error_class), so the
+    same template was injected on every repeat and reinforced to 1.0 forever —
+    an infinite "fail → inject same template → reinforce" loop. Signature-aware
+    reinforcement breaks that loop while still rewarding genuinely informative
+    cross-source lessons.
+
     Weak, old lessons are deactivated so they stop being retrieved.
     """
     conn = _get_conn()
@@ -215,9 +234,11 @@ def reward_relevant(task_type: str, outcome: str) -> dict:
             )
         elif outcome == 'failure':
             conn.execute(
-                'UPDATE route_experiences SET effectiveness = MIN(1.0, effectiveness + 0.1) '
+                'UPDATE route_experiences SET effectiveness = '
+                'CASE WHEN task_signature = ? THEN MAX(0.0, effectiveness - 0.05) '
+                '     ELSE MIN(1.0, effectiveness + 0.1) END '
                 'WHERE task_type=? AND active=1',
-                (task_type,),
+                (task_signature, task_type),
             )
         cutoff = time.time() - _AVOID_AGE_DAYS * 86400
         conn.execute(

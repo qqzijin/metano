@@ -98,6 +98,38 @@ def _check_accuracy(beliefs: list[dict]) -> list[dict]:
         pass
     return []
 
+def _check_confidence_evidence(beliefs: list[dict]) -> list[dict]:
+    """Flag beliefs whose confidence outruns their supporting evidence.
+
+    M15: belief confidence was purely LLM self-rated with no evidence tie-in —
+    a belief could sit at 0.95 (core stage) with zero reinforcements and no
+    source observations. Confidence should be grounded in reinforcement_count
+    and source_observations, so high-confidence-without-evidence beliefs are
+    surfaced for review instead of silently injected into CLAUDE.md.
+    """
+    findings = []
+    for b in beliefs:
+        conf = b.get('confidence', 0.5) or 0.5
+        reinf = b.get('reinforcement_count', 0) or 0
+        try:
+            src = json.loads(b.get('source_observations') or '[]')
+        except (json.JSONDecodeError, TypeError):
+            src = []
+        n_src = len(src) if isinstance(src, list) else 0
+        if conf >= 0.8 and (reinf < 5 or n_src == 0):
+            findings.append({
+                'action': 'confidence_evidence_mismatch',
+                'belief_id': b['id'],
+                'content': (b.get('content') or '')[:80],
+                'confidence': conf,
+                'reinforcement_count': reinf,
+                'source_observations': n_src,
+                'reason': (f'confidence={conf:.0%} 但强化{reinf}次、证据{n_src}条，'
+                           '置信度高于证据支持'),
+            })
+    return findings
+
+
 def _check_behavior_effectiveness(conn, user_id: str, beliefs: list[dict]) -> list[dict]:
     """Check whether agent behavior rules are effective using action_log metrics."""
     agent_rules = get_agent_rules(kind='behavior')
@@ -149,13 +181,16 @@ def reflect_on_model(user_id: str='default') -> dict:
             pass
     set_meta('last_reflect_ts', str(time.time()))
 
-    # 限制LLM调用：只执行coherence和behavior_effectiveness，跳过coverage和accuracy
+    # M15: coverage and accuracy checks were commented out ("跳过：成本高且产出
+    # 质量低") — re-enable them so stale/unsupported beliefs are actually caught.
+    # Cost stays bounded: the reflect cycle is gated by the 24h cooldown above,
+    # coverage short-circuits when there are no recent observations, and accuracy
+    # short-circuits when fewer than 3 beliefs exist.
     contradictions = _check_coherence(eligible)
-    # coverage_gaps = _check_coverage(user_id, beliefs)  # 跳过：成本高且产出质量低
-    coverage_gaps = []
+    coverage_gaps = _check_coverage(user_id, beliefs)
     stale = get_stale_beliefs(conn, user_id, days=14)
-    # low_accuracy = _check_accuracy(beliefs)  # 跳过：成本高且产出质量低
-    low_accuracy = []
+    low_accuracy = _check_accuracy(beliefs)
+    evidence_findings = _check_confidence_evidence(eligible)
     behavior_findings = _check_behavior_effectiveness(conn, user_id, eligible)
     suggested_actions = []
     for c in contradictions:
@@ -166,10 +201,12 @@ def reflect_on_model(user_id: str='default') -> dict:
         suggested_actions.append({'action': 'decay', 'belief_id': s['id'], 'content': s['content'][:80], 'reason': f"Not reinforced in {(time.time() - s.get('last_reinforced_at', s['created_at'])) / 86400:.0f} days"})
     for a in low_accuracy:
         suggested_actions.append({'action': 'review_accuracy', 'belief_id': a.get('id'), 'rating': a.get('rating'), 'reason': a.get('reason', '')})
+    for e in evidence_findings:
+        suggested_actions.append(e)
     for f in behavior_findings:
         suggested_actions.append(f)
     conn.close()
-    return {'status': 'completed', 'belief_count': len(beliefs), 'contradictions_found': len(contradictions), 'coverage_gaps': len(coverage_gaps), 'stale_beliefs': len(stale), 'low_accuracy_beliefs': len(low_accuracy), 'behavior_findings': len(behavior_findings), 'suggested_actions': suggested_actions}
+    return {'status': 'completed', 'belief_count': len(beliefs), 'contradictions_found': len(contradictions), 'coverage_gaps': len(coverage_gaps), 'stale_beliefs': len(stale), 'low_accuracy_beliefs': len(low_accuracy), 'confidence_evidence_mismatches': len(evidence_findings), 'behavior_findings': len(behavior_findings), 'suggested_actions': suggested_actions}
 
 def apply_correction(user_id: str, correction: str, category: str='') -> dict:
     """Apply a user correction to the belief model.

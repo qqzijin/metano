@@ -1,5 +1,6 @@
 """SQLite database schema, FTS5, and data access layer for metano."""
 
+import json
 import sqlite3
 import time
 import uuid
@@ -8,7 +9,7 @@ from typing import Optional
 from pathlib import Path
 
 from .log import logger
-from .paths import DB_DIR, DB_PATH
+from .paths import DB_DIR, DB_PATH, GATEWAY_LOG
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -362,8 +363,170 @@ def cron_purge_sessions() -> dict:
 
     Conservative defaults: 180-day inactivity cutoff, generous 512MB hard size
     cap (only fires if the DB genuinely runs away). Always backs up first.
+    Also prunes/rotates the plaintext gateway_log.jsonl (H2/M12).
+    """
+    result = {}
+    try:
+        result['bridge'] = purge_old_sessions(days=180, size_limit_mb=512, vacuum=True)
+    except Exception as e:
+        result['bridge'] = {'status': 'error', 'error': str(e)}
+    try:
+        result['gateway_log'] = purge_gateway_log(days=30, dry_run=False)
+    except Exception as e:
+        result['gateway_log'] = {'status': 'error', 'error': str(e)}
+    return result
+
+
+def _rotate_file(path, max_bytes: int = 50 * 1024 * 1024, backup_count: int = 5) -> dict:
+    """Rotate an oversized JSONL/log file into numbered backups (.1, .2, …).
+
+    M12: logs previously had no rotation or retention policy — a runaway
+    gateway_log.jsonl grew unbounded. Rotation keeps the live file small while
+    preserving up to ``backup_count`` historical files.
+    """
+    p = Path(path)
+    if not p.exists():
+        return {'rotated': False}
+    size = p.stat().st_size
+    if size <= max_bytes:
+        return {'rotated': False, 'size': size}
+    for i in range(backup_count - 1, 0, -1):
+        src = Path(f'{p}.{i}')
+        dst = Path(f'{p}.{i + 1}')
+        if src.exists():
+            if dst.exists():
+                dst.unlink()
+            src.rename(dst)
+    first = Path(f'{p}.1')
+    if first.exists():
+        first.unlink()
+    p.rename(first)
+    return {'rotated': True, 'old_size': size, 'backup': str(first)}
+
+
+def purge_gateway_log(days: int = 30, user_key: str = '', dry_run: bool = False,
+                      rotate: bool = True) -> dict:
+    """Prune gateway_log.jsonl by age and/or user.
+
+    H2: gateway_log had no deletion path — this is the retention entry point.
+    M12: optionally rotates an oversized file first (skip on dry_run so no
+    rename happens while reporting).
+    """
+    if not GATEWAY_LOG.exists():
+        return {'status': 'no_file'}
+    rotation = {}
+    if rotate and not dry_run:
+        rotation = _rotate_file(GATEWAY_LOG)
+    if not GATEWAY_LOG.exists():
+        # Rotation renamed the whole live file away — nothing left to prune.
+        result = {'status': 'ok', 'deleted': 0, 'kept': 0}
+        if rotation:
+            result['rotation'] = rotation
+        return result
+    cutoff = time.time() - days * 86400 if days else 0
+    kept: list[str] = []
+    deleted = 0
+    with open(GATEWAY_LOG) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            remove = False
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                kept.append(line)
+                continue
+            if user_key and rec.get('user_id') == user_key:
+                remove = True
+            elif days and rec.get('timestamp') and float(rec['timestamp']) < cutoff:
+                remove = True
+            if remove:
+                deleted += 1
+            else:
+                kept.append(line)
+    if not dry_run:
+        GATEWAY_LOG.write_text('\n'.join(kept) + ('\n' if kept else ''))
+    result = {'status': 'dry_run' if dry_run else 'ok', 'deleted': deleted, 'kept': len(kept)}
+    if rotation:
+        result['rotation'] = rotation
+    return result
+
+
+def purge_user_data(user_key: str = '', dry_run: bool = False) -> dict:
+    """Cascade-delete all stored data for a platform user (H2).
+
+    Covers bridge.db sessions/messages, honcho beliefs/observations for the
+    mapped honcho user, and gateway_log.jsonl lines for that user. When the
+    user key maps to the shared 'default' honcho profile, honcho data is
+    skipped to avoid wiping every user's profile.
+    """
+    if not user_key:
+        return {'status': 'error', 'error': 'user_key required'}
+    result = {'user_key': user_key, 'dry_run': dry_run}
+    conn = get_db()
+    try:
+        session_ids = [r['id'] for r in conn.execute(
+            'SELECT id FROM sessions WHERE user_key=?', (user_key,)).fetchall()]
+        msg_count = 0
+        for sid in session_ids:
+            msg_count += conn.execute(
+                'SELECT COUNT(*) FROM messages WHERE session_id=?', (sid,)).fetchone()[0]
+        result['bridge_sessions'] = len(session_ids)
+        result['bridge_messages'] = msg_count
+        if not dry_run and session_ids:
+            ph = ','.join('?' * len(session_ids))
+            conn.execute(f'DELETE FROM messages WHERE session_id IN ({ph})', session_ids)
+            conn.execute(f'DELETE FROM sessions WHERE id IN ({ph})', session_ids)
+            conn.commit()
+    finally:
+        conn.close()
+    try:
+        from .honcho.models import user_key_to_honcho_user, get_honcho_db
+        honcho_uid = user_key_to_honcho_user(user_key)
+        if honcho_uid == 'default' and user_key != 'default':
+            result['honcho_skipped'] = 'user_key maps to shared default profile'
+        else:
+            hconn = get_honcho_db()
+            try:
+                b = hconn.execute(
+                    'SELECT COUNT(*) FROM beliefs WHERE user_id=?', (honcho_uid,)).fetchone()[0]
+                o = hconn.execute(
+                    'SELECT COUNT(*) FROM observations WHERE user_id=?', (honcho_uid,)).fetchone()[0]
+                result['honcho_beliefs'] = b
+                result['honcho_observations'] = o
+                if not dry_run:
+                    hconn.execute('DELETE FROM beliefs WHERE user_id=?', (honcho_uid,))
+                    hconn.execute('DELETE FROM observations WHERE user_id=?', (honcho_uid,))
+                    hconn.commit()
+            finally:
+                hconn.close()
+    except Exception:
+        logger.exception('purge_user_data: honcho cleanup failed')
+    result['gateway_log'] = purge_gateway_log(days=0, user_key=user_key, dry_run=dry_run)
+    return result
+
+
+def purge_evo_history(days: int = 365, dry_run: bool = False) -> dict:
+    """Prune evo.db audit_log older than ``days`` (H2 retention entry point).
+
+    audit_log is the cost/audit trail; trimming old rows bounds growth without
+    touching learning data (agent_rules / proposals / action_log are kept).
     """
     try:
-        return purge_old_sessions(days=180, size_limit_mb=512, vacuum=True)
+        from .evo_models import _get_conn
+        cutoff = time.time() - days * 86400
+        conn = _get_conn()
+        try:
+            total = conn.execute('SELECT COUNT(*) FROM audit_log').fetchone()[0]
+            target = conn.execute(
+                'SELECT COUNT(*) FROM audit_log WHERE timestamp < ?', (cutoff,)).fetchone()[0]
+            if not dry_run:
+                conn.execute('DELETE FROM audit_log WHERE timestamp < ?', (cutoff,))
+                conn.commit()
+            return {'status': 'dry_run' if dry_run else 'ok', 'days': days,
+                    'total': total, 'candidates': target}
+        finally:
+            conn.close()
     except Exception as e:
         return {'status': 'error', 'error': str(e)}

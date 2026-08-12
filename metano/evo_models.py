@@ -450,9 +450,13 @@ def get_proposals(status: str = None, proposal_type: str = None) -> list[dict]:
 def update_proposal_status(proposal_id: int, status: str, result: str = ""):
     now = time.time()
     conn = _get_conn()
+    ptype = ""
     if status == "approved":
         conn.execute("UPDATE proposals SET status=?, approved_at=? WHERE id=?",
                      (status, now, proposal_id))
+        row = conn.execute(
+            "SELECT proposal_type FROM proposals WHERE id=?", (proposal_id,)).fetchone()
+        ptype = row["proposal_type"] if row else ""
     elif status == "applied" or status == "failed":
         conn.execute("UPDATE proposals SET status=?, applied_at=?, result=? WHERE id=?",
                      (status, now, result, proposal_id))
@@ -460,6 +464,17 @@ def update_proposal_status(proposal_id: int, status: str, result: str = ""):
         conn.execute("UPDATE proposals SET status=? WHERE id=?", (status, proposal_id))
     conn.commit()
     conn.close()
+    # A8: close the approved→applied state machine for idempotent rule types
+    # regardless of which path approved the proposal (web UI + MCP both call
+    # this helper). apply is idempotent (see adapter._apply_behavior_improvement
+    # / _apply_rule_add), so re-approval never duplicates a rule. Non-rule types
+    # (config_change / claude_md_inject / skill) stay approved for explicit apply.
+    if status == "approved" and ptype in ("behavior_improvement", "rule_add"):
+        try:
+            from .adapter import apply_proposal
+            apply_proposal(proposal_id)
+        except Exception:
+            pass
 
 
 # ── Migration from Honcho ──

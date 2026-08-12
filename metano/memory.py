@@ -33,6 +33,20 @@ _SCHEMA_SQL = """
     CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(category);
     CREATE INDEX IF NOT EXISTS idx_memories_importance ON memories(importance DESC);
     CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(content, category, tokenize='trigram');
+    -- B5: keep the FTS index in lockstep with the main table for ANY delete /
+    -- update executed through a connection that runs this schema, so old text
+    -- can no longer hit while the main row shows new content (37 dead rows
+    -- accumulated because the 8/11 cleanup only deleted the main table).
+    CREATE TRIGGER IF NOT EXISTS trg_memories_ai AFTER INSERT ON memories BEGIN
+        INSERT INTO memories_fts(rowid, content, category) VALUES (new.id, new.content, new.category);
+    END;
+    CREATE TRIGGER IF NOT EXISTS trg_memories_ad AFTER DELETE ON memories BEGIN
+        DELETE FROM memories_fts WHERE rowid = old.id;
+    END;
+    CREATE TRIGGER IF NOT EXISTS trg_memories_au AFTER UPDATE ON memories BEGIN
+        DELETE FROM memories_fts WHERE rowid = old.id;
+        INSERT INTO memories_fts(rowid, content, category) VALUES (new.id, new.content, new.category);
+    END;
 """
 
 
@@ -131,6 +145,56 @@ def add_memory(content: str, category: str='general', importance: float=0.5, tag
         _fts_sync(conn, mid, content, category)
         conn.commit()
         return {'status': 'added', 'id': mid, 'tags': tags_str}
+
+
+def update_memory(memory_id: int, content: Optional[str] = None,
+                  category: Optional[str] = None, importance: Optional[float] = None,
+                  tags=None) -> dict:
+    """Update a memory row (FTS is kept in sync via trg_memories_au).
+
+    B5: previously UPDATEs on memories never rewrote the FTS index, so old
+    content could still be matched and return new text. The AFTER UPDATE
+    trigger keeps the two tables consistent for this and any other writer.
+    """
+    tags_str = _normalize_tags(tags) if tags is not None else None
+    with _get_conn() as conn:
+        row = conn.execute('SELECT * FROM memories WHERE id=?', (memory_id,)).fetchone()
+        if not row:
+            return {'status': 'not_found', 'id': memory_id}
+        conn.execute(
+            'UPDATE memories SET content=?, category=?, importance=?, tags=? WHERE id=?',
+            (row['content'] if content is None else content,
+             row['category'] if category is None else category,
+             row['importance'] if importance is None else importance,
+             row['tags'] if tags_str is None else tags_str,
+             memory_id),
+        )
+        conn.commit()
+        return {'status': 'updated', 'id': memory_id}
+
+
+def delete_memory(memory_id: int) -> dict:
+    """Delete a memory row (FTS is removed via trg_memories_ad)."""
+    with _get_conn() as conn:
+        cur = conn.execute('DELETE FROM memories WHERE id=?', (memory_id,))
+        conn.commit()
+        return {'status': 'deleted' if cur.rowcount else 'not_found', 'id': memory_id}
+
+
+def rebuild_fts() -> dict:
+    """Repair the FTS index from the main table (fixes existing desync).
+
+    B5: the historical FTS desync (37 dead rows) predates the triggers — run
+    this once to resync every row, or call it opportunistically after any
+    external SQL cleanup that bypassed memory.py.
+    """
+    with _get_conn() as conn:
+        conn.execute('DELETE FROM memories_fts')
+        rows = conn.execute('SELECT id, content, category FROM memories').fetchall()
+        for r in rows:
+            _fts_sync(conn, r['id'], r['content'], r['category'])
+        conn.commit()
+        return {'status': 'rebuilt', 'rows': len(rows)}
 
 
 def search_memories(query: str, limit: int=10, tag: Optional[str]=None) -> dict:

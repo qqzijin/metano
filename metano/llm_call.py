@@ -56,11 +56,13 @@ _COST_PER_MILLION = {
 _DEFAULT_COST = (3.0, 15.0)
 
 
-def _estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
+def _estimate_cost(model: str, input_tokens: int, output_tokens: int,
+                   cache_read_tokens: int = 0) -> float:
     """Estimate USD cost from token counts (config price table preferred)."""
     try:
         from .model_router import model_router
-        return model_router.estimate_cost(model, input_tokens, output_tokens)
+        return model_router.estimate_cost(model, input_tokens, output_tokens,
+                                          cache_read_tokens)
     except Exception:
         logger.exception('llm_call.py:57 exception')
     input_price, output_price = _COST_PER_MILLION.get(model, _DEFAULT_COST)
@@ -68,8 +70,13 @@ def _estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
 
 
 def _record_cost(model: str, protocol: str, input_tokens: int, output_tokens: int,
-                 cost: float):
-    """Write one audit entry for an LLM API call (best-effort)."""
+                 cache_read_tokens: int, cost: float):
+    """Write one audit entry for an LLM API call (best-effort).
+
+    M6: includes cache_read_tokens so the engine cost is not systematically
+    under-reported (the /v1/messages response carries cache_read_input_tokens).
+    M13: a failed audit write is logged, never silently swallowed.
+    """
     try:
         from .evo_models import add_audit
         add_audit(LLM_AUDIT_PHASE, 'api_call', json.dumps({
@@ -77,9 +84,10 @@ def _record_cost(model: str, protocol: str, input_tokens: int, output_tokens: in
             'protocol': protocol,
             'input_tokens': input_tokens,
             'output_tokens': output_tokens,
+            'cache_read_tokens': cache_read_tokens,
         }, ensure_ascii=False), cost=cost, model=model)
     except Exception:
-        pass
+        logger.exception('llm_call: failed to record audit cost entry')
 
 
 def _call_anthropic(base_url: str, api_key: str, model: str, system_prompt: str,
@@ -114,6 +122,8 @@ def _call_anthropic(base_url: str, api_key: str, model: str, system_prompt: str,
     usage_norm = {
         'input_tokens': usage.get('input_tokens', 0) or 0,
         'output_tokens': usage.get('output_tokens', 0) or 0,
+        # Anthropic /v1/messages reports cache reads as a per-request counter.
+        'cache_read_tokens': usage.get('cache_read_input_tokens', 0) or 0,
     }
     return text, usage_norm
 
@@ -147,6 +157,10 @@ def _call_openai(base_url: str, api_key: str, model: str, system_prompt: str,
     usage_norm = {
         'input_tokens': usage.get('prompt_tokens', 0) or 0,
         'output_tokens': usage.get('completion_tokens', 0) or 0,
+        # OpenAI-compatible proxies may expose prompt-cache hits under a few
+        # names; best-effort so engine cost is not under-reported.
+        'cache_read_tokens': (usage.get('prompt_tokens_details', {}) or {}).get('cached_tokens', 0)
+                             or usage.get('cache_read_input_tokens', 0) or 0,
     }
     return text, usage_norm
 
@@ -163,6 +177,15 @@ def call_llm(system_prompt: str, user_prompt: str, max_tokens: int = 3000,
     base_url, api_key, model, protocol = _resolve_provider()
     if not api_key:
         return '[]', 0.0
+    # M5: cost circuit breaker pre-check — block every LLM call while the
+    # evolution engine is cost-paused/stopped, instead of only the 03:03 daily
+    # maintenance pass. Lazy import avoids a circular dependency at module load.
+    try:
+        from .evolution import _get_circuit_state
+        if _get_circuit_state().get('state') in ('paused', 'stopped'):
+            return '[]', 0.0
+    except Exception:
+        pass
     cost = 0.0
     try:
         if protocol == 'openai':
@@ -173,8 +196,9 @@ def call_llm(system_prompt: str, user_prompt: str, max_tokens: int = 3000,
                                           user_prompt, max_tokens, timeout)
         input_tokens = usage.get('input_tokens', 0) or 0
         output_tokens = usage.get('output_tokens', 0) or 0
-        cost = _estimate_cost(model, input_tokens, output_tokens)
-        _record_cost(model, protocol, input_tokens, output_tokens, cost)
+        cache_read_tokens = usage.get('cache_read_tokens', 0) or 0
+        cost = _estimate_cost(model, input_tokens, output_tokens, cache_read_tokens)
+        _record_cost(model, protocol, input_tokens, output_tokens, cache_read_tokens, cost)
         return text, cost
     except Exception:
         logger.exception("llm_call: API request failed")

@@ -25,12 +25,22 @@ def _sanitize_markers(text: str) -> str:
 def _ensure_dirs():
     EVOLUTION_DIR.mkdir(parents=True, exist_ok=True)
 
-def _log(action: str, details: dict):
-    """Append to evolution audit log."""
+def _log(action: str, details: dict = None):
+    """Append to evolution audit log.
+
+    A9: unified schema with evolution._log — every line carries a ``phase``
+    and the payload is stored under a nested ``detail`` key (not splatted into
+    top-level keys). ``action`` is always a string (callers that passed a dict
+    produced mixed-schema rows; those are now serialized).
+    """
     _ensure_dirs()
-    entry = {'timestamp': time.time(), 'action': action, **details}
+    if not isinstance(action, str):
+        action = json.dumps(action, ensure_ascii=False, default=str)
+    entry = {'timestamp': time.time(), 'phase': 'adapter', 'action': action}
+    if details:
+        entry['detail'] = details
     with open(LOG_FILE, 'a') as f:
-        f.write(json.dumps(entry, ensure_ascii=False) + '\n')
+        f.write(json.dumps(entry, ensure_ascii=False, default=str) + '\n')
 
 def beliefs_to_claude_md_injection(beliefs: list[dict]) -> str:
     """Generate the marked section content for CLAUDE.md from beliefs and agent_rules."""
@@ -246,7 +256,13 @@ def load_suggestions() -> list[dict]:
 
 
 def approve_suggestion(suggestion_id: str) -> dict | None:
-    """Mark a proposal as approved (legacy helper used by MCP/behavior routes)."""
+    """Mark a proposal as approved (legacy helper used by MCP/behavior routes).
+
+    A8: the approved→applied closure for rule-type proposals now lives in
+    evo_models.update_proposal_status (which every approval path, including the
+    web UI, calls), so rule proposals are applied immediately after approval and
+    the state machine always closes. Apply is idempotent.
+    """
     for p in get_proposals():
         if str(p['id']) == suggestion_id:
             update_proposal_status(p['id'], 'approved')
@@ -400,10 +416,21 @@ def apply_proposal(proposal_id: int) -> dict:
     content = target['content']
     detail = target.get('detail', '')
 
-    # Record baseline metrics before applying
+    # Record baseline metrics before applying (A7: idempotent — a proposal that
+    # already has a baseline is never baselined again, so a double-apply (e.g.
+    # bulk apply + manual retry) no longer writes duplicate 21ms-apart rows).
     try:
-        from .evolution_eval import record_baseline
-        record_baseline(proposal_id)
+        from .evo_models import _get_conn
+        _c = _get_conn()
+        try:
+            exists = _c.execute(
+                'SELECT 1 FROM effect_baselines WHERE proposal_id=? LIMIT 1',
+                (proposal_id,)).fetchone()
+        finally:
+            _c.close()
+        if not exists:
+            from .evolution_eval import record_baseline
+            record_baseline(proposal_id)
     except Exception:
         logger.exception()
 
@@ -441,8 +468,17 @@ def apply_proposal(proposal_id: int) -> dict:
 
 
 def _apply_behavior_improvement(content: str, detail: str) -> dict:
-    """Add behavior rule to evo.db only (not memory files)."""
+    """Add behavior rule to evo.db only (not memory files).
+
+    A8: idempotent — if the exact rule content already exists, no duplicate is
+    created; the proposal is still recorded as applied (with the existing
+    rule_id) so the approved→applied state machine can close even for
+    re-queued proposals whose rule was added by another path.
+    """
     from .evo_models import add_rule as add_evo_rule
+    for r in get_agent_rules(kind='behavior'):
+        if r.get('content') == content:
+            return {'status': 'applied', 'type': 'behavior_improvement', 'rule_id': r['id'], 'duplicate': True}
     rule_id = add_evo_rule(kind='behavior', content=content, source='evolution_proposal')
     return {'status': 'applied', 'type': 'behavior_improvement', 'rule_id': rule_id}
 
@@ -476,8 +512,14 @@ def _apply_config_change(content: str, detail: str) -> dict:
 
 
 def _apply_rule_add(content: str, detail: str) -> dict:
-    """Add agent rule to evo.db only (not memory files)."""
+    """Add agent rule to evo.db only (not memory files).
+
+    A8: idempotent — same dedup as _apply_behavior_improvement.
+    """
     from .evo_models import add_rule as add_evo_rule
+    for r in get_agent_rules(kind='strategy'):
+        if r.get('content') == content:
+            return {'status': 'applied', 'type': 'rule_add', 'rule_id': r['id'], 'duplicate': True}
     rule_id = add_evo_rule(kind='strategy', content=content, source='evolution_proposal')
     return {'status': 'applied', 'type': 'rule_add', 'rule_id': rule_id}
 

@@ -19,6 +19,14 @@ BUILTIN_PRICES = {
 }
 DEFAULT_PRICE = (3.0, 15.0, 0.3)  # input, output, cache_read
 
+# Model names that carry NO real cost attribution — sessions tagged with these
+# must never be priced at the DEFAULT sonnet rate (B3: <synthetic> sessions
+# were inflated to $254). These are placeholder / test markers, not real models.
+_PLACEHOLDER_MODELS = {
+    '', '<synthetic>', 'synthetic', 'unknown', 'test', 'fake-model',
+    'null', 'none', 'undefined', 'placeholder', 'n/a',
+}
+
 
 @dataclass
 class ModelProvider:
@@ -34,6 +42,7 @@ class ModelProvider:
     price_cache_read: float = 0.3
     proxy: str = ''  # optional HTTP(S) proxy, injected as env only when calling this provider
     protocol: str = 'anthropic'  # 'anthropic' (claude CLI /v1/messages) or 'openai' (HTTP /v1/chat/completions)
+    enabled: bool = True  # False = keep price table entry but never route calls to it
 
 class ModelRouter:
 
@@ -52,26 +61,31 @@ class ModelRouter:
                     config = yaml.safe_load(f) or {}
                 models_config = config.get('models', {})
                 for name, cfg in models_config.items():
-                    if cfg.get('enabled', True):
-                        # Effective price: explicit config price → builtin table → default
-                        # Missing individual fields are filled from builtin/default.
-                        price = cfg.get('price') or {}
-                        in_p = price.get('input')
-                        out_p = price.get('output')
-                        cache_p = price.get('cache_read')
-                        if in_p is None or out_p is None or cache_p is None:
-                            builtin = BUILTIN_PRICES.get(cfg.get('model', ''))
-                            if builtin is None:
-                                builtin = DEFAULT_PRICE
-                            if in_p is None:
-                                in_p = builtin[0]
-                            if out_p is None:
-                                out_p = builtin[1]
-                            if cache_p is None:
-                                cache_p = builtin[2]
-                        self._providers[name] = ModelProvider(name=name, base_url=cfg.get('base_url', ''), api_key=cfg.get('api_key', ''), model=cfg.get('model', ''), max_tokens=cfg.get('max_tokens', 4096), supports_vision=cfg.get('supports_vision', False), supports_tools=cfg.get('supports_tools', True), price_input=in_p, price_output=out_p, price_cache_read=cache_p, proxy=cfg.get('proxy', ''), protocol=cfg.get('protocol', 'anthropic'))
-                        if cfg.get('default', False):
-                            self._default = name
+                    # B2: load ALL providers — including enabled:false — into the
+                    # price table so sessions that used a now-disabled provider are
+                    # still priced at its configured rates, not the DEFAULT sonnet
+                    # rate (which inflated gpt-5.6-luna 15x). The `enabled` flag
+                    # gates *routing* (get_provider), never price lookup.
+                    enabled = bool(cfg.get('enabled', True))
+                    # Effective price: explicit config price → builtin table → default
+                    # Missing individual fields are filled from builtin/default.
+                    price = cfg.get('price') or {}
+                    in_p = price.get('input')
+                    out_p = price.get('output')
+                    cache_p = price.get('cache_read')
+                    if in_p is None or out_p is None or cache_p is None:
+                        builtin = BUILTIN_PRICES.get(cfg.get('model', ''))
+                        if builtin is None:
+                            builtin = DEFAULT_PRICE
+                        if in_p is None:
+                            in_p = builtin[0]
+                        if out_p is None:
+                            out_p = builtin[1]
+                        if cache_p is None:
+                            cache_p = builtin[2]
+                    self._providers[name] = ModelProvider(name=name, base_url=cfg.get('base_url', ''), api_key=cfg.get('api_key', ''), model=cfg.get('model', ''), max_tokens=cfg.get('max_tokens', 4096), supports_vision=cfg.get('supports_vision', False), supports_tools=cfg.get('supports_tools', True), price_input=in_p, price_output=out_p, price_cache_read=cache_p, proxy=cfg.get('proxy', ''), protocol=cfg.get('protocol', 'anthropic'), enabled=enabled)
+                    if enabled and cfg.get('default', False):
+                        self._default = name
         except Exception:
             logger.exception()
         if 'default' not in self._providers:
@@ -84,10 +98,19 @@ class ModelRouter:
             self._providers['default'] = ModelProvider(name='default', base_url=os.environ.get('ANTHROPIC_BASE_URL', ''), api_key=os.environ.get('ANTHROPIC_API_KEY', ''), model=model_name, price_input=in_p, price_output=out_p, price_cache_read=cache_p)
 
     def get_provider(self, name: str='') -> ModelProvider:
-        """Get a model provider by name."""
-        if name and name in self._providers:
+        """Get a model provider by name.
+
+        Only enabled providers are routable: a disabled provider (enabled:false)
+        keeps its price-table entry for cost accounting but is never returned
+        here, so no call is ever routed to it.
+        """
+        if name and name in self._providers and self._providers[name].enabled:
             return self._providers[name]
-        return self._providers.get(self._default, self._providers['default'])
+        d = self._providers.get(self._default)
+        if d and d.enabled:
+            return d
+        # Last resort: the env-based 'default' provider (always enabled).
+        return self._providers['default']
 
     def set_default(self, name: str):
         """Set a provider as the default (persisted to config, best-effort)."""
@@ -130,16 +153,24 @@ class ModelRouter:
             logger.exception('failed to persist default model')
 
     def list_providers(self) -> list[dict]:
-        """List all configured model providers."""
-        return [{'name': p.name, 'model': p.model, 'base_url': p.base_url[:30] + '...' if p.base_url else '', 'max_tokens': p.max_tokens, 'supports_vision': p.supports_vision, 'is_default': p.name == self._default, 'price': {'input': p.price_input, 'output': p.price_output, 'cache_read': p.price_cache_read}} for p in self._providers.values()]
+        """List routable (enabled) model providers."""
+        return [{'name': p.name, 'model': p.model, 'base_url': p.base_url[:30] + '...' if p.base_url else '', 'max_tokens': p.max_tokens, 'supports_vision': p.supports_vision, 'is_default': p.name == self._default, 'enabled': True, 'price': {'input': p.price_input, 'output': p.price_output, 'cache_read': p.price_cache_read}} for p in self._providers.values() if p.enabled]
 
     @staticmethod
     def estimate_cost(model: str, input_tokens: int, output_tokens: int, cache_read_tokens: int = 0) -> float:
         """Estimate USD cost for a model + token counts.
 
-        Resolution order: configured provider whose ``model`` matches →
-        builtin pricing table → default price.
+        Resolution order: configured provider whose ``model`` matches (including
+        ``enabled:false`` providers — their price table must stay authoritative
+        for sessions that used them) → builtin pricing table → default price.
+
+        Placeholder model names (``<synthetic>``, ``test``, empty, …) return 0.0:
+        they carry no real cost attribution and must never fall through to the
+        DEFAULT sonnet rate (B3).
         """
+        key = (model or '').strip().lower()
+        if key in _PLACEHOLDER_MODELS:
+            return 0.0
         input_price = output_price = cache_price = None
         try:
             for p in model_router._providers.values():

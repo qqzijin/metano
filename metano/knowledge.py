@@ -522,6 +522,10 @@ def knowledge_ingest(path: str, title: str = "", doc_type: str = "auto") -> dict
           conn.execute("SELECT created_at FROM documents WHERE doc_id=?", (doc_id,)).fetchone()[0],
           now))
 
+    # Re-ingesting a document must not strand graph nodes pointing at the old
+    # version's chunks (B1): drop the previous graph for this doc first.
+    _cascade_delete_doc_graph(conn, doc_id)
+
     # Delete old chunks and insert new ones
     conn.execute("DELETE FROM chunks WHERE doc_id=?", (doc_id,))
     for i, chunk in enumerate(chunks):
@@ -662,13 +666,33 @@ def knowledge_list(doc_type: str = "") -> dict:
     } for r in rows]}
 
 
+def _cascade_delete_doc_graph(conn, doc_id: str):
+    """Delete every entity sourced from ``doc_id`` and relationships touching
+    them. B1: without this, deleting a document left orphan entities (414/529)
+    and their relationships in the graph, inflating graph_stats with fake size.
+    """
+    eids = [r["entity_id"] for r in conn.execute(
+        "SELECT entity_id FROM entities WHERE source_doc_id=?", (doc_id,)
+    ).fetchall()]
+    if eids:
+        ph = ",".join("?" * len(eids))
+        conn.execute(
+            f"DELETE FROM relationships WHERE source_id IN ({ph}) OR target_id IN ({ph})",
+            eids + eids,
+        )
+        conn.execute(f"DELETE FROM entities WHERE entity_id IN ({ph})", eids)
+
+
 def knowledge_delete(doc_id: str) -> dict:
-    """Delete a document and its chunks from the knowledge base."""
+    """Delete a document, its chunks, and its knowledge-graph nodes from the KB."""
     conn = _get_kb_conn()
-    conn.execute("DELETE FROM chunks WHERE doc_id=?", (doc_id,))
-    conn.execute("DELETE FROM documents WHERE doc_id=?", (doc_id,))
-    conn.commit()
-    conn.close()
+    try:
+        _cascade_delete_doc_graph(conn, doc_id)
+        conn.execute("DELETE FROM chunks WHERE doc_id=?", (doc_id,))
+        conn.execute("DELETE FROM documents WHERE doc_id=?", (doc_id,))
+        conn.commit()
+    finally:
+        conn.close()
     return {"status": "deleted", "doc_id": doc_id}
 
 
