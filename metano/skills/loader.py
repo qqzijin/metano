@@ -164,11 +164,3 @@ class SkillLoader:
         if note:
             content = f'{note}\n\n{content}'
         return content
-
-    def list_by_category(self) -> dict[str, list[SkillRecord]]:
-        self.discover_all()
-        by_cat: dict[str, list[SkillRecord]] = {}
-        for rec in self._cache.values():
-            cat = rec.category or 'uncategorized'
-            by_cat.setdefault(cat, []).append(rec)
-        return by_cat

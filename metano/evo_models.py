@@ -247,11 +247,6 @@ def toggle_rule(rule_id: int, active: bool):
     conn.close()
 
 
-def delete_rule(rule_id: int):
-    conn = _get_conn()
-    conn.execute("DELETE FROM agent_rules WHERE id = ?", (rule_id,))
-    conn.commit()
-    conn.close()
 
 
 def rule_count(kind: str = None) -> int:
@@ -556,22 +551,6 @@ def get_audit_cost_since(cutoff: float, phases: tuple = ()) -> float:
 
 # ── Cron Jobs ──
 
-def sync_cron_jobs(jobs: list[dict]):
-    conn = _get_conn()
-    for j in jobs:
-        schedule = j.get('schedule', {})
-        kind = schedule.get('kind', 'cron') if isinstance(schedule, dict) else 'cron'
-        expr = schedule.get('expr', '0 0 * * *') if isinstance(schedule, dict) else str(schedule)
-        conn.execute(
-            "INSERT OR REPLACE INTO cron_jobs (id, name, action, schedule_kind, schedule_expr, "
-            "enabled, prompt, last_run_at, next_run_at, last_error) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (j.get('id', ''), j.get('name', ''), j.get('action', ''), kind, expr,
-             1 if j.get('enabled', True) else 0, j.get('prompt', ''),
-             j.get('last_run_at'), j.get('next_run_at'), j.get('last_error'))
-        )
-    conn.commit()
-    conn.close()
 
 
 def get_cron_jobs() -> list[dict]:
@@ -590,32 +569,6 @@ def get_cron_jobs() -> list[dict]:
     return result
 
 
-def update_cron_job(job_id: str, **kwargs) -> bool:
-    conn = _get_conn()
-    row = conn.execute("SELECT id FROM cron_jobs WHERE id = ?", (job_id,)).fetchone()
-    if not row:
-        conn.close()
-        return False
-    sets, vals = [], []
-    for k, v in kwargs.items():
-        if k == 'enabled':
-            sets.append("enabled = ?")
-            vals.append(1 if v else 0)
-        elif k == 'schedule':
-            sets.append("schedule_kind = ?")
-            vals.append(v.get('kind', 'cron') if isinstance(v, dict) else 'cron')
-            sets.append("schedule_expr = ?")
-            vals.append(v.get('expr', '') if isinstance(v, dict) else str(v))
-        else:
-            if k not in ('name', 'action', 'prompt', 'last_run_at', 'next_run_at', 'last_error'):
-                continue
-            sets.append(f"{k} = ?")
-            vals.append(v)
-    if sets:
-        conn.execute(f"UPDATE cron_jobs SET {', '.join(sets)} WHERE id = ?", vals + [job_id])
-        conn.commit()
-    conn.close()
-    return True
 
 
 # ── self_modify_events CRUD ──

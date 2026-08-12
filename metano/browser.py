@@ -47,16 +47,6 @@ async def _ensure_page():
         logger.exception()
         raise RuntimeError(f'Failed to launch Playwright: {e}')
 
-async def pw_navigate(url: str, wait_for: str='load') -> dict:
-    """Navigate to URL and return page info."""
-    page = await _ensure_page()
-    try:
-        await page.goto(url, wait_until=wait_for, timeout=30000)
-        title = await page.title()
-        return {'url': page.url, 'title': title, 'status': 'ok'}
-    except Exception as e:
-        logger.exception()
-        return {'url': url, 'title': '', 'status': 'error', 'error': str(e)}
 
 async def pw_screenshot(url: str='', full_page: bool=True, selector: str='') -> dict:
     """Take screenshot. If url provided, navigate first."""
@@ -127,21 +117,6 @@ async def pw_get_content(url: str='') -> dict:
         logger.exception()
         return {'status': 'error', 'error': str(e)}
 
-async def pw_close() -> dict:
-    """Close the browser instance."""
-    global _playwright_instance, _browser, _page
-    try:
-        if _page and (not _page.is_closed()):
-            await _page.close()
-        if _browser:
-            await _browser.close()
-        if _playwright_instance:
-            await _playwright_instance.stop()
-        _page = _browser = _playwright_instance = None
-        return {'status': 'closed'}
-    except Exception as e:
-        logger.exception()
-        return {'status': 'error', 'error': str(e)}
 
 def web_browse(url: str, wait_for: str='load') -> dict:
     try:

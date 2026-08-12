@@ -11,6 +11,7 @@ the existing Claude Code CLI, remote targets (e.g. ``remote-<host>``) are a
 placeholder that will be wired to MCP/A2A in a later iteration.
 """
 
+import os
 import time
 import uuid
 from typing import Optional
@@ -90,9 +91,6 @@ def _conn(db_path=None):
 
 # ── Policy ──────────────────────────────────────────────────────────────────
 
-def can_manage(role: str) -> bool:
-    """Only admins manage the collaboration control plane."""
-    return role == "admin"
 
 
 def task_type_allowed(task_type: str, role: str) -> bool:
@@ -103,10 +101,6 @@ def task_type_allowed(task_type: str, role: str) -> bool:
 
 # ── Audit (reuses metano.auth._audit -> AUDIT_LOG JSONL) ────────────────────
 
-def audit_collab(action: str, user_id: str, details: dict):
-    """Write a collaboration-scoped audit entry (prefixed with ``collab_``)."""
-    from .auth import _audit
-    _audit(action, user_id, details or {})
 
 
 def list_audit(limit: int = 100, action_prefix: str = "collab_") -> list[dict]:
@@ -267,6 +261,78 @@ def is_local_target(target: str) -> bool:
     return t in ("", "local", "localhost", "127.0.0.1") or t.startswith("local")
 
 
+def _dispatch_remote_task(task: dict, timeout: int = 120) -> dict:
+    """Dispatch a task to a remote metano via A2A (message/send + tasks/get).
+
+    ``task['target']`` is ``remote-<host>`` or ``remote-<host>:<port>``. The
+    A2A Bearer token is read from ``METANO_A2A_TOKEN`` (issue one on the REMOTE
+    via its ``POST /api/a2a/token`` with scope ``a2a:task``), so cross-device
+    auth does not require the two instances to share a JWT secret.
+    """
+    import json
+    import urllib.request
+    import urllib.error
+    host = (task.get("target") or "remote-localhost").strip()
+    if host.startswith("remote-"):
+        host = host[len("remote-"):]
+    if ":" not in host:
+        host = f"{host}:9120"
+    base = f"http://{host}/a2a"
+    token = os.environ.get("METANO_A2A_TOKEN", "")
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    prompt = task.get("prompt") or ""
+    rpc_id = f'collab-{task.get("id")}'
+
+    def _rpc(method: str, params: dict) -> dict:
+        body = json.dumps({"jsonrpc": "2.0", "id": rpc_id, "method": method, "params": params}).encode()
+        req = urllib.request.Request(f"{base}/rpc", data=body, headers=headers, method="POST")
+        # Disable the system proxy (HTTP_PROXY) explicitly: urllib does NOT honor
+        # NO_PROXY (curl does), and A2A cross-device traffic is typically LAN
+        # direct. Otherwise an env proxy routes LAN traffic through the WAN proxy
+        # and times out.
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode())
+
+    try:
+        data = _rpc("message/send", {"message": {"parts": [{"text": prompt}], "metadata": {"timeout": timeout}}})
+    except urllib.error.HTTPError as e:
+        return {"status": "failed", "mode": "remote", "error": f"HTTP {e.code}: {e.read().decode()[:200]}"}
+    except Exception as e:
+        return {"status": "failed", "mode": "remote", "error": f"connection: {e}"}
+
+    result = data.get("result") or {}
+    remote_id = result.get("id")
+    if not remote_id:
+        return {"status": "failed", "mode": "remote", "error": f"remote did not return task id: {data.get('error') or result}"}
+
+    # Poll tasks/get until terminal or deadline.
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            g = _rpc("tasks/get", {"id": remote_id})
+        except Exception as e:
+            return {"status": "failed", "mode": "remote", "error": f"poll: {e}"}
+        t = g.get("result") or {}
+        state = (t.get("status") or {}).get("state", "")
+        if state in ("completed", "failed", "canceled"):
+            text = ""
+            for art in t.get("artifacts") or []:
+                for part in art.get("parts") or []:
+                    text += part.get("text", "")
+            return {
+                "status": "completed" if state == "completed" else "failed",
+                "mode": "remote", "remote_id": remote_id,
+                "state": state,
+                "result": text.strip(),
+            }
+        time.sleep(2)
+    return {"status": "timeout", "mode": "remote", "remote_id": remote_id,
+            "error": "poll deadline exceeded"}
+
+
 def execute_task(task_id: str, timeout: int = 120) -> dict:
     """Execute a task.
 
@@ -283,14 +349,21 @@ def execute_task(task_id: str, timeout: int = 120) -> dict:
         return {"task": None, "execution": {"error": "task not found"}}
 
     if not is_local_target(task["target"]):
-        return {
-            "task": task,
-            "execution": {
-                "mode": "remote_placeholder",
-                "target": task["target"],
-                "note": "跨设备执行尚未接入，将后续通过 MCP/A2A 派发（接口已预留）",
-            },
-        }
+        # Remote dispatch via A2A (message/send + tasks/get poll). The remote
+        # Bearer token comes from METANO_A2A_TOKEN (issued on the remote).
+        started = time.time()
+        try:
+            update_status(task_id, "running")
+            exec_result = _dispatch_remote_task(task, timeout)
+            if exec_result.get("status") == "completed":
+                record_result(task_id, result=exec_result.get("result", ""), cost=0.0, status="completed")
+            else:
+                record_result(task_id, result="", error=exec_result.get("error", exec_result.get("status", "")), status="failed")
+            exec_result["duration_seconds"] = round(time.time() - started, 3)
+            return {"task": get_task(task_id), "execution": exec_result}
+        except Exception as e:
+            record_result(task_id, result="", error=f"Remote dispatch error: {e}", status="failed")
+            return {"task": get_task(task_id), "execution": {"mode": "remote", "status": "failed", "error": str(e)}}
 
     # Local execution via existing claude CLI call logic.
     started = time.time()

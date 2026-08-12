@@ -153,9 +153,6 @@ class SecurityManager:
         ]
 
 
-def role_to_tier(role: str) -> str:
-    """Map JWT role to security tier."""
-    return {"admin": TIER_ADMIN, "user": TIER_USER, "guest": TIER_GUEST}.get(role, TIER_GUEST)
 
 
 security = SecurityManager()

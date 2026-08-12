@@ -19,6 +19,9 @@ import {
   useEvolutionPause,
   useEvolutionResume,
   useEvolutionCorrect,
+  useCostCircuit,
+  useUpdateCostCircuitConfig,
+  useBehaviorAnalyze,
 } from '../api/hooks';
 import type { AgentRule, KnowledgeGap, ActionLogEntry, Proposal } from '../api/client';
 import { PageHeader } from '@/components/layout/PageHeader';
@@ -27,11 +30,12 @@ import { SelfModifyPanel } from '@/components/SelfModifyPanel';
 import { StatCard } from '@/components/shared/StatCard';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
   Loader2, Zap, Compass, User, ListChecks, ShieldCheck, Inbox,
-  Boxes, Puzzle, Clock, Route, MessageSquareWarning,
+  Boxes, Puzzle, Clock, Route, MessageSquareWarning, DollarSign,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -108,11 +112,15 @@ function PriorityBadge({ priority }: { priority: string }) {
 // ── Overview ──
 function OverviewTab() {
   const { data: status, isLoading, isError } = useEvolution();
-  const { data: patterns } = useBehaviorPatterns();
+  const { data: patterns, refetch: refetchPatterns } = useBehaviorPatterns();
+  const analyzeMut = useBehaviorAnalyze();
   const runMut = useEvolutionRun();
   const pauseMut = useEvolutionPause();
   const resumeMut = useEvolutionResume();
   const correctMut = useEvolutionCorrect();
+  const { data: circuit } = useCostCircuit();
+  const circuitMut = useUpdateCostCircuitConfig();
+  const [costConfig, setCostConfig] = useState<{ warn?: number; pause?: number; stop?: number; auto_resume_hours?: number }>({});
   const [correction, setCorrection] = useState('');
   const submitCorrection = async () => {
     if (!correction.trim()) return;
@@ -179,6 +187,19 @@ function OverviewTab() {
         {/* 进化运行控制：后端 /evolution/run|pause|resume API 一直存在，但 UI 从未接上——
             "已暂停"只有徽标没有控制按钮。这里补全闭环。 */}
         <span className="ml-auto flex items-center gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={analyzeMut.isPending}
+            title="LLM 分析行为模式并给出规则建议"
+            onClick={async () => {
+              try { await analyzeMut.mutateAsync(7); toast.success('行为分析完成'); refetchPatterns(); }
+              catch { toast.error('分析失败'); }
+            }}
+          >
+            {analyzeMut.isPending ? <Loader2 className="size-3.5 animate-spin mr-1" /> : <Compass className="size-3.5 mr-1" />}
+            分析行为
+          </Button>
           <Button
             size="sm"
             variant="outline"
@@ -259,6 +280,67 @@ function OverviewTab() {
             {correctMut.isPending ? <Loader2 className="size-3.5 animate-spin mr-1" /> : <Zap className="size-3.5 mr-1" />}
             提交纠正
           </Button>
+        </CardContent>
+      </Card>
+
+      {/* 成本熔断：状态 + 阈值可配置（后端 API 存在但此前 UI 未接） */}
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm flex items-center gap-2">
+            <DollarSign className="size-4 text-primary" /> 成本熔断
+            {circuit && (
+              <Badge variant={circuit.state === 'normal' ? 'secondary' : circuit.state === 'warning' ? 'default' : 'destructive'}>
+                {circuit.state === 'normal' ? '正常' : circuit.state === 'warning' ? '警告' : circuit.state === 'paused' ? '已暂停' : '已停止'}
+              </Badge>
+            )}
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="pt-0 space-y-3">
+          {circuit ? (
+            <>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                <div className="rounded-lg bg-muted/50 p-2.5">
+                  <div className="text-muted-foreground">今日成本</div>
+                  <div className="text-base font-semibold text-foreground">${circuit.daily_cost.toFixed(4)}</div>
+                </div>
+                <div className="rounded-lg bg-muted/50 p-2.5">
+                  <div className="text-muted-foreground">警告阈值</div>
+                  <div className="text-base font-semibold text-foreground">${circuit.warn_threshold}</div>
+                </div>
+                <div className="rounded-lg bg-muted/50 p-2.5">
+                  <div className="text-muted-foreground">暂停阈值</div>
+                  <div className="text-base font-semibold text-foreground">${circuit.pause_threshold}</div>
+                </div>
+                <div className="rounded-lg bg-muted/50 p-2.5">
+                  <div className="text-muted-foreground">停止阈值</div>
+                  <div className="text-base font-semibold text-foreground">${circuit.stop_threshold}</div>
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Input type="number" placeholder={`警告 $${circuit.warn_threshold}`} value={costConfig.warn ?? ''}
+                  onChange={(e) => setCostConfig((c) => ({ ...c, warn: Number(e.target.value) || undefined }))}
+                  className="w-24 text-xs" title="警告阈值(美元)" />
+                <Input type="number" placeholder={`暂停 $${circuit.pause_threshold}`} value={costConfig.pause ?? ''}
+                  onChange={(e) => setCostConfig((c) => ({ ...c, pause: Number(e.target.value) || undefined }))}
+                  className="w-24 text-xs" title="暂停阈值(美元)" />
+                <Input type="number" placeholder={`停止 $${circuit.stop_threshold}`} value={costConfig.stop ?? ''}
+                  onChange={(e) => setCostConfig((c) => ({ ...c, stop: Number(e.target.value) || undefined }))}
+                  className="w-24 text-xs" title="停止阈值(美元)" />
+                <Input type="number" placeholder={`${circuit.auto_resume_hours}h`} value={costConfig.auto_resume_hours ?? ''}
+                  onChange={(e) => setCostConfig((c) => ({ ...c, auto_resume_hours: Number(e.target.value) || undefined }))}
+                  className="w-20 text-xs" title="自动恢复(小时)" />
+                <Button size="sm" variant="outline" disabled={circuitMut.isPending}
+                  onClick={async () => {
+                    try { await circuitMut.mutateAsync(costConfig); toast.success('熔断阈值已更新'); setCostConfig({}); }
+                    catch { toast.error('更新失败'); }
+                  }}>
+                  保存阈值
+                </Button>
+              </div>
+            </>
+          ) : (
+            <div className="text-xs text-muted-foreground">加载中…</div>
+          )}
         </CardContent>
       </Card>
     </div>

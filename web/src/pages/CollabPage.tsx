@@ -217,10 +217,10 @@ export default function CollabPage() {
         body: JSON.stringify({ timeout: 120 }),
       });
       const exec = res.execution;
-      if (exec?.mode === "remote_placeholder") {
-        toast.info(exec.note || "跨设备执行尚未接入");
-      } else if (exec?.status === "failed") {
-        toast.error(exec.error || "执行失败");
+      if (exec?.status === "failed" || exec?.mode === "timeout") {
+        toast.error(exec.error || exec.status || "执行失败");
+      } else if (exec?.status === "completed") {
+        toast.success(exec.mode === "remote" ? "远程设备执行完成" : "执行完成");
       } else {
         toast.success("执行完成");
       }

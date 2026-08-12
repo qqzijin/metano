@@ -252,7 +252,11 @@ class ModelRouter:
         if proxy and proxy.lower() not in ('direct', 'none'):
             opener = urllib.request.build_opener(urllib.request.ProxyHandler({'http': proxy, 'https': proxy}))
         else:
-            opener = urllib.request.build_opener()
+            # No explicit proxy: bypass the env proxy (HTTP_PROXY). urllib does
+            # not honor NO_PROXY the way curl does, so a local/LAN endpoint
+            # (e.g. ollama-local) would otherwise be routed through the WAN
+            # proxy and time out.
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         try:
             with opener.open(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode())

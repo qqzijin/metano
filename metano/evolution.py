@@ -111,66 +111,6 @@ def _log(phase: str, action: str, detail: dict = None, cost: float = 0, model: s
     with open(LOG_FILE, 'a') as f:
         f.write(json.dumps(entry, ensure_ascii=False) + '\n')
 
-def session_start():
-    """Called from SessionStart hook.
-
-    1. Zero-cost keyword correction scan (no LLM) on the most recent unharvested
-       session — full LLM harvest runs on cron_harvest (every 30 minutes).
-    2. Print compact belief index (Layer 1) for context injection
-    3. Print pending suggestion reminders
-    """
-    init_evo_db()
-    # S3：SessionStart 钩子只有 5s 超时，跑 LLM 收割（extract_observations）
-    # 会在超时被杀——LLM 请求已发出但结果丢弃（白烧 tokens），且会话未标记
-    # 收割导致 30 分钟后 cron 再收割一次（重复 LLM 花费 + 重复写入）。
-    # 这里只做零成本的关键词纠正扫描（_detect_corrections，纯正则），
-    # 不跑 LLM、不落盘、不标记，完整收割统一交给 cron/后台。
-    if not _is_paused():
-        try:
-            from .harvester import get_unharvested_sessions, _detect_corrections
-            conn = init_db()
-            try:
-                session_ids = get_unharvested_sessions(conn, limit=1)
-                if session_ids:
-                    sid = session_ids[0]
-                    rows = conn.execute(
-                        "SELECT role, content, timestamp FROM messages WHERE session_id = ? ORDER BY timestamp ASC",
-                        (sid,),
-                    ).fetchall()
-                    user_msgs = [{'content': r['content'], 'timestamp': r['timestamp']} for r in rows if r['role'] == 'user' and r['content']]
-                    assistant_msgs = [{'content': r['content'], 'timestamp': r['timestamp']} for r in rows if r['role'] == 'assistant' and r['content']]
-                    correction_count = len(_detect_corrections(user_msgs, assistant_msgs))
-                    _log('observe', 'session_scan', {'session_id': sid, 'corrections': correction_count, 'mode': 'keyword_scan'})
-            finally:
-                conn.close()
-        except Exception as e:
-            _log('observe', 'harvest_error', {'error': str(e), 'mode': 'keyword_scan'})
-    # Layer 1: compact belief index (~50-100 tokens)
-    conn = init_honcho_db()
-    if not get_user(conn, 'default'):
-        create_user(conn, user_id='default')
-    beliefs = get_beliefs(conn, 'default')
-    if beliefs:
-        print('[Memory] 可用记忆索引:')
-        for b in beliefs[:10]:
-            stage = belief_stage(b)
-            print(f"  [{b['category']}] {b['content'][:40]}... (conf:{b['confidence']:.0%}, stage:{stage})")
-        print(f'  共{len(beliefs)}条信念。用 memory_timeline 或 memory_detail 按需加载。')
-    conn.close()
-    # Behavior rules (compact)
-    agent_rules = get_agent_rules(kind='behavior')
-    if agent_rules:
-        print('\n[Evolution] 行为规则提醒:')
-        for r in agent_rules[:5]:
-            if r.get('active'):
-                eff = r.get('effectiveness', 0)
-                eff_str = f' (eff:{eff:.0%})' if r.get('times_applied', 0) > 0 else ''
-                print(f"  {r['content'][:60]}{eff_str}")
-    # Pending suggestions
-    suggestions = load_suggestions()
-    pending = [s for s in suggestions if s['status'] == 'pending']
-    if pending:
-        print(f'\n[Evolution] {len(pending)}条待审批建议。用 evolution_approve/reject 处理。')
 
 def cron_harvest():
     """Called from cron every 30 minutes. Harvest recent unharvested sessions."""

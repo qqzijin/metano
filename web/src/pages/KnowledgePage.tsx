@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { BookOpen, Upload, Search, Trash2, Loader2, Eye } from "lucide-react";
+import { BookOpen, Upload, Search, Trash2, Loader2, Eye, Sparkles } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { useKnowledge, useKnowledgeSearch, useKnowledgeIngest, useKnowledgeDelete } from "@/api/hooks";
+import { useKnowledge, useKnowledgeSearch, useKnowledgeSemanticSearch, useKnowledgeIngest, useKnowledgeDelete } from "@/api/hooks";
 import { fmtTime } from "@/api/client";
 import { toast } from "sonner";
 
@@ -19,6 +19,7 @@ export default function KnowledgePage() {
   const [viewLoading, setViewLoading] = useState(false);
   const { data, isLoading, isError } = useKnowledge();
   const searchMut = useKnowledgeSearch();
+  const semanticMut = useKnowledgeSemanticSearch();
   const ingestMut = useKnowledgeIngest();
   const deleteMut = useKnowledgeDelete();
 
@@ -72,6 +73,16 @@ export default function KnowledgePage() {
     }
   };
 
+  const handleSemanticSearch = async () => {
+    if (!searchQuery.trim()) return;
+    setShowSearch(true);
+    try {
+      await semanticMut.mutateAsync(searchQuery);
+    } catch {
+      toast.error("语义搜索失败");
+    }
+  };
+
   return (
     <>
       <PageHeader title="知识库" description={`${docs.length} 份文档`} />
@@ -88,6 +99,10 @@ export default function KnowledgePage() {
           <Button onClick={handleSearch} disabled={!searchQuery.trim() || searchMut.isPending} variant="outline" size="sm" className="shrink-0">
             {searchMut.isPending ? <Loader2 className="size-4 mr-1 animate-spin" /> : <Search className="size-4 mr-1" />}
             {searchMut.isPending ? "搜索中..." : "搜索"}
+          </Button>
+          <Button onClick={handleSemanticSearch} disabled={!searchQuery.trim() || semanticMut.isPending} variant="outline" size="sm" className="shrink-0" title="CocoIndex 代码语义搜索">
+            {semanticMut.isPending ? <Loader2 className="size-4 mr-1 animate-spin" /> : <Sparkles className="size-4 mr-1" />}
+            {semanticMut.isPending ? "语义搜索中..." : "语义搜索"}
           </Button>
         </div>
       </div>
@@ -125,6 +140,27 @@ export default function KnowledgePage() {
                   </div>
                 ))}
               </>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* 语义搜索结果（CocoIndex 代码库） */}
+      {semanticMut.data && !semanticMut.isPending && (
+        <Card className="mb-4">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">语义搜索结果（代码库）</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2 pt-0">
+            {(semanticMut.data.results ?? []).length === 0 ? (
+              <p className="text-sm text-muted-foreground">未找到语义相关代码</p>
+            ) : (
+              (semanticMut.data.results ?? []).map((r, i) => (
+                <div key={i} className="text-sm border-l-2 border-chart-4 pl-3">
+                  <div className="font-medium text-xs text-muted-foreground">{r.file} (相关度: {r.score?.toFixed(2) ?? "N/A"})</div>
+                  <div className="line-clamp-2 break-words">{r.content}</div>
+                </div>
+              ))
             )}
           </CardContent>
         </Card>

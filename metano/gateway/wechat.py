@@ -92,8 +92,3 @@ class WeChatBot:
             except Exception as e:
                 log.error(f'WeChat message error: {e}')
                 time.sleep(1)
-
-    def send_message(self, wxid: str, text: str):
-        """Send a message to a WeChat user."""
-        if self._wcf:
-            self._wcf.send_text(text, wxid)

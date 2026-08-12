@@ -81,12 +81,6 @@ def init_db() -> sqlite3.Connection:
     return _get_conn()
 
 
-def set_reflection_mode(mode: str):
-    """Set reflection generation mode: 'heuristic' or 'llm'."""
-    global REFLECTION_MODE
-    if mode not in ('heuristic', 'llm'):
-        raise ValueError(f"reflection mode must be 'heuristic' or 'llm', got {mode!r}")
-    REFLECTION_MODE = mode
 
 
 # ── reflection generation ───────────────────────────────────────────────────

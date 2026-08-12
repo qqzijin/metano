@@ -319,19 +319,6 @@ class AgentDelegator:
         """List all sub-agent tasks."""
         return [{'id': t.id, 'task': t.task[:80], 'status': t.status, 'started_at': t.started_at, 'completed_at': t.completed_at} for t in self._tasks.values()]
 
-    def clean_old_tasks(self, max_hours: int = 24) -> dict:
-        """Remove persisted task files older than max_hours."""
-        import os, time
-        cutoff = time.time() - max_hours * 3600
-        removed = 0
-        for f in AGENT_DIR.glob('*.json'):
-            if f.stat().st_mtime < cutoff:
-                f.unlink()
-                removed += 1
-                # Also remove from in-memory dict
-                tid = f.stem
-                self._tasks.pop(tid, None)
-        return {'removed': removed}
 
     def _save_task(self, task: AgentTask):
         path = AGENT_DIR / f'{task.id}.json'

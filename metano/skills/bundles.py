@@ -48,20 +48,3 @@ class BundleLoader:
                 parts.append(f"[Skill: {skill_name}]\n{content}")
         return "\n\n---\n\n".join(parts) if parts else ""
 
-    def create_bundle(self, name: str, description: str, skills: list[str]) -> dict:
-        data = self._load_bundles()
-        data.setdefault("bundles", {})[name] = {
-            "description": description,
-            "skills": skills,
-        }
-        self._save_bundles(data)
-        return {"status": "created", "name": name, "skills": skills}
-
-    def delete_bundle(self, name: str) -> bool:
-        data = self._load_bundles()
-        bundles = data.get("bundles", {})
-        if name not in bundles:
-            return False
-        del bundles[name]
-        self._save_bundles(data)
-        return True

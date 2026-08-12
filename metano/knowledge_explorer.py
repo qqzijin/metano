@@ -443,7 +443,15 @@ def sink_evolution_knowledge(user_id: str = 'default') -> dict:
         out = EXPLORATION_DIR / f'evolution_sink_{int(_t.time())}.md'
         out.write_text(content, encoding='utf-8')
         result = knowledge_ingest(str(out), title='进化系统学习沉淀', doc_type='markdown')
-        return {'status': 'ingested', 'sections': len(sections), 'result': result}
+        # 综合成功动作序列为可复用知识模式规则(knowledge_pattern)。此前
+        # synthesize_from_experience 有实现但从未接入任何调度——补上闭环。
+        synthesized = 0
+        try:
+            synthesized = len(synthesize_from_experience())
+        except Exception:
+            logger.exception('sink: synthesize_from_experience failed')
+        return {'status': 'ingested', 'sections': len(sections),
+                'synthesized_patterns': synthesized, 'result': result}
     except Exception:
         logger.exception('sink_evolution_knowledge failed')
         return {'status': 'error'}
