@@ -102,6 +102,30 @@ def get_jwt_secret() -> str:
     return secret
 
 
+def get_domain_secret(domain: str) -> str:
+    """Return a per-domain signing secret for MCP/A2A bearer tokens.
+
+    A single shared JWT secret means a leak of the web secret lets an attacker
+    forge MCP/A2A tokens too (audit M4).  This prefers an explicitly configured
+    ``auth.<domain>_secret`` in gateway_config.yaml — a genuinely independent
+    key — and otherwise derives a deterministic secret from the master JWT
+    secret via HMAC-SHA256, so a fresh deploy still works without extra config.
+
+    Once a per-domain secret is configured, the web JWT secret alone can no
+    longer mint valid MCP/A2A tokens.
+    """
+    config = _load_config()
+    explicit = config.get("auth", {}).get(f"{domain}_secret", "")
+    if isinstance(explicit, str) and len(explicit) >= 32:
+        return explicit
+    import hashlib
+    import hmac
+    master = get_jwt_secret()
+    return hmac.new(
+        master.encode(), f"metano:{domain}".encode(), hashlib.sha256
+    ).hexdigest()
+
+
 def get_users() -> list[dict]:
     config = _load_config()
     return config.get("auth", {}).get("users", [])
@@ -276,6 +300,22 @@ def try_refresh_from_request(request: Request) -> Optional[str]:
     if payload.get("tv", 0) != rec["token_version"]:
         return None
     return create_access_token(rec["username"], rec["role"], token_version=rec["token_version"])
+
+
+def rotate_refresh_tokens(response: Response, username: str, role: str) -> dict:
+    """Rotate an access/refresh pair on refresh AND bump the token_version.
+
+    ``set_auth_cookies`` alone re-issues both cookies but leaves the old refresh
+    token valid until its 7-day expiry, so a stolen refresh token stays
+    replayable (audit M1).  Bumping ``token_version`` first revokes the just-used
+    refresh token (and every other outstanding access/refresh/MCP/A2A token for
+    the user) so a rotated refresh token can only be used once.
+
+    Call this from the explicit ``POST /api/auth/refresh`` handler instead of
+    ``set_auth_cookies`` (``web_server.auth_refresh``).
+    """
+    bump_token_version(username)
+    return set_auth_cookies(response, username, role)
 
 
 # ── One-time WebSocket ticket (F-12) ──────────────────────────────────────

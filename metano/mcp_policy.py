@@ -48,6 +48,28 @@ READ_TOOLS: list[str] = [
     "security_status",
 ]
 
+# Read-only tools that read INSTANCE-wide data (no per-user column): the
+# knowledge base, evolution log/suggestions, skill bodies, model config, memory
+# and honcho stores.  They stay registered on the remote surface so an
+# admin-read token can use them, but the tool functions refuse user-level remote
+# tokens (see mcp_server._instance_data_denied).  Kept in one place so the
+# policy and the implementation cannot drift (audit H7).
+INSTANCE_READ_TOOLS: frozenset[str] = frozenset({
+    "knowledge_search", "knowledge_list",
+    "evolution_status", "evolution_log", "evolution_suggestions",
+    "skill_view",
+    "model_list",
+    "memory_search", "memory_stats", "memory_timeline", "memory_detail",
+    "honcho_profile", "honcho_beliefs",
+    "security_status",
+})
+
+
+def is_instance_read(name: str) -> bool:
+    """True when ``name`` reads instance-wide data (admin-read scope required)."""
+    return name in INSTANCE_READ_TOOLS
+
+
 # Dangerous / privileged tools. These must NEVER be exposed to a remote host:
 # they execute code, spawn sub-agents, drive the browser, mutate the knowledge
 # base / personality / beliefs, trigger cron jobs, or cause real-world side

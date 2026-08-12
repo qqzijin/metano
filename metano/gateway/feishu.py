@@ -99,7 +99,7 @@ class FeishuBot:
             .app_id(self.app_id) \
             .app_secret(self.app_secret) \
             .timeout(120) \
-            .log_level(lark.LogLevel.DEBUG) \
+            .log_level(lark.LogLevel.INFO) \
             .build()
 
         # Build event handler
@@ -115,7 +115,7 @@ class FeishuBot:
             self.app_id,
             self.app_secret,
             event_handler=handler,
-            log_level=lark.LogLevel.DEBUG,
+            log_level=lark.LogLevel.INFO,
         )
 
         logger.info("Feishu bot starting (WebSocket mode)...")

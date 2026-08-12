@@ -103,14 +103,24 @@ def _owner_cond(col: str = 'sessions.user_key') -> tuple[str, list]:
     return f"({col} = ? OR {col} = ?)", [subject, f'web:{subject}']
 
 
-def _memory_denied() -> bool:
-    """True when the caller must NOT see instance-wide memory data.
+def _instance_data_denied() -> bool:
+    """True when the caller must NOT read instance-wide data.
 
-    The ``memories`` and honcho tables have no per-user column, so a user-level
-    remote token is refused rather than leaking the whole instance.
+    The knowledge base, evolution log/suggestions, skill bodies, model config
+    and the memory/honcho tables have no per-user column, so a user-level remote
+    token is refused rather than leaking the whole instance (audit H7).  Local
+    stdio (no subject) and admin-read scoped tokens pass.
     """
     subject, scopes = get_mcp_auth()
     return subject is not None and not is_admin_read(scopes)
+
+
+def _memory_denied() -> bool:
+    """True when the caller must NOT see instance-wide memory data.
+
+    Alias of :func:`_instance_data_denied` (memory tables are instance-wide).
+    """
+    return _instance_data_denied()
 
 
 def _clip(value, lo: int, hi: int, default: int) -> int:
@@ -333,10 +343,21 @@ def cron_trigger(job_id: str) -> str:
     job = next((j for j in jobs if j['id'] == job_id), None)
     if not job:
         return json.dumps({'error': f'Job {job_id} not found'})
-    import subprocess
     try:
-        result = subprocess.run(['claude', '-p', job['prompt']], capture_output=True, text=True, timeout=300)
-        return json.dumps({'job_id': job_id, 'status': 'completed', 'output': result.stdout[:2000]})
+        # N1: run ``claude -p`` through code_exec's restricted runner — own
+        # process group (timeout SIGKILLs the whole tree), CLAUDE_BIN honoured,
+        # and the environment scrubbed so the job cannot read metano's secrets.
+        import shutil
+        from .code_exec import run_command_isolated
+        claude_bin = os.environ.get('CLAUDE_BIN') or shutil.which('claude') or '/home/dk/local/node/bin/claude'
+        r = run_command_isolated([claude_bin, '-p', job['prompt']], timeout=300)
+        if r.get('error') or r.get('exit_code', 0) != 0:
+            return json.dumps({'job_id': job_id, 'status': 'error',
+                               'exit_code': r.get('exit_code'),
+                               'error': r.get('error') or (r.get('stderr') or '')[:500],
+                               'output': (r.get('stdout') or '')[:500]})
+        return json.dumps({'job_id': job_id, 'status': 'completed',
+                           'exit_code': 0, 'output': (r.get('stdout') or '')[:2000]})
     except Exception as e:
         logger.exception()
         return json.dumps({'job_id': job_id, 'status': 'error', 'error': str(e)})
@@ -519,7 +540,12 @@ def voice_list() -> str:
 
 @mcp.tool()
 def evolution_status() -> str:
-    """Show current evolution system status: belief counts by stage, pending suggestions, estimated cost."""
+    """Show current evolution system status: belief counts by stage, pending suggestions, estimated cost.
+
+    Instance-wide — user-level remote tokens are refused (admin-read scope required)."""
+    if _instance_data_denied():
+        return json.dumps({'error': 'instance-wide evolution status requires admin-read scope'},
+                          ensure_ascii=False)
     result = _evolution_status()
     return json.dumps(result, ensure_ascii=False, indent=2)
 
@@ -532,7 +558,12 @@ def evolution_run(stage: str='all') -> str:
 
 @mcp.tool()
 def evolution_suggestions() -> str:
-    """List all pending evolution suggestions awaiting approval."""
+    """List all pending evolution suggestions awaiting approval.
+
+    Instance-wide — user-level remote tokens are refused (admin-read scope required)."""
+    if _instance_data_denied():
+        return json.dumps({'error': 'instance-wide evolution suggestions require admin-read scope'},
+                          ensure_ascii=False)
     suggestions = load_suggestions()
     return json.dumps(suggestions, ensure_ascii=False, indent=2)
 
@@ -550,7 +581,12 @@ def evolution_reject(suggestion_id: str) -> str:
 
 @mcp.tool()
 def evolution_log(limit: int=20) -> str:
-    """Show recent evolution operations from the audit log."""
+    """Show recent evolution operations from the audit log.
+
+    Instance-wide — user-level remote tokens are refused (admin-read scope required)."""
+    if _instance_data_denied():
+        return json.dumps({'error': 'instance-wide evolution log requires admin-read scope'},
+                          ensure_ascii=False)
     log_path = EVO_LOG
     if not log_path.exists():
         return json.dumps([])
@@ -574,7 +610,11 @@ def skills_list(category: str='') -> str:
 
 @mcp.tool()
 def skill_view(name: str, full: bool=False, file_path: str='') -> str:
-    """View a skill's details. full=False returns frontmatter only; full=True returns the complete skill content. file_path optionally loads a supporting file (e.g. references/*.md, templates/*.html) from inside the skill's directory; path traversal outside the skill directory is rejected."""
+    """View a skill's details. full=False returns frontmatter only; full=True returns the complete skill content. file_path optionally loads a supporting file (e.g. references/*.md, templates/*.html) from inside the skill's directory; path traversal outside the skill directory is rejected.
+
+    Skill bodies / supporting files are instance data — user-level remote tokens are refused (admin-read scope required)."""
+    if _instance_data_denied():
+        return json.dumps({'error': 'skill bodies require admin-read scope'}, ensure_ascii=False)
     rec = _skill_loader.find_by_name(name)
     if not rec:
         return json.dumps({'error': f"Skill '{name}' not found"})
@@ -775,7 +815,12 @@ def image_describe(image_path: str, prompt: str='Describe this image in detail.'
 
 @mcp.tool()
 def model_list() -> str:
-    """List all configured model providers."""
+    """List all configured model providers.
+
+    Instance config — user-level remote tokens are refused (admin-read scope required)."""
+    if _instance_data_denied():
+        return json.dumps({'error': 'model configuration requires admin-read scope'},
+                          ensure_ascii=False)
     result = _model_router.list_providers()
     return json.dumps(result, ensure_ascii=False, indent=2)
 
@@ -788,13 +833,27 @@ def knowledge_ingest(path: str, title: str='', doc_type: str='auto') -> str:
 @mcp.tool()
 @track_action('knowledge_search')
 def knowledge_search(query: str, limit: int=5) -> str:
-    """Search the knowledge base for relevant content."""
+    """Search the knowledge base for relevant content.
+
+    The knowledge base is instance-wide — user-level remote tokens are refused
+    (admin-read scope required)."""
+    limit = _clip(limit, 1, 20, 5)
+    if _instance_data_denied():
+        return json.dumps({'query': query, 'results': [], 'count': 0,
+                           'reason': 'instance-wide knowledge base requires admin-read scope'},
+                          ensure_ascii=False, indent=2)
     result = _kb_search(query, limit=limit)
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 @mcp.tool()
 def knowledge_list(doc_type: str='') -> str:
-    """List all documents in the knowledge base."""
+    """List all documents in the knowledge base.
+
+    Instance-wide — user-level remote tokens are refused (admin-read scope required)."""
+    if _instance_data_denied():
+        return json.dumps({'documents': [], 'count': 0,
+                           'reason': 'instance-wide knowledge base requires admin-read scope'},
+                          ensure_ascii=False, indent=2)
     result = _kb_list(doc_type=doc_type)
     return json.dumps(result, ensure_ascii=False, indent=2)
 

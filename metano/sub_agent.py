@@ -31,6 +31,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from metano.log import logger
+from .code_exec import scrub_subprocess_env
 from .paths import AGENT_DIR
 
 
@@ -202,10 +203,14 @@ class AgentDelegator:
             cmd = [claude_bin, '-p', task, '--model', model]
         try:
             # start_new_session=True -> own process group so a timeout can
-            # SIGKILL the whole tree (not just the direct child).
+            # SIGKILL the whole tree (not just the direct child).  The env is
+            # scrubbed to a whitelist so the sub-agent cannot read metano's
+            # secrets (JWT/A2A tokens, feishu credentials, ...) out of the
+            # environment (audit C1/C2).
             result = subprocess.run(cmd, capture_output=True, text=True,
                                     timeout=timeout or self._default_timeout,
-                                    start_new_session=True)
+                                    start_new_session=True,
+                                    env=scrub_subprocess_env())
             # F-18: a non-zero exit code means the sub-agent failed even when it
             # produced stdout — never report that as 'completed'.
             agent_task.result = result.stdout.strip()
@@ -276,10 +281,13 @@ class AgentDelegator:
         proc = None
         try:
             # start_new_session=True -> own process group so cancel/timeout can
-            # SIGKILL the whole tree with os.killpg.
+            # SIGKILL the whole tree with os.killpg.  The env is scrubbed to a
+            # whitelist so the sub-agent cannot read metano's secrets out of
+            # the environment (audit C1/C2).
             proc = await asyncio.create_subprocess_exec(
                 *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                 start_new_session=True,
+                env=scrub_subprocess_env(),
             )
             agent_task.pid = proc.pid
             stdout, stderr = await asyncio.wait_for(

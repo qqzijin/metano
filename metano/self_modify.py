@@ -35,10 +35,15 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
 from metano.log import logger
+
+# Serializes apply_candidate so two concurrent mutations (e.g. a cron run and a
+# web approve) cannot race the same working tree (TOCTOU — audit N5).
+_apply_lock = threading.Lock()
 
 # ── paths ────────────────────────────────────────────────────────────────
 # The mutation pipeline operates on the SOURCE git repo (worktree/commit/revert
@@ -396,14 +401,30 @@ def _normalize_rel(rel_file: str) -> str:
 
 
 def _allowed_to_mutate(rel_file: str) -> bool:
-    """Constitution check: is this file allowed to be mutated?"""
-    raw = rel_file.replace('\\', '/').lstrip('/')
-    if raw.startswith('tests') or raw in FORBIDDEN_PATHS:
+    """Constitution check: is this file allowed to be mutated?
+
+    Normalizes via ``Path.resolve`` so ``.``/``..`` segments cannot smuggle a
+    file past the allow/deny list (e.g. ``metano/../metano/self_modify.py``
+    resolves back to the forbidden ``metano/self_modify.py`` — audit H2/N5).
+    """
+    raw0 = rel_file.replace('\\', '/')
+    if raw0.startswith('/'):
+        return False                 # absolute paths are never mutable
+    raw = raw0.lstrip('/')
+    if raw.startswith('tests'):
         return False
-    p = _normalize_rel(rel_file)
-    if p in FORBIDDEN_PATHS or p.startswith('tests'):
+    p = _normalize_rel(raw)          # bare introspector path -> metano/<file>
+    path = Path(p)
+    if not path.is_absolute():
+        path = REPO_ROOT / path
+    try:
+        resolved = path.resolve()
+        rel = resolved.relative_to(REPO_ROOT.resolve()).as_posix()
+    except (ValueError, OSError):
         return False
-    return p.startswith(ALLOWED_MUTATION_PREFIXES)
+    if rel.startswith('tests') or rel in FORBIDDEN_PATHS:
+        return False
+    return rel.startswith(ALLOWED_MUTATION_PREFIXES)
 
 
 def _git(args: list[str], cwd: Path) -> str:
@@ -552,11 +573,18 @@ def _approval_required() -> bool:
 
     'Tests passed' is deliberately NOT the only safety boundary for a mutation
     that then gets committed and synced into the running instance. Default on;
-    set ``SELF_MODIFY_REQUIRE_APPROVAL=0`` to skip the human checkpoint (an
-    explicit operator decision — not recommended for unattended deployments).
+    set ``SELF_MODIFY_REQUIRE_APPROVAL=0`` (or ``false``/``no``/``off``) to skip
+    the human checkpoint — an explicit operator decision, not recommended for
+    unattended deployments.
+
+    Fail-closed (N3): an EMPTY string — or any unrecognised value — leaves
+    approval required.  Approval can only be disabled with an explicit non-empty
+    truthy-off value, never by an empty environment variable.
     """
     val = os.environ.get('SELF_MODIFY_REQUIRE_APPROVAL', '1').strip().lower()
-    return val not in ('0', 'false', 'no', 'off', '')
+    if not val:
+        return True  # empty env value must not silently disable the gate
+    return val not in ('0', 'false', 'no', 'off')
 
 
 def verify_candidate(candidate: dict) -> dict:
@@ -703,24 +731,48 @@ def apply_candidate(candidate: dict, event_id: int | None = None) -> dict:
         f.write(candidate['diff'])
         diff_path = f.name
     try:
-        apply_proc = subprocess.run(
-            ['git', 'apply', '--whitespace=nowarn', diff_path],
-            capture_output=True, text=True, cwd=str(REPO_ROOT), timeout=30,
-        )
-        if apply_proc.returncode != 0:
-            return {'status': 'rejected', 'reason': f'apply failed: {apply_proc.stderr[:300]}'}
-        # Commit.
-        msg = f"self-modify: {candidate.get('issue', {}).get('pattern', 'fix')}"
-        _git(['add', rel_file], REPO_ROOT)
-        _git(['commit', '-m', msg], REPO_ROOT)
-        commit_hash = _git(['rev-parse', 'HEAD'], REPO_ROOT)
-        # Sync the mutated file to the runtime instance.
-        src = REPO_ROOT / rel_file
-        dst = RUNTIME_ROOT / rel_file
-        if src.exists():
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dst)
-        return {'status': 'applied', 'commit_hash': commit_hash, 'file': rel_file}
+        with _apply_lock:
+            # N5 (TOCTOU): re-check the diff still applies to the *current*
+            # tree right before mutating it — a file that changed after verify
+            # will be caught here and rejected instead of clobbered.
+            check_proc = subprocess.run(
+                ['git', 'apply', '--check', diff_path],
+                capture_output=True, text=True, cwd=str(REPO_ROOT), timeout=30,
+            )
+            if check_proc.returncode != 0:
+                return {'status': 'rejected',
+                        'reason': f'apply no longer applies cleanly: {check_proc.stderr[:300]}'}
+            apply_proc = subprocess.run(
+                ['git', 'apply', '--whitespace=nowarn', diff_path],
+                capture_output=True, text=True, cwd=str(REPO_ROOT), timeout=30,
+            )
+            if apply_proc.returncode != 0:
+                return {'status': 'rejected', 'reason': f'apply failed: {apply_proc.stderr[:300]}'}
+            # N5 (TOCTOU): after mutating, re-verify the resolved target is
+            # still a constitution-allowed regular file under REPO_ROOT (guards
+            # against the file being swapped for a symlink / escape mid-apply).
+            if not _allowed_to_mutate(rel_file):
+                subprocess.run(['git', 'checkout', '--', rel_file],
+                               capture_output=True, cwd=str(REPO_ROOT), timeout=30)
+                return {'status': 'rejected',
+                        'reason': f'post-apply constitution check failed: {rel_file}'}
+            src = (REPO_ROOT / rel_file).resolve()
+            if not (src.is_file() and src.is_relative_to(REPO_ROOT.resolve())):
+                subprocess.run(['git', 'checkout', '--', rel_file],
+                               capture_output=True, cwd=str(REPO_ROOT), timeout=30)
+                return {'status': 'rejected',
+                        'reason': f'post-apply target is not a file under repo: {rel_file}'}
+            # Commit.
+            msg = f"self-modify: {candidate.get('issue', {}).get('pattern', 'fix')}"
+            _git(['add', rel_file], REPO_ROOT)
+            _git(['commit', '-m', msg], REPO_ROOT)
+            commit_hash = _git(['rev-parse', 'HEAD'], REPO_ROOT)
+            # Sync the mutated file to the runtime instance.
+            dst = RUNTIME_ROOT / rel_file
+            if src.exists():
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+            return {'status': 'applied', 'commit_hash': commit_hash, 'file': rel_file}
     except Exception as e:
         logger.exception('self_modify: apply failed')
         return {'status': 'rejected', 'reason': str(e)}

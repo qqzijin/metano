@@ -6,8 +6,8 @@ no first-class Streamable HTTP auth middleware, so the gate lives here, in the
 FastAPI layer:
 
 - ``MCPAuthMiddleware`` — intercepts every ``/mcp`` request and requires a
-  Bearer JWT (``aud == "metano-mcp"``; HS256 signature and ``exp`` verified
-  against the same secret the rest of metano uses).  Writes one audit line per
+  Bearer JWT (``aud == "metano-mcp"``; HS256 signature, ``exp``, ``type`` and
+  ``tv`` verified against the MCP *domain secret*).  Writes one audit line per
   call (path, HTTP method, client IP, JSON-RPC method/tool when parseable).
 - ``create_mcp_token`` — issues a short-lived (1h), read-only scoped JWT for
   ``POST /api/mcp/token``.
@@ -38,7 +38,7 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.routing import Route
 
-from .auth import JWT_ALGORITHM, _audit, get_jwt_secret
+from .auth import JWT_ALGORITHM, _audit, get_domain_secret, get_token_version
 
 MCP_AUDIENCE = "metano-mcp"
 # Configurable via MCP_TOKEN_TTL env (seconds); default 24h for cross-device
@@ -121,9 +121,10 @@ def create_mcp_token(
 ) -> str:
     """Issue a short-lived, read-only MCP JWT (``aud=metano-mcp``).
 
-    Reuses metano's HS256 secret from :mod:`metano.auth` so the guard can
-    verify it with the same key.  Raises ``RuntimeError`` if the JWT secret is
-    not configured (config error — surfaced as a 500 by the calling endpoint).
+    Signs with the MCP domain secret (independent of the web JWT secret when an
+    ``auth.mcp_secret`` is configured) so the guard can verify it with the same
+    key.  Raises ``RuntimeError`` if the JWT secret is not configured (config
+    error — surfaced as a 500 by the calling endpoint).
     """
     now = datetime.now(timezone.utc)
     payload = {
@@ -131,11 +132,14 @@ def create_mcp_token(
         "aud": MCP_AUDIENCE,
         "scope": scope or list(MCP_READ_SCOPE),
         "type": "mcp",
+        # token_version: bumping a user's token_version (logout / password
+        # change) revokes every outstanding MCP token for that user (M4).
+        "tv": get_token_version(username),
         "jti": secrets.token_urlsafe(16),
         "iat": now,
         "exp": now + timedelta(seconds=ttl_seconds),
     }
-    return jwt.encode(payload, get_jwt_secret(), algorithm=JWT_ALGORITHM)
+    return jwt.encode(payload, get_domain_secret('mcp'), algorithm=JWT_ALGORITHM)
 
 
 def verify_mcp_token(token: str) -> Optional[dict]:
@@ -147,11 +151,11 @@ def verify_mcp_token(token: str) -> Optional[dict]:
     unreadable JWT secret also collapses to ``None`` (deny-by-default).
     """
     try:
-        secret = get_jwt_secret()
+        secret = get_domain_secret('mcp')
     except Exception:
         return None
     try:
-        return jwt.decode(
+        payload = jwt.decode(
             token,
             secret,
             algorithms=[JWT_ALGORITHM],
@@ -159,6 +163,12 @@ def verify_mcp_token(token: str) -> Optional[dict]:
         )
     except jwt.PyJWTError:
         return None
+    if payload.get('type') != 'mcp':
+        return None
+    sub = payload.get('sub') or ''
+    if payload.get('tv', 0) != get_token_version(sub):
+        return None
+    return payload
 
 
 def _extract_bearer(request: Request) -> str:

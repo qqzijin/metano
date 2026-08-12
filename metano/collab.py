@@ -19,6 +19,17 @@ from typing import Optional
 from .db import get_db
 from .paths import AUDIT_LOG
 
+# ── Remote-dispatch SSRF policy (M3) ───────────────────────────────────────
+# Cross-device A2A dispatch resolves the target host and refuses loopback,
+# link-local (incl. the 169.254.169.254 cloud-metadata address), multicast,
+# unspecified and reserved addresses.  Private RFC1918 networks are refused by
+# default too — LAN collaboration must be explicitly enabled with
+# METANO_COLLAB_ALLOW_PRIVATE=1.
+_COLLAB_ALLOW_PRIVATE = os.environ.get(
+    'METANO_COLLAB_ALLOW_PRIVATE', '').strip().lower() in ('1', 'true', 'yes')
+_COLLAB_DEFAULT_PORT = 9120
+_COLLAB_MAX_TIMEOUT = 3600
+
 # ── Constants / policy ──────────────────────────────────────────────────────
 
 # Lifecycle: pending -> running -> completed / failed
@@ -261,6 +272,74 @@ def is_local_target(target: str) -> bool:
     return t in ("", "local", "localhost", "127.0.0.1") or t.startswith("local")
 
 
+def _clamp_timeout(timeout) -> int:
+    """Clamp a remote-dispatch timeout into ``[1, COLLAB_MAX_TIMEOUT]`` seconds."""
+    try:
+        t = int(timeout)
+    except (TypeError, ValueError):
+        return 120
+    return max(1, min(t, _COLLAB_MAX_TIMEOUT))
+
+
+def _validate_remote_host(hostport: str) -> tuple[str, int]:
+    """Validate + normalize a remote A2A target ``host[:port]``.
+
+    SSRF guard (M3): strips any scheme/path, then resolves the host and rejects
+    loopback, link-local (incl. the 169.254.169.254 cloud-metadata address),
+    multicast, unspecified and reserved addresses.  Private RFC1918 networks are
+    refused unless ``METANO_COLLAB_ALLOW_PRIVATE=1``.  Returns ``(host, port)``
+    with the port clamped to a valid TCP port.
+
+    Raises ``ValueError`` on forbidden / invalid targets.
+    """
+    import ipaddress
+    import socket
+    hostport = (hostport or '').strip()
+    if not hostport:
+        raise ValueError('empty remote target')
+    # Split host:port (handle a bracketed IPv6 literal).
+    host, port_s = hostport, ''
+    if hostport.startswith('['):
+        end = hostport.find(']')
+        if end == -1:
+            raise ValueError(f'invalid remote target: {hostport!r}')
+        host = hostport[1:end]
+        port_s = hostport[end + 1:].lstrip(':')
+    elif hostport.count(':') == 1:
+        host, port_s = hostport.split(':', 1)
+    # Strip any URL scheme / path that a caller may have pasted.
+    host = host.split('//')[-1].split('/')[0].strip()
+    if not host:
+        raise ValueError('empty remote target host')
+    if host.lower() in ('localhost', 'localhost.localdomain'):
+        raise ValueError('refusing loopback remote target: localhost')
+    try:
+        port = int(port_s) if port_s else _COLLAB_DEFAULT_PORT
+    except (TypeError, ValueError):
+        raise ValueError(f'invalid remote port: {port_s!r}')
+    if not (1 <= port <= 65535):
+        raise ValueError(f'invalid remote port: {port}')
+    try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except socket.gaierror:
+        raise ValueError(f'cannot resolve remote target host: {host}')
+    addrs = {info[4][0] for info in infos}
+    for addr in addrs:
+        try:
+            ip = ipaddress.ip_address(addr)
+        except ValueError:
+            continue
+        if (ip.is_loopback or ip.is_link_local or ip.is_multicast
+                or ip.is_unspecified or ip.is_reserved):
+            raise ValueError(
+                f'refusing SSRF target {host} ({addr}): forbidden address class')
+        if not _COLLAB_ALLOW_PRIVATE and ip.is_private:
+            raise ValueError(
+                f'refusing SSRF target {host} ({addr}): private network — set '
+                'METANO_COLLAB_ALLOW_PRIVATE=1 to allow LAN collaboration')
+    return host, port
+
+
 def _estimate_call_cost(prompt: str, response: str) -> float:
     """Best-effort cost estimate from prompt/response text.
 
@@ -288,6 +367,11 @@ def _dispatch_remote_task(task: dict, timeout: int = 120) -> dict:
     A2A Bearer token is read from ``METANO_A2A_TOKEN`` (issue one on the REMOTE
     via its ``POST /api/a2a/token`` with scope ``a2a:task``), so cross-device
     auth does not require the two instances to share a JWT secret.
+
+    Security (M3): the target host is validated against the SSRF policy
+    (``_validate_remote_host`` — no loopback / link-local / cloud-metadata /
+    private-by-default), the ``timeout`` is clamped to ``[1, 3600]`` seconds,
+    and the A2A token is only attached to an address that passed that check.
     """
     import json
     import urllib.request
@@ -295,11 +379,16 @@ def _dispatch_remote_task(task: dict, timeout: int = 120) -> dict:
     host = (task.get("target") or "remote-localhost").strip()
     if host.startswith("remote-"):
         host = host[len("remote-"):]
-    if ":" not in host:
-        host = f"{host}:9120"
-    base = f"http://{host}/a2a"
+    timeout = _clamp_timeout(timeout)
+    try:
+        host, port = _validate_remote_host(host)
+    except ValueError as e:
+        return {"status": "failed", "mode": "remote", "error": str(e)}
+    base = f"http://{host}:{port}/a2a"
     token = os.environ.get("METANO_A2A_TOKEN", "")
     headers = {"Content-Type": "application/json"}
+    # Only attach the token once the target passed the SSRF check (never send
+    # it to loopback / link-local / metadata endpoints).
     if token:
         headers["Authorization"] = f"Bearer {token}"
     prompt = task.get("prompt") or ""
@@ -364,6 +453,7 @@ def execute_task(task_id: str, timeout: int = 120) -> dict:
 
     Returns ``{"task": ..., "execution": ...}``.
     """
+    timeout = _clamp_timeout(timeout)
     task = get_task(task_id)
     if not task:
         return {"task": None, "execution": {"error": "task not found"}}

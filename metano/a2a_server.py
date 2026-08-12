@@ -22,9 +22,10 @@ Provided bindings (all mirroring the reference implementation in
 * ``POST /message:stream``               — SSE stream for a newly sent task.
 
 Auth: every non-public request must carry a Bearer JWT with
-``aud == "metano-a2a"`` (HS256, same secret as the rest of metano — see
-:mod:`metano.mcp_gateway` for the identical MCP pattern).  Token issuance is
-exposed through :func:`create_a2a_token`.
+``aud == "metano-a2a"`` (HS256, signed with the A2A *domain secret* — see
+:mod:`metano.auth.get_domain_secret` and the identical MCP pattern in
+:mod:`metano.mcp_gateway`).  Token issuance is exposed through
+:func:`create_a2a_token`.
 
 SECURITY — holding a valid A2A bearer token is equivalent to having local
 command execution (RCE) on this host: a token bearer can spawn arbitrary
@@ -73,7 +74,7 @@ from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from .auth import JWT_ALGORITHM, _audit, get_jwt_secret
+from .auth import JWT_ALGORITHM, _audit, get_domain_secret, get_token_version
 from .log import logger
 from .sub_agent import ConcurrencyLimitError, delegator
 
@@ -227,12 +228,13 @@ def create_a2a_token(
 ) -> str:
     """Issue a short-lived Bearer JWT for the A2A surface (``aud=metano-a2a``).
 
-    Reuses metano's HS256 secret so :func:`verify_a2a_token` (and the auth
+    Signs with the A2A domain secret (independent of the web JWT secret when an
+    ``auth.a2a_secret`` is configured) so :func:`verify_a2a_token` (and the auth
     middleware) can check it with the same key.  Raises ``RuntimeError`` if the
     JWT secret is not configured.
 
-    ``scope`` defaults to ``["a2a:task"]`` (full task delegation).  Pass
-    ``scope=["a2a:read"]`` to mint a read-only token.
+    ``scope`` defaults to ``["a2a:read"]`` (least privilege — read-only).  Pass
+    ``scope=["a2a:task"]`` to mint a full-delegation token.
 
     SECURITY: an A2A token is a local-RCE trust boundary (it can spawn and
     SIGKILL ``claude -p`` sub-processes on this host).  Only ever issue it to
@@ -242,32 +244,40 @@ def create_a2a_token(
     payload = {
         "sub": username,
         "aud": A2A_AUDIENCE,
-        # Default to full delegation ONLY when the caller passes None; an empty
-        # list explicitly mints a no-permission token (deny-by-default).
-        "scope": scope if scope is not None else ["a2a:task"],
+        # Least privilege: default to READ-ONLY delegation.  Full task
+        # delegation must be requested explicitly (scope=["a2a:task"]) by the
+        # caller; an empty list explicitly mints a no-permission token
+        # (deny-by-default).
+        "scope": scope if scope is not None else ["a2a:read"],
         "type": "a2a",
+        # token_version: bumping a user's token_version (logout / password
+        # change) revokes every outstanding A2A token for that user (M4).
+        "tv": get_token_version(username),
         "jti": secrets.token_urlsafe(16),
         "iat": now,
         "exp": now + timedelta(seconds=ttl_seconds),
     }
-    return jwt.encode(payload, get_jwt_secret(), algorithm=JWT_ALGORITHM)
+    return jwt.encode(payload, get_domain_secret('a2a'), algorithm=JWT_ALGORITHM)
 
 
 def verify_a2a_token(token: str) -> Optional[dict]:
     """Validate an A2A Bearer token.  Returns the payload, or ``None``.
 
-    Enforces the HS256 signature, ``aud == "metano-a2a"`` and ``exp`` (PyJWT
+    Enforces the HS256 signature against the A2A domain secret,
+    ``aud == "metano-a2a"``, ``exp``, a ``type == "a2a"`` claim, and that the
+    token's ``tv`` still equals the subject's current ``token_version`` (so
+    logout / password change revokes outstanding A2A tokens — M4).  PyJWT
     raises for bad signature / wrong-or-missing audience / expired — all are
-    ``PyJWTError`` subclasses and collapse to ``None`` -> 401).  A missing or
-    unreadable JWT secret also collapses to ``None`` (deny-by-default).
+    ``PyJWTError`` subclasses and collapse to ``None`` -> 401.  A missing or
+    unreadable secret also collapses to ``None`` (deny-by-default).
     """
     try:
-        secret = get_jwt_secret()
+        secret = get_domain_secret('a2a')
     except Exception:
         logger.exception('a2a_server.py:264 exception')
         return None
     try:
-        return jwt.decode(
+        payload = jwt.decode(
             token,
             secret,
             algorithms=[JWT_ALGORITHM],
@@ -275,6 +285,12 @@ def verify_a2a_token(token: str) -> Optional[dict]:
         )
     except jwt.PyJWTError:
         return None
+    if payload.get('type') != 'a2a':
+        return None
+    sub = payload.get('sub') or ''
+    if payload.get('tv', 0) != get_token_version(sub):
+        return None
+    return payload
 
 
 # ── Auth middleware ────────────────────────────────────────────────────────

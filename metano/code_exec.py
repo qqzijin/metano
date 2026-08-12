@@ -98,6 +98,41 @@ SAFE_ENV = {
     'TMPDIR': '/tmp',
 }
 
+# Whitelist of environment variables that may be inherited by a spawned
+# sub-process (sub-agent delegation, ``cron_trigger``).  Everything else is
+# dropped so a delegated ``claude -p`` process cannot read metano's operational
+# secrets (JWT secret, A2A/MCP tokens, feishu/lark credentials, DB paths) out
+# of the environment (audit C1/C2, N1).  The allowlist keeps the provider
+# credential claude needs to authenticate plus innocuous runtime vars.
+SUBPROCESS_ENV_ALLOWLIST = frozenset({
+    'PATH', 'HOME', 'LANG', 'LC_ALL', 'TERM', 'TMPDIR', 'TZ', 'PWD', 'OLDPWD',
+    # claude CLI binary + settings
+    'CLAUDE_BIN', 'CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_GLOBAL_SETTINGS',
+    'CLAUDE_CODE_ENABLE_TELEMETRY',
+    # Anthropic/LLM provider routing (needed for the sub-process to function)
+    'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL',
+    'ANTHROPIC_MODEL', 'ANTHROPIC_SMALL_FAST_MODEL',
+    'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL',
+    'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+    # egress proxy
+    'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'ALL_PROXY',
+    'http_proxy', 'https_proxy', 'no_proxy', 'all_proxy',
+    # node / user-local tooling
+    'NODE_PATH', 'NPM_CONFIG_PREFIX', 'NVM_DIR',
+})
+
+
+def scrub_subprocess_env(env=None) -> dict:
+    """Return a copy of ``env`` (default ``os.environ``) restricted to the
+    allowlist in ``SUBPROCESS_ENV_ALLOWLIST``.
+
+    Used before spawning any sub-process that runs untrusted / remotely-injected
+    prompts (sub-agent delegation, ``cron_trigger``): the child sees only the
+    whitelisted variables, so metano's secrets never reach it.
+    """
+    src = os.environ if env is None else env
+    return {k: v for k, v in src.items() if k in SUBPROCESS_ENV_ALLOWLIST}
+
 # ---------------------------------------------------------------------------
 # bubblewrap availability probe (cached)
 # ---------------------------------------------------------------------------
@@ -333,6 +368,24 @@ def _run_popen(argv: list, cwd: Optional[str], env: dict, timeout: int,
     if timed_out:
         result['error'] = f'Execution timed out after {timeout}s'
     return result
+
+
+def run_command_isolated(cmd, timeout: int = 120, working_dir: str = '') -> dict:
+    """Run ``cmd`` in its own process group with a scrubbed environment.
+
+    Lightweight restricted execution for tools that must invoke a real binary
+    (e.g. ``claude -p``) but must not inherit metano's secrets (audit N1).
+    Uses the same ``_run_popen`` path as the sandboxed executors:
+    ``start_new_session`` so a timeout SIGKILLs the whole tree, bounded /
+    truncated output, and no network/rootfs/HOME isolation (the wrapped binary
+    needs the real HOME for its config and network for its API).
+
+    Returns ``{language, exit_code, stdout, stderr, error}`` (``language`` =
+    ``'command'``).
+    """
+    env = scrub_subprocess_env()
+    timeout = min(max(int(timeout), 1), MAX_TIMEOUT_SECONDS)
+    return _run_popen(list(cmd), working_dir or None, env, timeout, 'command')
 
 
 def _unsafe_direct_allowed(unsafe_direct: Optional[bool]) -> bool:
