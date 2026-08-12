@@ -7,6 +7,23 @@ MAX_NAME_LENGTH = 64
 MAX_DESCRIPTION_LENGTH = 1024
 MAX_SKILL_CONTENT_CHARS = 100_000
 NAME_PATTERN = re.compile(r"^[a-z][a-z0-9-]*$")
+CATEGORY_PATTERN = re.compile(r"^[a-z][a-z0-9-]*$")
+
+
+def validate_skill_ident(name: str, category: str) -> str | None:
+    """Validate skill ``name`` and ``category`` as path-safe identifiers.
+
+    Returns an error string, or None when both are valid. Used before any
+    path construction so a caller can never smuggle ``/``, ``..``, absolute
+    paths or other separators into the on-disk location (M-04).
+    """
+    if not name or len(name) > MAX_NAME_LENGTH:
+        return f"Invalid skill name: {name!r}"
+    if not NAME_PATTERN.match(name):
+        return f"Invalid skill name (must match {NAME_PATTERN.pattern}): {name!r}"
+    if not category or not CATEGORY_PATTERN.match(category):
+        return f"Invalid skill category (must match {CATEGORY_PATTERN.pattern}): {category!r}"
+    return None
 
 DANGEROUS_PATTERNS = [
     r"rm\s+-rf\s+/",

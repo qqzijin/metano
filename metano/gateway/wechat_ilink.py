@@ -69,6 +69,7 @@ class WeChatIlinkBot:
         self._session = requests.Session()
         self._session.trust_env = False   # direct connection to a domestic endpoint
         self._consecutive_failures = 0    # must init before _long_poll_loop increments it
+        self._healthy = False             # F-17: set True only after notifyStart succeeds
         self._load_state()
 
     # --------------------------------------------------------------- public API
@@ -265,20 +266,36 @@ class WeChatIlinkBot:
         return r.json()
 
     # --------------------------------------------------------------- long poll
-    def _notify_start(self):
+    def _notify_start(self, attempts: int = 3) -> bool:
         """Tell the iLink server this bot is online and ready to receive messages.
 
         Required by the official plugin before the long-poll loop; without it the
-        server does not route inbound messages to this bot.
+        server does not route inbound messages to this bot. F-17: retries with
+        backoff and reports success; the long-poll loop MUST NOT start polling
+        until this handshake succeeds, or the bot appears online but never
+        receives messages.
         """
-        try:
-            resp = self._post('ilink/bot/msg/notifystart', {'base_info': self._base_info()})
-            log.info(f'WeChat iLink: notifyStart ok (ret={resp.get("ret")})')
-        except Exception as e:
-            log.warning(f'WeChat iLink: notifyStart failed: {e}')
+        last_err = None
+        for attempt in range(attempts):
+            try:
+                resp = self._post('ilink/bot/msg/notifystart', {'base_info': self._base_info()})
+                log.info(f'WeChat iLink: notifyStart ok (ret={resp.get("ret")})')
+                self._healthy = True
+                return True
+            except Exception as e:
+                last_err = e
+                log.warning(f'WeChat iLink: notifyStart attempt {attempt + 1}/{attempts} failed: {e}')
+                if attempt < attempts - 1:
+                    time.sleep(RETRY_DELAY_SEC * (2 ** attempt))
+        self._healthy = False
+        log.error(f'WeChat iLink: notifyStart failed after {attempts} attempts: {last_err}')
+        return False
 
     def _long_poll_loop(self):
-        self._notify_start()
+        # F-17: only poll once the upstream handshake has succeeded.
+        if not self._notify_start():
+            log.error('WeChat iLink: notifyStart failed; marking unhealthy and NOT polling')
+            return
         while not self._stop.is_set():
             try:
                 resp = self._post('ilink/bot/getupdates', {
@@ -330,7 +347,8 @@ class WeChatIlinkBot:
         user_id = msg.get('from_user_id') or ''
         if not user_id:
             return
-        if self.allowed_users and user_id not in self.allowed_users:
+        # Fail-closed user whitelist (H-08): empty whitelist == deny all.
+        if user_id not in self.allowed_users:
             log.info(f'WeChat iLink: ignoring message from unauthorized user {user_id}')
             return
         text = self._extract_text(msg.get('item_list') or [])

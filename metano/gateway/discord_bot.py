@@ -50,21 +50,31 @@ class DiscordBot:
         async def on_message(message):
             if message.author.bot:
                 return
-            if self.allowed_channels and message.channel.id not in self.allowed_channels:
+            # Fail-closed channel whitelist (H-08): empty whitelist == deny all.
+            if message.channel.id not in self.allowed_channels:
                 return
-            # Only respond to DMs or @mentions
-            if not message.guild or self._bot.user.mentioned_in(message):
-                content = message.content.replace(f"<@{self._bot.user.id}>", "").strip()
-                if not content:
+            # SECURITY (H-08): when a guild_id is configured, strictly scope the
+            # bot to that guild (rejects DMs and other guilds' messages).
+            if self.guild_id is not None:
+                if message.guild is None or message.guild.id != self.guild_id:
+                    return
+            content = message.content or ''
+            is_dm = message.guild is None
+            is_mention = self._bot.user.mentioned_in(message)
+            # F-16: route slash commands, DMs and @mentions to the central router
+            # so /help /search /memory /auto /perms work on Discord too.
+            if content.startswith('/') or is_dm or is_mention:
+                cleaned = content.replace(f"<@{self._bot.user.id}>", "").strip()
+                if not cleaned:
                     return
                 async with message.channel.typing():
                     user_id = str(message.author.id)
-                    response = await router.route_message("discord", user_id, content)
+                    response = await router.route_message("discord", user_id, cleaned)
                 # Discord limit: 2000 chars
                 for chunk in self._chunk(response, 2000):
                     await message.reply(chunk)
                 return
-            # Also handle commands
+            # Non-command, non-mention guild chatter: handle registered !commands.
             await self._bot.process_commands(message)
 
         await self._bot.start(self.token)

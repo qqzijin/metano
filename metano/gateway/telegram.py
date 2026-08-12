@@ -25,9 +25,13 @@ class TelegramBot:
 
         self._app = ApplicationBuilder().token(self.token).build()
 
-        # Handlers
+        # Handlers. F-16: a catch-all COMMAND handler forwards every /xxx to
+        # route_message so the central command table in the Router (/help,
+        # /search, /memory, /auto, /perms, ...) works on Telegram too. Specific
+        # CommandHandlers for new/profile are registered first and take priority.
         self._app.add_handler(CommandHandler("new", self._cmd_new))
         self._app.add_handler(CommandHandler("profile", self._cmd_profile))
+        self._app.add_handler(MessageHandler(filters.COMMAND & filters.TEXT, self._handle_message))
         self._app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message))
         self._app.add_handler(MessageHandler(filters.PHOTO, self._handle_photo))
         self._app.add_handler(MessageHandler(filters.DOCUMENT, self._handle_document))
@@ -62,8 +66,8 @@ class TelegramBot:
         user_id = str(update.effective_user.id)
         username = update.effective_user.username or user_id
 
-        # Auth check
-        if self.allowed_users and update.effective_user.id not in self.allowed_users:
+        # Auth check — fail closed (H-08): empty whitelist denies everyone.
+        if update.effective_user.id not in self.allowed_users:
             await update.message.reply_text("Not authorized.")
             return
 
@@ -84,8 +88,8 @@ class TelegramBot:
     async def _handle_photo(self, update, context):
         user_id = str(update.effective_user.id)
 
-        # Auth check
-        if self.allowed_users and update.effective_user.id not in self.allowed_users:
+        # Auth check — fail closed (H-08): empty whitelist denies everyone.
+        if update.effective_user.id not in self.allowed_users:
             await update.message.reply_text("Not authorized.")
             return
 
@@ -110,8 +114,8 @@ class TelegramBot:
     async def _handle_document(self, update, context):
         user_id = str(update.effective_user.id)
 
-        # Auth check
-        if self.allowed_users and update.effective_user.id not in self.allowed_users:
+        # Auth check — fail closed (H-08): empty whitelist denies everyone.
+        if update.effective_user.id not in self.allowed_users:
             await update.message.reply_text("Not authorized.")
             return
 

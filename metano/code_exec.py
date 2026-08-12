@@ -24,9 +24,12 @@ Python / JavaScript / Shell snippets are executed inside a bubblewrap
   no orphan survives.
 
 If ``bwrap`` is not usable (non-Linux, binary missing, user namespaces
-disabled) execution falls back to direct spawning — still with process-group
-killing on timeout and the same resource limits, but without the read-only
-root / network isolation of the full sandbox.
+disabled) execution is REFUSED by default (fail-closed). Only an explicit
+administrator opt-in (``unsafe_direct=True`` or the
+``METANO_ALLOW_UNSAFE_DIRECT=1`` environment variable) re-enables direct
+spawning — still with process-group killing on timeout and the same resource
+limits, but without the read-only root / network / HOME isolation of the full
+sandbox. That mode is intentionally unisolated and must never be the default.
 """
 import os
 import re
@@ -44,6 +47,12 @@ from metano.log import logger
 MAX_OUTPUT_BYTES = 50000
 MAX_TIMEOUT_SECONDS = 300
 MAX_TOOL_CALLS = 50
+
+# If bwrap is unavailable, execution is fail-closed unless the administrator
+# explicitly opts into unisolated direct execution. This is a last-resort
+# escape hatch for hosts that cannot run bwrap; it disables root-fs, HOME and
+# network isolation, so it must never be the default.
+_ALLOW_UNSAFE_DIRECT = os.environ.get('METANO_ALLOW_UNSAFE_DIRECT', '').strip().lower() in ('1', 'true', 'yes')
 
 # ---- Sandbox resource limits (applied inside the sandbox, soft + hard) ----
 RLIMIT_AS_BYTES = 1024 * 1024 * 1024        # 1 GiB address space (OOM guard)
@@ -326,10 +335,28 @@ def _run_popen(argv: list, cwd: Optional[str], env: dict, timeout: int,
     return result
 
 
+def _unsafe_direct_allowed(unsafe_direct: Optional[bool]) -> bool:
+    """Whether unisolated direct execution is permitted for this call.
+
+    ``unsafe_direct`` (the per-call admin switch) overrides the module-level
+    ``METANO_ALLOW_UNSAFE_DIRECT`` environment variable; ``None`` falls back to
+    that env switch. Both default to disabled.
+    """
+    if unsafe_direct is not None:
+        return bool(unsafe_direct)
+    return _ALLOW_UNSAFE_DIRECT
+
+
+def _sandbox_unavailable(language: str, detail: str) -> dict:
+    """Fail-closed result: never run untrusted code without isolation."""
+    return {'language': language, 'exit_code': -1, 'stdout': '', 'stderr': '',
+            'error': detail}
+
+
 def _execute(argv: list, cwd: str, env: dict, timeout: int, language: str,
              script_host: Optional[str] = None,
              script_sandbox: Optional[str] = None, binds=(),
-             ro_binds=()) -> dict:
+             ro_binds=(), unsafe_direct: Optional[bool] = None) -> dict:
     """Run ``argv`` under the sandbox, streaming output, enforcing limits.
 
     ``argv`` references the snippet script by its *host* path (``script_host``);
@@ -337,6 +364,10 @@ def _execute(argv: list, cwd: str, env: dict, timeout: int, language: str,
     directory is bind-mounted into the sandbox. ``binds`` are read-write mounts
     (script dir), ``ro_binds`` read-only (working dir under $HOME, interpreter
     prefixes).
+
+    If bwrap is unavailable (or fails at runtime) execution FAILS CLOSED unless
+    the caller explicitly opts into unisolated execution via ``unsafe_direct``
+    or the ``METANO_ALLOW_UNSAFE_DIRECT`` environment variable.
     """
     rw_binds = list(binds)
     ro_binds = list(ro_binds)
@@ -358,6 +389,18 @@ def _execute(argv: list, cwd: str, env: dict, timeout: int, language: str,
         full_argv = _bwrap_argv(wrapped, rw_binds=rw_binds, ro_binds=ro_binds)
         proc_cwd = '/'  # never inherit a host cwd that the tmpfs-home hides
     else:
+        if not _unsafe_direct_allowed(unsafe_direct):
+            return _sandbox_unavailable(
+                language,
+                'sandbox unavailable: bubblewrap is not available on this host and '
+                'unsafe direct execution is disabled. Refusing to run unisolated code. '
+                'To allow it, set METANO_ALLOW_UNSAFE_DIRECT=1 or pass '
+                'unsafe_direct=True (NOT recommended).',
+            )
+        logger.warning(
+            'bwrap unavailable; executing %s UNISOLATED (unsafe_direct) — '
+            'no root-fs/HOME/network isolation', language,
+        )
         wrapped = _ulimit_wrap(argv, None)
         full_argv = wrapped
         proc_cwd = cwd or None
@@ -366,14 +409,27 @@ def _execute(argv: list, cwd: str, env: dict, timeout: int, language: str,
         return _run_popen(full_argv, proc_cwd, env, timeout, language)
     except OSError as e:
         if use_bwrap:
-            logger.warning('bwrap execution failed (%s); falling back to direct execution', e)
+            if not _unsafe_direct_allowed(unsafe_direct):
+                logger.warning(
+                    'bwrap execution failed (%s); refusing to fall back to '
+                    'unisolated execution', e,
+                )
+                return _sandbox_unavailable(
+                    language,
+                    f'sandbox unavailable: bwrap failed to start ({e}) and unsafe '
+                    'direct execution is disabled. Refusing to run unisolated code.',
+                )
+            logger.warning(
+                'bwrap execution failed (%s); falling back to direct execution '
+                '(unsafe_direct)', e,
+            )
             try:
                 return _run_popen(_ulimit_wrap(argv, None), cwd or None, env,
                                   timeout, language)
             except OSError as e2:
-                return {'language': language, 'exit_code': -1,
-                        'error': f'Failed to start process: {e2}'}
-        return {'language': language, 'exit_code': -1,
+                return {'language': language, 'exit_code': -1, 'stdout': '',
+                        'stderr': '', 'error': f'Failed to start process: {e2}'}
+        return {'language': language, 'exit_code': -1, 'stdout': '', 'stderr': '',
                 'error': f'Failed to start process: {e}'}
 
 
@@ -402,14 +458,15 @@ def _cleanup(host_dir: str):
 # Public entry point
 # ---------------------------------------------------------------------------
 
-def code_run(code: str, language: str='python', timeout: int=60, working_dir: str='') -> dict:
+def code_run(code: str, language: str='python', timeout: int=60, working_dir: str='',
+             unsafe_direct: bool | None = None) -> dict:
     timeout = min(max(timeout, 1), MAX_TIMEOUT_SECONDS)
     if language == 'python':
-        return _run_python(code, timeout, working_dir)
+        return _run_python(code, timeout, working_dir, unsafe_direct=unsafe_direct)
     elif language == 'javascript':
-        return _run_javascript(code, timeout, working_dir)
+        return _run_javascript(code, timeout, working_dir, unsafe_direct=unsafe_direct)
     elif language == 'shell':
-        return _run_shell(code, timeout, working_dir)
+        return _run_shell(code, timeout, working_dir, unsafe_direct=unsafe_direct)
     else:
         return {'error': f'Unsupported language: {language}. Use python, javascript, or shell.'}
 
@@ -426,7 +483,8 @@ def _check_shell_dangerous(code: str) -> Optional[str]:
     return None
 
 
-def _run_python(code: str, timeout: int, working_dir: str) -> dict:
+def _run_python(code: str, timeout: int, working_dir: str,
+                unsafe_direct: bool | None = None) -> dict:
     workdir, script_host, script_sandbox = _make_script(code, '.py')
     try:
         interp = shutil.which('python3') or 'python3'
@@ -435,6 +493,7 @@ def _run_python(code: str, timeout: int, working_dir: str) -> dict:
             [interp, script_host], working_dir, env, timeout, 'python',
             script_host=script_host, script_sandbox=script_sandbox,
             binds=[(workdir, _SANDBOX_SCRIPT_DIR)],
+            unsafe_direct=unsafe_direct,
         )
         result['timeout_used'] = timeout
         return result
@@ -442,7 +501,8 @@ def _run_python(code: str, timeout: int, working_dir: str) -> dict:
         _cleanup(workdir)
 
 
-def _run_javascript(code: str, timeout: int, working_dir: str) -> dict:
+def _run_javascript(code: str, timeout: int, working_dir: str,
+                    unsafe_direct: bool | None = None) -> dict:
     node_bin = shutil.which('node')
     if not node_bin:
         for p in ('/usr/bin/node', '/usr/local/bin/node'):
@@ -469,12 +529,14 @@ def _run_javascript(code: str, timeout: int, working_dir: str) -> dict:
             [node_bin, script_host], working_dir, env, timeout, 'javascript',
             script_host=script_host, script_sandbox=script_sandbox,
             binds=binds, ro_binds=ro_binds,
+            unsafe_direct=unsafe_direct,
         )
     finally:
         _cleanup(workdir)
 
 
-def _run_shell(code: str, timeout: int, working_dir: str) -> dict:
+def _run_shell(code: str, timeout: int, working_dir: str,
+               unsafe_direct: bool | None = None) -> dict:
     danger = _check_shell_dangerous(code)
     if danger:
         return {'language': 'shell', 'exit_code': -1, 'error': danger}
@@ -486,6 +548,7 @@ def _run_shell(code: str, timeout: int, working_dir: str) -> dict:
             [bash, script_host], working_dir, env, timeout, 'shell',
             script_host=script_host, script_sandbox=script_sandbox,
             binds=[(workdir, _SANDBOX_SCRIPT_DIR)],
+            unsafe_direct=unsafe_direct,
         )
     finally:
         _cleanup(workdir)

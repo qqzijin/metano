@@ -8,6 +8,7 @@ import json
 import os
 import re
 import subprocess
+import threading
 import time
 import urllib.request
 from datetime import datetime, timezone
@@ -54,19 +55,56 @@ def _resolve_tavily_key() -> str:
             pass
     return ''
 
-def semantic_search(query: str, project: str='') -> dict:
+# Serialize ccc invocations so concurrent requests can't spawn a flood of
+# embedding-model processes (M-01 sec).
+_ccc_lock = threading.Lock()
+
+# Server-registered project roots that semantic search may run inside.
+# Mirrors knowledge.ALLOWED_INGEST_PREFIXES.
+def _allowed_semantic_project(project: str) -> str | None:
+    """Return the resolved project path if it is server-registered, else None."""
+    if not project:
+        return None
+    try:
+        p = Path(project).resolve()
+    except (OSError, ValueError):
+        return None
+    home = Path.home()
+    allowed_roots = [
+        home / 'scrapling-project',
+        home / 'DailyHotApi',
+    ]
+    if p == (home / '.claude' / 'metano').resolve() or p.is_relative_to((home / '.claude' / 'metano').resolve()):
+        return str(p)
+    for root in allowed_roots:
+        root = root.resolve()
+        if p == root or p.is_relative_to(root):
+            return str(p)
+    return None
+
+
+def semantic_search(query: str, project: str='', limit: int = 5) -> dict:
     """Search indexed codebases using CocoIndex semantic search.
 
-    Falls back to keyword search if ccc is unavailable.
+    Falls back to keyword search if ccc is unavailable. ``limit`` caps the
+    number of results returned. ``project`` must be a server-registered path.
     """
+    limit = max(1, min(int(limit or 5), 20))
     try:
-        # ccc searches the project indexed in a directory; it has no --project
-        # flag, so run in the target project dir when one is given.
         cmd = ['ccc', 'search', query]
-        run_cwd = project if project and os.path.isdir(project) else None
+        # ccc searches the project indexed in a directory; it has no --project
+        # flag, so run in the target project dir when one is given. Only run in
+        # a server-registered directory (M-01 sec) — never an arbitrary path.
+        run_cwd = None
+        if project:
+            run_cwd = _allowed_semantic_project(project)
+            if run_cwd is None:
+                return {'results': [], 'source': 'forbidden', 'error': 'project not in server-registered allowlist'}
         # Cold start (first search after daemon restart) loads the embedding
-        # model and can take ~70s; warm searches are <1s. Generous timeout.
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120, cwd=run_cwd)
+        # model and can take ~70s; warm searches are <1s. Serialize + timeout
+        # (tightened from 120s) to bound resource use.
+        with _ccc_lock:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60, cwd=run_cwd)
         if result.returncode != 0:
             return {'results': [], 'source': 'ccc_error', 'error': result.stderr[:200]}
         results = []
@@ -85,7 +123,7 @@ def semantic_search(query: str, project: str='') -> dict:
         if current.get('file'):
             results.append(current)
         _log('knowledge', 'semantic_search', {'query': query, 'results': len(results)})
-        return {'results': results[:10], 'source': 'cocoindex'}
+        return {'results': results[:limit], 'source': 'cocoindex'}
     except (subprocess.TimeoutExpired, FileNotFoundError) as e:
         return {'results': [], 'source': 'ccc_unavailable', 'error': str(e)}
 
@@ -158,8 +196,15 @@ def explore_domain(topic: str, depth: int=3) -> dict:
         ingest_result = knowledge_ingest(str(out_path), title=f'Exploration: {topic}')
     else:
         ingest_result = None
-    result = {'status': 'completed', 'topic': topic, 'sources_found': len(search_results), 'findings': findings, 'ingested': bool(ingest_result and ingest_result.get('status') == 'ingested')}
-    _log('knowledge', 'explore_domain', {'topic': topic, 'findings': len(findings)})
+    ingested = bool(ingest_result and ingest_result.get('status') == 'ingested')
+    # SECURITY/F15: only report "completed" when the KB actually ingested the
+    # findings — a failed ingest must remain retryable (not marked explored).
+    if findings and not ingested:
+        err = (ingest_result or {}).get('error', 'ingest failed')
+        result = {'status': 'error', 'topic': topic, 'error': err, 'sources_found': len(search_results), 'findings': findings, 'ingested': False}
+    else:
+        result = {'status': 'completed', 'topic': topic, 'sources_found': len(search_results), 'findings': findings, 'ingested': ingested}
+    _log('knowledge', 'explore_domain', {'topic': topic, 'findings': len(findings), 'ingested': ingested})
     return result
 
 def discover_knowledge_gaps() -> list[dict]:

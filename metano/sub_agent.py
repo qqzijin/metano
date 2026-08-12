@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import signal
 import subprocess
 import threading
@@ -48,13 +49,26 @@ class AgentTask:
     started_at: float = 0.0
     completed_at: float = 0.0
     tokens_used: int = 0
-    pid: int = 0   # OS pid of the claude sub-process (0 = not spawned yet)
+    pid: int = 0      # OS pid of the claude sub-process (0 = not spawned yet)
+    owner: str = ''   # A2A token subject that created the task ('' = local)
+
+
+# M-02: task ids are stored as ``AGENT_DIR / f'{task_id}.json'`` — a fixed
+# charset/length keeps them from ever being a path-traversal primitive.  12-64
+# alphanumeric/underscore/dash covers the legacy 12-hex ids and the new 32-hex
+# ids while rejecting ``/``, ``..``, backslashes and other path metacharacters.
+_TASK_ID_RE = re.compile(r'^[A-Za-z0-9_-]{12,64}$')
 
 
 class AgentDelegator:
 
     def __init__(self):
-        AGENT_DIR.mkdir(parents=True, exist_ok=True)
+        # M-08: the task store must be private regardless of the process umask.
+        AGENT_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+        try:
+            os.chmod(AGENT_DIR, 0o700)
+        except OSError:
+            pass
         self._tasks: dict[str, AgentTask] = {}
         self._max_concurrent = 3
         self._default_timeout = 120
@@ -156,29 +170,32 @@ class AgentDelegator:
             return False
 
     # ── spawn (sync) ────────────────────────────────────────────────────────
-    def spawn(self, task: str, model: str='', timeout: int=120) -> dict:
+    def spawn(self, task: str, model: str='', timeout: int=120, owner: str='') -> dict:
         """Spawn a sub-agent to handle a task (blocks the calling thread).
 
         When the concurrency limit is reached the call waits up to
         ``_acquire_timeout`` seconds, then returns a ``status='failed'`` task
         whose ``error`` explains the limit instead of forking another process.
+
+        ``owner`` is the authenticated A2A subject that created the task; it is
+        recorded for task-level ownership checks (M-02).
         """
         if not self.acquire():
-            task_id = uuid.uuid4().hex[:12]
+            task_id = uuid.uuid4().hex[:32]
             agent_task = AgentTask(
                 id=task_id, task=task, model=model, status='failed',
                 error=(f'Concurrency limit reached ({self._max_concurrent} '
                        f'concurrent sub-agents); retry later'),
-                started_at=time.time(), completed_at=time.time())
+                started_at=time.time(), completed_at=time.time(), owner=owner)
             self._tasks[task_id] = agent_task
             self._save_task(agent_task)
             return {'id': task_id, 'status': 'failed', 'result': '',
                     'error': agent_task.error, 'duration_seconds': 0}
         import shutil
         claude_bin = os.environ.get('CLAUDE_BIN') or shutil.which('claude') or '/home/dk/local/node/bin/claude'
-        task_id = uuid.uuid4().hex[:12]
+        task_id = uuid.uuid4().hex[:32]
         agent_task = AgentTask(id=task_id, task=task, model=model, status='running',
-                               started_at=time.time())
+                               started_at=time.time(), owner=owner)
         self._tasks[task_id] = agent_task
         cmd = [claude_bin, '-p', task]
         if model:
@@ -189,12 +206,20 @@ class AgentDelegator:
             result = subprocess.run(cmd, capture_output=True, text=True,
                                     timeout=timeout or self._default_timeout,
                                     start_new_session=True)
+            # F-18: a non-zero exit code means the sub-agent failed even when it
+            # produced stdout — never report that as 'completed'.
             agent_task.result = result.stdout.strip()
-            agent_task.status = 'completed'
             agent_task.completed_at = time.time()
-            if not agent_task.result and result.stderr:
-                agent_task.error = result.stderr[:500]
+            if result.returncode != 0:
                 agent_task.status = 'failed'
+                agent_task.error = (result.stderr or result.stdout or '').strip()[:500] \
+                    or f'non-zero exit code {result.returncode}'
+            elif agent_task.result:
+                agent_task.status = 'completed'
+            else:
+                agent_task.status = 'failed'
+                agent_task.error = (result.stderr or '').strip()[:500] \
+                    or f'exit code {result.returncode}'
         except subprocess.TimeoutExpired as e:
             proc = getattr(e, 'process', None)
             self._kill_pgid(proc.pid if proc is not None else 0)
@@ -216,7 +241,7 @@ class AgentDelegator:
                 if agent_task.completed_at else 0}
 
     # ── spawn_async ─────────────────────────────────────────────────────────
-    async def spawn_async(self, task: str, model: str='', timeout: int=120) -> dict:
+    async def spawn_async(self, task: str, model: str='', timeout: int=120, owner: str='') -> dict:
         """Spawn a sub-agent asynchronously.
 
         Acquires a concurrency slot first; raises
@@ -227,9 +252,9 @@ class AgentDelegator:
             raise ConcurrencyLimitError(
                 f'Concurrency limit reached ({self._max_concurrent} concurrent '
                 f'sub-agents); retry later')
-        return await self._spawn_async_impl(task, model, timeout)
+        return await self._spawn_async_impl(task, model, timeout, owner)
 
-    async def _spawn_async_impl(self, task: str, model: str='', timeout: int=120) -> dict:
+    async def _spawn_async_impl(self, task: str, model: str='', timeout: int=120, owner: str='') -> dict:
         """Run one claude sub-process and wait for its result.
 
         The caller must already hold a concurrency slot (via ``acquire_async``
@@ -241,9 +266,9 @@ class AgentDelegator:
         """
         import shutil
         claude_bin = os.environ.get('CLAUDE_BIN') or shutil.which('claude') or '/home/dk/local/node/bin/claude'
-        task_id = uuid.uuid4().hex[:12]
+        task_id = uuid.uuid4().hex[:32]
         agent_task = AgentTask(id=task_id, task=task, model=model, status='running',
-                               started_at=time.time())
+                               started_at=time.time(), owner=owner)
         self._tasks[task_id] = agent_task
         cmd = [claude_bin, '-p', task]
         if model:
@@ -259,12 +284,20 @@ class AgentDelegator:
             agent_task.pid = proc.pid
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(), timeout=timeout or self._default_timeout)
+            # F-18: a non-zero exit code means the sub-agent failed even when it
+            # produced stdout — never report that as 'completed'.
             agent_task.result = stdout.decode().strip()
-            agent_task.status = 'completed'
             agent_task.completed_at = time.time()
-            if not agent_task.result and stderr:
-                agent_task.error = stderr.decode()[:500]
+            if proc.returncode != 0:
                 agent_task.status = 'failed'
+                agent_task.error = (stderr.decode() or stdout.decode() or '').strip()[:500] \
+                    or f'non-zero exit code {proc.returncode}'
+            elif agent_task.result:
+                agent_task.status = 'completed'
+            else:
+                agent_task.status = 'failed'
+                agent_task.error = (stderr.decode() or '').strip()[:500] \
+                    or f'exit code {proc.returncode}'
         except asyncio.TimeoutError:
             self._kill_process(proc)
             if proc is not None:
@@ -316,20 +349,84 @@ class AgentDelegator:
         return {'id': task.id, 'task': task.task, 'status': task.status, 'result': task.result, 'error': task.error, 'duration_seconds': task.completed_at - task.started_at if task.completed_at else 0}
 
     def list_tasks(self) -> list[dict]:
-        """List all sub-agent tasks."""
-        return [{'id': t.id, 'task': t.task[:80], 'status': t.status, 'started_at': t.started_at, 'completed_at': t.completed_at} for t in self._tasks.values()]
+        """List all sub-agent tasks (in-memory only)."""
+        return [{'id': t.id, 'task': t.task[:80], 'status': t.status, 'started_at': t.started_at, 'completed_at': t.completed_at, 'owner': t.owner} for t in self._tasks.values()]
 
+    def list_tasks_from_disk(self) -> list[dict]:
+        """List all sub-agent tasks, including historical ones persisted on disk.
+
+        F-18: tasks/list must survive a restart — the in-memory dict is empty
+        after boot, so scan ``AGENT_DIR/*.json`` and merge with live tasks.
+        """
+        seen = set(self._tasks.keys())
+        out = [{'id': t.id, 'task': t.task[:80], 'status': t.status,
+                'started_at': t.started_at, 'completed_at': t.completed_at,
+                'owner': t.owner} for t in self._tasks.values()]
+        try:
+            for p in AGENT_DIR.glob('*.json'):
+                if p.stem in seen:
+                    continue
+                t = self._load_task(p.stem)
+                if t is not None:
+                    out.append({'id': t.id, 'task': t.task[:80], 'status': t.status,
+                                'started_at': t.started_at, 'completed_at': t.completed_at,
+                                'owner': t.owner})
+        except OSError:
+            logger.exception('list_tasks_from_disk failed')
+        out.sort(key=lambda d: d.get('started_at') or 0, reverse=True)
+        return out
+
+    @staticmethod
+    def _task_path(task_id: str):
+        """Return the containment-checked task JSON path, or None when invalid.
+
+        Rejects any task id that is not a plain ``[A-Za-z0-9_-]`` token (blocks
+        ``../``, absolute paths) and refuses symlinks / resolved paths that
+        escape AGENT_DIR (M-02).
+        """
+        if not task_id or not _TASK_ID_RE.match(task_id):
+            return None
+        base = AGENT_DIR.resolve()
+        raw = base / f'{task_id}.json'
+        try:
+            # Reject symlinks outright (check before resolve, since resolve()
+            # follows them) and any resolved path escaping AGENT_DIR.
+            if raw.is_symlink():
+                return None
+            p = raw.resolve()
+            if not p.is_relative_to(base):
+                return None
+        except OSError:
+            return None
+        return p
 
     def _save_task(self, task: AgentTask):
-        path = AGENT_DIR / f'{task.id}.json'
-        path.write_text(json.dumps({'id': task.id, 'task': task.task, 'model': task.model, 'status': task.status, 'result': task.result, 'error': task.error, 'started_at': task.started_at, 'completed_at': task.completed_at, 'pid': task.pid}, ensure_ascii=False))
+        path = self._task_path(task.id)
+        if path is None:
+            logger.error('refusing to save task with invalid id: %r', task.id)
+            return
+        AGENT_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+        payload = {'id': task.id, 'task': task.task, 'model': task.model,
+                   'status': task.status, 'result': task.result, 'error': task.error,
+                   'started_at': task.started_at, 'completed_at': task.completed_at,
+                   'pid': task.pid, 'owner': task.owner}
+        path.write_text(json.dumps(payload, ensure_ascii=False))
+        # M-08: task JSON must be private regardless of umask.
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
 
     def _load_task(self, task_id: str) -> AgentTask | None:
-        path = AGENT_DIR / f'{task_id}.json'
-        if not path.exists():
+        path = self._task_path(task_id)
+        if path is None or not path.exists():
             return None
         data = json.loads(path.read_text())
-        task = AgentTask(id=data['id'], task=data['task'], model=data.get('model', ''), status=data['status'], result=data.get('result', ''), error=data.get('error', ''), started_at=data.get('started_at', 0), completed_at=data.get('completed_at', 0), pid=data.get('pid', 0))
+        task = AgentTask(id=data['id'], task=data['task'], model=data.get('model', ''),
+                         status=data['status'], result=data.get('result', ''),
+                         error=data.get('error', ''), started_at=data.get('started_at', 0),
+                         completed_at=data.get('completed_at', 0), pid=data.get('pid', 0),
+                         owner=data.get('owner', ''))
         self._tasks[task_id] = task
         return task
 

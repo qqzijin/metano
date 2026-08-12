@@ -61,6 +61,9 @@ def get_db(db_path: Optional[Path] = None) -> sqlite3.Connection:
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA cache_size=-8000")
     conn.execute("PRAGMA foreign_keys=ON")
+    # F-07: bound lock-contention waiting so concurrent gateway/web writers do
+    # not immediately fail with "database is locked"; SQLite retries internally.
+    conn.execute("PRAGMA busy_timeout=5000")
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -80,15 +83,16 @@ def init_db(db_path: Optional[Path] = None) -> sqlite3.Connection:
 
 def persist_exchange(session_id: str, user_key: str, platform: str, msg: str, response: str,
                      usage: Optional[dict] = None, model: Optional[str] = None,
-                     conn: Optional[sqlite3.Connection] = None) -> str:
+                     conn: Optional[sqlite3.Connection] = None) -> tuple:
     """Persist one user + assistant exchange into bridge.db.
 
-    Best-effort: any failure is logged and the caller's ``session_id`` is
-    returned unchanged. When no ``session_id`` is given, a brand-new session is
-    created — a missing id means "this is a new conversation", never "continue
-    the most recent one" (that intent is carried explicitly by a non-empty
-    ``session_id``, set by the router's restore/inject paths). Returns the
-    session_id used (existing or new).
+    F-07: returns a structured result ``(session_id, persisted: bool)``. The
+    caller must only treat the exchange as saved when ``persisted`` is True and
+    must surface a warning to the user otherwise. When no ``session_id`` is
+    given, a brand-new session is created — a missing id means "this is a new
+    conversation", never "continue the most recent one" (that intent is carried
+    explicitly by a non-empty ``session_id``, set by the router's restore/inject
+    paths).
 
     Real usage (input/output/cache_read tokens) drives the per-message token
     columns and the accumulated session totals + estimated cost via
@@ -135,12 +139,20 @@ def persist_exchange(session_id: str, user_key: str, platform: str, msg: str, re
             (now, in_tok, out_tok, cache_tok, cost, model, session_id)
         )
         conn.commit()
+        return session_id, True
+    except sqlite3.OperationalError as e:
+        msg_lower = str(e).lower()
+        if 'locked' in msg_lower or 'busy' in msg_lower:
+            logger.warning(f'persist_exchange database lock conflict: {e}')
+        else:
+            logger.exception('persist_exchange failed')
+        return session_id, False
     except Exception:
         logger.exception('persist_exchange failed')
+        return session_id, False
     finally:
         if own:
             conn.close()
-    return session_id
 
 
 def live_db_stats(conn: Optional[sqlite3.Connection] = None) -> dict:

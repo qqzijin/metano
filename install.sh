@@ -189,8 +189,54 @@ ok "数据库就绪"
 # 6. 检测 LLM key（不阻塞安装）
 # ════════════════════════════════════════════════════════════════════════════
 info "[6/8] 检查 LLM key"
+# 安全加载 .env：只用 python 解析键值对（不当作 shell 执行），
+# 且先校验属主/权限/符号链接，并拒绝含 shell 元字符的值（M-05）。
 if [ -f "$METANO_HOME/.env" ]; then
-  set -a; . "$METANO_HOME/.env"; set +a
+  info "加载 $METANO_HOME/.env（安全解析，不执行 shell）"
+  _env_safe="$("$PYTHON_BIN" - "$METANO_HOME/.env" <<'PYEOF'
+import os, stat, sys
+path = sys.argv[1]
+try:
+    st = os.lstat(path)
+except OSError as e:
+    sys.stderr.write(f"无法读取 .env: {e}\n"); sys.exit(1)
+if stat.S_ISLNK(st.st_mode):
+    sys.stderr.write(".env 是符号链接，拒绝加载\n"); sys.exit(1)
+uid = os.geteuid()
+if st.st_uid != uid and st.st_uid != 0:
+    sys.stderr.write(f".env 属主 UID {st.st_uid} 与当前用户 {uid} 不符，拒绝加载\n"); sys.exit(1)
+if st.st_mode & 0o022:
+    sys.stderr.write(".env 权限过宽（group/other 可写），拒绝加载；请 chmod 600\n"); sys.exit(1)
+bad = set("$`;|&")
+out = []
+for lineno, raw in enumerate(open(path, encoding='utf-8'), 1):
+    line = raw.rstrip("\r\n")
+    if not line.strip() or line.lstrip().startswith("#"):
+        continue
+    if line.startswith("export "):
+        line = line[len("export "):]
+    if "=" not in line:
+        sys.stderr.write(f".env 第 {lineno} 行缺少 '='，拒绝加载\n"); sys.exit(1)
+    key, _, value = line.partition("=")
+    key = key.strip()
+    value = value.strip()
+    if not key or not key.replace("_", "a").isalnum() or key[0].isdigit():
+        sys.stderr.write(f".env 第 {lineno} 行变量名非法: {key!r}\n"); sys.exit(1)
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        value = value[1:-1]
+    if any(c in value for c in bad):
+        sys.stderr.write(f".env 第 {lineno} 行变量 {key} 含非法字符，拒绝加载\n"); sys.exit(1)
+    out.append(f"{key}={value}")
+sys.stdout.write("\n".join(out))
+PYEOF
+)" || fail "安全解析 .env 失败（请检查属主/权限/内容，参考 .env.example）"
+  while IFS= read -r _env_line; do
+    [ -n "$_env_line" ] || continue
+    _env_key="${_env_line%%=*}"
+    _env_val="${_env_line#*=}"
+    export "$_env_key=$_env_val"
+  done <<< "$_env_safe"
+  info ".env 已加载"
 fi
 
 _is_placeholder() {

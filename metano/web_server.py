@@ -1,9 +1,11 @@
 """FastAPI web dashboard for metano."""
 import json
+import os
 import sqlite3
 import time
 import uuid
 from pathlib import Path
+from urllib.parse import urlparse
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect, Request, Response, Depends, UploadFile, File
 from fastapi.responses import StreamingResponse
 import asyncio
@@ -11,10 +13,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
-from .auth import authenticate_user, check_login_rate, record_login_attempt, set_auth_cookies, clear_auth_cookies, get_current_user_from_request, try_refresh_from_request, decode_token, change_password, AUTH_WHITELIST, ACCESS_TOKEN_EXPIRE_MINUTES, _audit, require_role
+from .auth import authenticate_user, check_login_rate, record_login_attempt, set_auth_cookies, clear_auth_cookies, get_current_user_from_request, try_refresh_from_request, decode_token, change_password, AUTH_WHITELIST, ACCESS_TOKEN_EXPIRE_MINUTES, _audit, require_role, bump_token_version, create_ws_ticket, consume_ws_ticket, get_user_by_username, get_token_version, validate_access_token
 from .db import get_db, init_db, DB_PATH
 from .indexer import index_all
-from .paths import CRON_DIR, CRON_JOBS_FILE, CONFIG_PATH, EVO_LOG, AUDIT_LOG, EVO_DB_PATH, HONCHO_DB, KB_DB, MEMORY_DB, UPLOADS_DIR
+from .paths import CRON_DIR, CRON_JOBS_FILE, CONFIG_PATH, EVO_LOG, AUDIT_LOG, EVO_DB_PATH, HONCHO_DB, KB_DB, MEMORY_DB, UPLOADS_DIR, home_dir
 from . import collab as collab
 WEB_DIR = Path(__file__).parent.parent / 'web' / 'dist'
 SENSITIVE_KEYS = {'api_key', 'bot_token', 'app_secret', 'encryption_key', 'verification_token', 'token', 'secret', 'password', 'ha_token'}
@@ -54,7 +56,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
             new_access = try_refresh_from_request(request)
             if new_access:
                 response = await call_next(request)
-                response.set_cookie('access_token', new_access, max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60, httponly=True, samesite='lax', path='/')
+                # SECURITY (H-06): Secure flag — see auth.set_auth_cookies.
+                response.set_cookie('access_token', new_access, max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60, httponly=True, samesite='lax', path='/', secure=True)
                 return response
             return JSONResponse(status_code=401, content={'detail': '未登录'})
         return await call_next(request)
@@ -80,18 +83,27 @@ async def auth_login(request: Request, response: Response):
 
 @app.post('/api/auth/refresh')
 async def auth_refresh(request: Request, response: Response):
-    new_access = try_refresh_from_request(request)
-    if not new_access:
-        raise HTTPException(status_code=401, detail='请重新登录')
+    # SECURITY (H-06): validate the refresh token against the user's current
+    # token_version, re-query the user's live role, and rotate BOTH tokens so a
+    # stolen refresh token can't be replayed after use.
     token = request.cookies.get('refresh_token')
-    payload = decode_token(token)
-    if payload:
-        response.set_cookie('access_token', new_access, max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60, httponly=True, samesite='lax', path='/')
-        return {'username': payload['sub'], 'role': payload.get('role', 'user')}
-    raise HTTPException(status_code=401, detail='请重新登录')
+    payload = decode_token(token) if token else None
+    if not payload or payload.get('type') != 'refresh':
+        raise HTTPException(status_code=401, detail='请重新登录')
+    user = get_user_by_username(payload['sub'])
+    if not user:
+        raise HTTPException(status_code=401, detail='请重新登录')
+    if payload.get('tv', 0) != get_token_version(payload['sub']):
+        raise HTTPException(status_code=401, detail='登录已失效，请重新登录')
+    return set_auth_cookies(response, user['username'], user['role'])
 
 @app.post('/api/auth/logout')
-async def auth_logout(response: Response):
+async def auth_logout(request: Request, response: Response):
+    user = get_current_user_from_request(request)
+    if user:
+        # SECURITY (H-06): bump token_version so all outstanding access/refresh
+        # tokens for this user are revoked (not just the browser cookie).
+        bump_token_version(user['username'])
     clear_auth_cookies(response)
     return {'status': 'logged_out'}
 
@@ -102,8 +114,22 @@ async def auth_me(request: Request):
         raise HTTPException(status_code=401, detail='未登录')
     return user
 
+@app.post('/api/auth/ws-ticket')
+async def auth_ws_ticket(request: Request):
+    """Issue a short-lived (30s) one-time ticket for opening the /ws socket.
+
+    The access token is HttpOnly so the front-end cannot read it to send as the
+    WS first message; it fetches this ticket with its normal cookie auth and
+    sends it as the first WS message instead (F-12).
+    """
+    user = get_current_user_from_request(request)
+    if not user:
+        raise HTTPException(status_code=401, detail='未登录')
+    ticket = create_ws_ticket(user['username'], user['role'])
+    return {'ticket': ticket, 'expires_in': 30}
+
 @app.post('/api/auth/change-password')
-async def auth_change_password(request: Request):
+async def auth_change_password(request: Request, response: Response):
     user = get_current_user_from_request(request)
     if not user:
         raise HTTPException(status_code=401, detail='未登录')
@@ -114,14 +140,81 @@ async def auth_change_password(request: Request):
         raise HTTPException(status_code=400, detail='新密码长度至少6位')
     if not change_password(user['username'], old_password, new_password):
         raise HTTPException(status_code=400, detail='原密码不正确')
-    return {'status': 'password_changed'}
+    # change_password bumped token_version (revoking old tokens). Re-issue the
+    # cookies so this session stays authenticated under the new version.
+    return set_auth_cookies(response, user['username'], user['role'])
 
 def _error_response(message: str, status_code: int = 500, extra: dict | None = None) -> JSONResponse:
-    """Standard error envelope for API responses."""
-    content = {'success': False, 'error': {'message': message}}
+    """Standard error envelope for API responses.
+
+    The canonical schema is ``{success: false, error: {message: ...}}`` with a
+    correct HTTP status code. ``detail`` is included for backward compatibility
+    with the front-end's fetchAPI client (M-01 func).
+    """
+    content = {'success': False, 'error': {'message': message}, 'detail': message}
     if extra:
         content.update(extra)
     return JSONResponse(content=content, status_code=status_code)
+
+
+def _result_or_error(result: dict, status_code: int = 400, error_status: int | None = None):
+    """Convert a ``{'error': ...}`` business failure into a proper HTTP error.
+
+    Several handlers (home control, browser, tavily, ingest) previously returned
+    ``{'error': ...}`` with HTTP 200, which the front-end rendered as success.
+    """
+    if isinstance(result, dict) and result.get('error'):
+        return _error_response(str(result['error']), status_code=error_status or status_code)
+    return result
+
+
+def _user_scope(request: Request) -> str:
+    """Return the ``sessions.user_key`` scope for the authenticated web user.
+
+    Web sessions are persisted with ``platform='web'`` so the key is
+    ``web:<username>`` (mirrors the sessions.user_key = f'{platform}:{user_id}'
+    convention used by _inject_session_context and db.persist_exchange).
+    """
+    user = getattr(request.state, 'user', None)
+    if not user:
+        raise HTTPException(status_code=401, detail='Not authenticated')
+    return f'web:{user["username"]}'
+
+
+def _session_scope_sql(request: Request) -> tuple[str, list]:
+    """Return (where_fragment, params) scoping a query to the caller's own data.
+
+    The fragment is safe to embed as ``WHERE {frag} AND <rest>``. Admins see
+    everything (including legacy ``user_key IS NULL`` rows); regular users only
+    see their own web sessions (H-01 IDOR fix).
+    """
+    user = getattr(request.state, 'user', None)
+    if not user:
+        raise HTTPException(status_code=401, detail='Not authenticated')
+    if user.get('role') == 'admin':
+        return '1=1', []
+    return 'sessions.user_key = ?', [f'web:{user["username"]}']
+
+
+def _session_scope_sql_alias(request: Request, alias: str = 's') -> tuple[str, list]:
+    """Like _session_scope_sql but qualified with a JOIN alias (e.g. ``s``)."""
+    where, params = _session_scope_sql(request)
+    return where.replace('sessions.', f'{alias}.', 1), params
+
+
+def _write_config_safe(config: dict):
+    """Write gateway_config.yaml with owner-only permissions (M-08).
+
+    Mirrors auth._save_config's chmod(0600) so config secrets (API keys, token,
+    password hashes) are never world-readable regardless of the process umask.
+    """
+    import yaml
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    CONFIG_PATH.write_text(yaml.dump(config, allow_unicode=True, default_flow_style=False))
+    try:
+        os.chmod(CONFIG_PATH, 0o600)
+    except OSError:
+        pass
 
 
 def _normalize_cron_job(j: dict, idx: int) -> dict:
@@ -177,36 +270,21 @@ def _save_cron_jobs(jobs: list[dict]):
 
 @app.get('/health')
 def health_check():
-    """Health check: verify all databases and tables are accessible."""
-    checks = {}
-    db_specs = [
-        ('bridge', DB_PATH, ['sessions', 'messages']),
-        ('evo', EVO_DB_PATH, ['agent_rules', 'action_log', 'evolution_meta', 'architecture_snapshots']),
-        ('honcho', HONCHO_DB, ['users', 'beliefs', 'observations']),
-        ('knowledge', KB_DB, ['documents', 'chunks']),
-        ('memory', MEMORY_DB, ['memories']),
-    ]
-    all_ok = True
-    for name, path, expected_tables in db_specs:
-        if not path.exists():
-            checks[name] = {'status': 'missing', 'path': str(path)}
-            all_ok = False
-            continue
-        try:
-            conn = sqlite3.connect(str(path))
-            conn.row_factory = sqlite3.Row
-            tables = {r['name'] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-            missing = set(expected_tables) - tables
-            conn.close()
-            if missing:
-                checks[name] = {'status': 'degraded', 'missing_tables': list(missing)}
-                all_ok = False
-            else:
-                checks[name] = {'status': 'ok'}
-        except Exception as e:
-            checks[name] = {'status': 'error', 'error': str(e)}
-            all_ok = False
-    return {'status': 'ok' if all_ok else 'degraded', 'databases': checks}
+    """Minimal public health endpoint (L-02).
+
+    Only returns a boolean status + service name. Absolute paths, database
+    names, table lists and raw exception text are logged, never exposed to
+    unauthenticated callers.
+    """
+    ok = True
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        conn.execute('SELECT 1')
+        conn.close()
+    except Exception:
+        logger.exception('health check failed')
+        ok = False
+    return {'status': 'ok' if ok else 'degraded', 'service': 'metano'}
 
 @app.get('/api/status')
 def status():
@@ -252,13 +330,19 @@ def status():
     return result
 
 @app.get('/api/sessions')
-def list_sessions(limit: int=20, offset: int=0, search: str=''):
+def list_sessions(request: Request, limit: int=20, offset: int=0, search: str=''):
+    # SECURITY (H-01): scope to the caller's own web sessions; admins see all.
+    scope, params = _session_scope_sql(request)
+    limit = min(max(int(limit), 1), 200)
+    offset = max(int(offset), 0)
     conn = get_db()
+    where = f'WHERE {scope} AND '
     if search:
-        rows = conn.execute('SELECT id, title, model, message_count, tool_call_count, input_tokens, output_tokens, estimated_cost_usd, started_at, last_active FROM sessions WHERE title LIKE ? ORDER BY last_active DESC LIMIT ? OFFSET ?', (f'%{search}%', limit, offset)).fetchall()
+        rows = conn.execute(f'SELECT id, title, model, message_count, tool_call_count, input_tokens, output_tokens, estimated_cost_usd, started_at, last_active FROM sessions {where}title LIKE ? ORDER BY last_active DESC LIMIT ? OFFSET ?', params + [f'%{search}%', limit, offset]).fetchall()
+        total = conn.execute(f'SELECT COUNT(*) as c FROM sessions {where}title LIKE ?', params + [f'%{search}%']).fetchone()['c']
     else:
-        rows = conn.execute('SELECT id, title, model, message_count, tool_call_count, input_tokens, output_tokens, estimated_cost_usd, started_at, last_active FROM sessions ORDER BY last_active DESC LIMIT ? OFFSET ?', (limit, offset)).fetchall()
-    total = conn.execute('SELECT COUNT(*) as c FROM sessions').fetchone()['c']
+        rows = conn.execute(f'SELECT id, title, model, message_count, tool_call_count, input_tokens, output_tokens, estimated_cost_usd, started_at, last_active FROM sessions {where}1=1 ORDER BY last_active DESC LIMIT ? OFFSET ?', params + [limit, offset]).fetchall()
+        total = conn.execute(f'SELECT COUNT(*) as c FROM sessions {where}1=1', params).fetchone()['c']
     return {'items': [dict(r) for r in rows], 'total': total}
 
 def _search_snippet(content: str, q: str, radius: int = 60) -> str:
@@ -277,12 +361,16 @@ def _search_snippet(content: str, q: str, radius: int = 60) -> str:
 
 
 @app.get('/api/sessions/search')
-def search_sessions(q: str=Query(...), limit: int=20, offset: int=0):
+def search_sessions(request: Request, q: str=Query(...), limit: int=20, offset: int=0):
+    # SECURITY (H-01): only search the caller's own sessions' messages.
+    scope, params = _session_scope_sql_alias(request, 's')
+    limit = min(max(int(limit), 1), 100)
+    offset = max(int(offset), 0)
     conn = get_db()
     try:
         pattern = f'%{q}%'
-        total = conn.execute('SELECT COUNT(*) as c FROM messages WHERE content LIKE ?', (pattern,)).fetchone()['c']
-        rows = conn.execute('SELECT m.session_id, m.role, m.content AS raw, m.timestamp, s.title FROM messages m JOIN sessions s ON s.id = m.session_id WHERE m.content LIKE ? ORDER BY m.timestamp DESC LIMIT ? OFFSET ?', (pattern, limit, offset)).fetchall()
+        total = conn.execute(f'SELECT COUNT(*) as c FROM messages m JOIN sessions s ON s.id = m.session_id WHERE {scope} AND m.content LIKE ?', params + [pattern]).fetchone()['c']
+        rows = conn.execute(f'SELECT m.session_id, m.role, m.content AS raw, m.timestamp, s.title FROM messages m JOIN sessions s ON s.id = m.session_id WHERE {scope} AND m.content LIKE ? ORDER BY m.timestamp DESC LIMIT ? OFFSET ?', params + [pattern, limit, offset]).fetchall()
         results = []
         for r in rows:
             d = dict(r)
@@ -294,28 +382,32 @@ def search_sessions(q: str=Query(...), limit: int=20, offset: int=0):
         return {'query': q, 'results': [], 'total': 0}
 
 @app.get('/api/search')
-def global_search(q: str=Query(...), limit: int=20, offset: int=0):
+def global_search(request: Request, q: str=Query(...), limit: int=20, offset: int=0):
     """Alias for /api/sessions/search."""
-    return search_sessions(q=q, limit=limit, offset=offset)
+    return search_sessions(request, q=q, limit=limit, offset=offset)
 
 @app.get('/api/sessions/{session_id}')
-def get_session(session_id: str):
+def get_session(request: Request, session_id: str):
     conn = get_db()
-    row = conn.execute('SELECT id, title, model, message_count, tool_call_count, input_tokens, output_tokens, estimated_cost_usd, started_at, last_active FROM sessions WHERE id = ?', (session_id,)).fetchone()
+    scope, params = _session_scope_sql(request)
+    row = conn.execute(f'SELECT id, title, model, message_count, tool_call_count, input_tokens, output_tokens, estimated_cost_usd, started_at, last_active FROM sessions WHERE {scope} AND id = ?', params + [session_id]).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail='Session not found')
     return dict(row)
 
 @app.get('/api/sessions/{session_id}/messages')
-def get_session_messages(session_id: str, limit: int=200, offset: int=0):
+def get_session_messages(request: Request, session_id: str, limit: int=200, offset: int=0):
     conn = get_db()
-    rows = conn.execute('SELECT id, role, content, tool_name, tool_calls, timestamp, input_tokens, output_tokens, duration_ms FROM messages WHERE session_id = ? ORDER BY timestamp ASC LIMIT ? OFFSET ?', (session_id, limit, offset)).fetchall()
-    total = conn.execute('SELECT COUNT(*) as c FROM messages WHERE session_id = ?', (session_id,)).fetchone()['c']
+    scope, params = _session_scope_sql(request)
+    limit = min(max(int(limit), 1), 500)
+    offset = max(int(offset), 0)
+    rows = conn.execute(f'SELECT m.id, m.role, m.content, m.tool_name, m.tool_calls, m.timestamp, m.input_tokens, m.output_tokens, m.duration_ms FROM messages m JOIN sessions s ON s.id = m.session_id WHERE {scope} AND m.session_id = ? ORDER BY m.timestamp ASC LIMIT ? OFFSET ?', params + [session_id, limit, offset]).fetchall()
+    total = conn.execute(f'SELECT COUNT(*) as c FROM messages m JOIN sessions s ON s.id = m.session_id WHERE {scope} AND m.session_id = ?', params + [session_id]).fetchone()['c']
     return {'items': [dict(r) for r in rows], 'total': total}
 
 @app.get('/api/analytics/usage')
 @app.get('/api/analytics')
-def analytics_usage(days: int=30):
+def analytics_usage(request: Request, days: int=30):
     """统计总览。口径分离：「单次对话 token」与「每日总用量」互不混淆。
 
     - ``daily``：**每日总用量** —— 按消息实际发生日聚合，跨日会话的 in/out token
@@ -325,38 +417,47 @@ def analytics_usage(days: int=30):
       只统计窗口内实际发生的请求），保证加总永远一致；缓存 token 与费用没有消息级
       明细，按「last_active 落在窗口内」的会话汇总。
     - ``sessions``：**单次对话** token 排行 —— 每条会话的输入/输出/缓存 token 与费用。
+
+    SECURITY (H-01): every query is scoped to the caller's own web sessions
+    (admins see everything).
     """
     conn = get_db()
+    days = min(max(int(days), 1), 365)
     cutoff = time.time() - days * 86400
-    daily = _analytics_daily(conn, cutoff)
+    scope_s, params_s = _session_scope_sql_alias(request, 's')      # messages JOIN sessions
+    scope_sess, params_sess = _session_scope_sql(request)            # sessions alone
+    daily = _analytics_daily(conn, cutoff, scope_s, params_s)
     # in/out：消息级（与 daily 同口径，跨窗口长会话只统计窗口内发生的请求）
     msg = conn.execute(
-        'SELECT COUNT(DISTINCT session_id) as session_count, COUNT(*) as message_count, '
-        'SUM(tool_name IS NOT NULL) as tool_call_count, '
-        'COALESCE(SUM(input_tokens),0) as input_tokens, COALESCE(SUM(output_tokens),0) as output_tokens '
-        'FROM messages WHERE timestamp >= ?',
-        (cutoff,)
+        'SELECT COUNT(DISTINCT m.session_id) as session_count, COUNT(*) as message_count, '
+        'SUM(m.tool_name IS NOT NULL) as tool_call_count, '
+        'COALESCE(SUM(m.input_tokens),0) as input_tokens, COALESCE(SUM(m.output_tokens),0) as output_tokens '
+        'FROM messages m LEFT JOIN sessions s ON s.id = m.session_id '
+        f'WHERE {scope_s} AND m.timestamp >= ?',
+        params_s + [cutoff]
     ).fetchone()
     by_model = conn.execute(
         'SELECT COALESCE(s.model, \'<unknown>\') as model, COUNT(DISTINCT m.session_id) as session_count, '
         'COALESCE(SUM(m.input_tokens),0) as input_tokens, COALESCE(SUM(m.output_tokens),0) as output_tokens '
-        'FROM messages m LEFT JOIN sessions s ON s.id = m.session_id WHERE m.timestamp >= ? '
+        'FROM messages m LEFT JOIN sessions s ON s.id = m.session_id '
+        f'WHERE {scope_s} AND m.timestamp >= ? '
         'GROUP BY s.model ORDER BY SUM(m.input_tokens) DESC',
-        (cutoff,)
+        params_s + [cutoff]
     ).fetchall()
     by_project = conn.execute(
         'SELECT COALESCE(s.project, \'<unknown>\') as project, COUNT(DISTINCT m.session_id) as session_count, '
         'COALESCE(SUM(m.input_tokens),0) as input_tokens, COALESCE(SUM(m.output_tokens),0) as output_tokens '
-        'FROM messages m LEFT JOIN sessions s ON s.id = m.session_id WHERE m.timestamp >= ? '
+        'FROM messages m LEFT JOIN sessions s ON s.id = m.session_id '
+        f'WHERE {scope_s} AND m.timestamp >= ? '
         'GROUP BY s.project ORDER BY SUM(m.input_tokens) DESC',
-        (cutoff,)
+        params_s + [cutoff]
     ).fetchall()
     # 缓存 token / 费用：会话级（消息表无缓存明细）
     sess = conn.execute(
         'SELECT COALESCE(SUM(cache_read_tokens),0) as cache_read_tokens, '
         'COALESCE(SUM(estimated_cost_usd),0) as estimated_cost_usd '
-        'FROM sessions WHERE last_active >= ?',
-        (cutoff,)
+        f'FROM sessions WHERE {scope_sess} AND last_active >= ?',
+        params_sess + [cutoff]
     ).fetchone()
     total = dict(msg)
     total['cache_read_tokens'] = sess['cache_read_tokens']
@@ -374,32 +475,42 @@ def analytics_usage(days: int=30):
     sess_by_model = conn.execute(
         'SELECT model, COALESCE(SUM(cache_read_tokens),0) as cache_read_tokens, '
         'COALESCE(SUM(estimated_cost_usd),0) as estimated_cost_usd '
-        'FROM sessions WHERE last_active >= ? AND model IS NOT NULL GROUP BY model',
-        (cutoff,)
+        f'FROM sessions WHERE {scope_sess} AND last_active >= ? AND model IS NOT NULL GROUP BY model',
+        params_sess + [cutoff]
     ).fetchall()
     sess_by_project = conn.execute(
         'SELECT project, COALESCE(SUM(cache_read_tokens),0) as cache_read_tokens, '
         'COALESCE(SUM(estimated_cost_usd),0) as estimated_cost_usd '
-        'FROM sessions WHERE last_active >= ? AND project IS NOT NULL GROUP BY project',
-        (cutoff,)
+        f'FROM sessions WHERE {scope_sess} AND last_active >= ? AND project IS NOT NULL GROUP BY project',
+        params_sess + [cutoff]
     ).fetchall()
     by_model = _merge_sess_agg(by_model, {r['model']: r for r in sess_by_model}, 'model')
     by_project = _merge_sess_agg(by_project, {r['project']: r for r in sess_by_project}, 'project')
     # 单次对话排行（会话级全量，含缓存）
-    sessions = conn.execute('SELECT id, title, project, model, message_count, tool_call_count, input_tokens, output_tokens, cache_read_tokens, estimated_cost_usd, started_at, last_active FROM sessions WHERE last_active >= ? ORDER BY (input_tokens + output_tokens + cache_read_tokens) DESC LIMIT 20', (cutoff,)).fetchall()
+    sessions = conn.execute(
+        'SELECT id, title, project, model, message_count, tool_call_count, input_tokens, output_tokens, cache_read_tokens, estimated_cost_usd, started_at, last_active '
+        f'FROM sessions WHERE {scope_sess} AND last_active >= ? ORDER BY (input_tokens + output_tokens + cache_read_tokens) DESC LIMIT 20',
+        params_sess + [cutoff]
+    ).fetchall()
     return {'period_days': days, 'total': total, 'by_model': [dict(r) for r in by_model], 'by_project': [dict(r) for r in by_project], 'daily': daily, 'sessions': [dict(r) for r in sessions]}
 
 
-def _analytics_daily(conn, cutoff: float) -> list[dict]:
-    """每日总用量（消息级，按实际发生日聚合）。"""
+def _analytics_daily(conn, cutoff: float, scope_s: str = '1=1', params_s: list | None = None) -> list[dict]:
+    """每日总用量（消息级，按实际发生日聚合）。
+
+    ``scope_s``/``params_s`` scope the messages to the caller's own sessions
+    (H-01 IDOR fix).
+    """
+    params_s = params_s or []
     daily: dict[str, dict] = {}
     for r in conn.execute(
         "SELECT date(m.timestamp, 'unixepoch', 'localtime') as day, "
         "COUNT(DISTINCT m.session_id) as session_count, "
         "COALESCE(SUM(m.input_tokens),0) as input_tokens, "
         "COALESCE(SUM(m.output_tokens),0) as output_tokens "
-        "FROM messages m WHERE m.timestamp >= ? GROUP BY day ORDER BY day",
-        (cutoff,)
+        "FROM messages m LEFT JOIN sessions s ON s.id = m.session_id "
+        f"WHERE {scope_s} AND m.timestamp >= ? GROUP BY day ORDER BY day",
+        params_s + [cutoff]
     ).fetchall():
         daily[r['day']] = {'day': r['day'], 'session_count': r['session_count'],
                            'input_tokens': r['input_tokens'], 'output_tokens': r['output_tokens'],
@@ -410,9 +521,9 @@ def _analytics_daily(conn, cutoff: float) -> list[dict]:
         "date(m.timestamp, 'unixepoch', 'localtime') as day, "
         "COALESCE(SUM(m.input_tokens),0) + COALESCE(SUM(m.output_tokens),0) as day_tokens "
         "FROM sessions s JOIN messages m ON m.session_id = s.id "
-        "WHERE m.timestamp >= ? AND COALESCE(s.estimated_cost_usd, 0) > 0 "
+        f"WHERE {scope_s} AND m.timestamp >= ? AND COALESCE(s.estimated_cost_usd, 0) > 0 "
         "GROUP BY s.id, day",
-        (cutoff,)
+        params_s + [cutoff]
     ).fetchall()
     sess_total: dict[str, int] = {}
     sess_cost: dict[str, float] = {}
@@ -697,9 +808,12 @@ async def api_update_config(body: dict, _admin=Depends(require_role("admin"))):
                 existing = yaml.safe_load(f) or {}
         config = body.get('config', body)
         merged = _deep_merge(existing, config)
-        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        CONFIG_PATH.write_text(yaml.dump(merged, allow_unicode=True, default_flow_style=False))
+        # SECURITY (M-08): config holds secrets (JWT secret, password hashes, API
+        # keys) — force owner-only perms, never rely on the process umask.
+        _write_config_safe(merged)
         return {'status': 'saved'}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception()
         raise HTTPException(status_code=400, detail=str(e))
@@ -767,16 +881,45 @@ async def api_upload(file: UploadFile = File(...), _user=Depends(require_role("u
     """Upload a file for the AI to read in chat. Saved to UPLOADS_DIR."""
     ALLOWED_EXT = {'.txt', '.md', '.pdf', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.csv', '.json', '.py', '.js', '.ts', '.html', '.docx'}
     MAX_SIZE = 20 * 1024 * 1024
+    USER_QUOTA_BYTES = 100 * 1024 * 1024
+    USER_QUOTA_FILES = 50
+    TOTAL_CAP_BYTES = 512 * 1024 * 1024
     filename = file.filename or 'upload'
     ext = Path(filename).suffix.lower()
     if ext not in ALLOWED_EXT:
         raise HTTPException(status_code=400, detail=f'不支持的文件类型: {ext or "(无扩展名)"}')
-    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
-    content = await file.read()
-    if len(content) > MAX_SIZE:
+    username = _user['username']
+    # Pre-check Content-Length when the client sends it (M-06).
+    if file.size is not None and file.size > MAX_SIZE:
         raise HTTPException(status_code=400, detail='文件过大（上限 20MB）')
-    dest = UPLOADS_DIR / f'{uuid.uuid4().hex[:8]}{ext}'
-    dest.write_bytes(content)
+    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    # Per-user quota + total capacity (M-06).
+    try:
+        upload_entries = list(UPLOADS_DIR.iterdir())
+    except OSError:
+        upload_entries = []
+    user_files = [p for p in upload_entries if p.is_file() and p.name.startswith(f'{username}_')]
+    if len(user_files) >= USER_QUOTA_FILES:
+        raise HTTPException(status_code=429, detail='上传数量已达上限')
+    user_bytes = sum(p.stat().st_size for p in user_files)
+    total_bytes = sum(p.stat().st_size for p in upload_entries if p.is_file())
+    if user_bytes >= USER_QUOTA_BYTES or total_bytes >= TOTAL_CAP_BYTES:
+        raise HTTPException(status_code=429, detail='存储配额已满')
+    # Chunked read up to MAX_SIZE+1 — never buffer an unbounded body in memory.
+    content = bytearray()
+    while True:
+        chunk = await file.read(256 * 1024)
+        if not chunk:
+            break
+        content += chunk
+        if len(content) > MAX_SIZE:
+            raise HTTPException(status_code=400, detail='文件过大（上限 20MB）')
+    dest = UPLOADS_DIR / f'{username}_{uuid.uuid4().hex[:8]}{ext}'
+    dest.write_bytes(bytes(content))
+    try:
+        os.chmod(dest, 0o600)
+    except OSError:
+        pass
     return {'path': str(dest), 'name': filename, 'size': len(content)}
 
 @app.post('/api/chat')
@@ -878,11 +1021,51 @@ async def api_knowledge_search(body: dict):
         logger.exception()
         return _error_response('Internal error')
 
+_SEMANTIC_PROJECTS = {
+    'metano': None,  # default → metano home dir
+    'scrapling': Path.home() / 'scrapling-project',
+    'dailyhot': Path.home() / 'DailyHotApi',
+}
+
+def _resolve_semantic_project(project: str) -> str | None:
+    """Map a server-registered project ID to its absolute path, or None.
+
+    SECURITY (M-01 sec): the request body's ``project`` is never treated as an
+    arbitrary filesystem path to run ``ccc search`` inside — only registered IDs
+    are accepted, and the caller's path is ignored.
+    """
+    project = (project or '').strip()
+    if not project:
+        return str(home_dir().resolve())
+    if project not in _SEMANTIC_PROJECTS:
+        return None
+    root = _SEMANTIC_PROJECTS[project]
+    if root is None:
+        return str(home_dir().resolve())
+    try:
+        return str(root.resolve())
+    except OSError:
+        return None
+
+
 @app.post('/api/knowledge/semantic-search')
-async def api_knowledge_semantic_search(body: dict):
+async def api_knowledge_semantic_search(body: dict, _admin=Depends(require_role("admin"))):
     try:
         from .knowledge import knowledge_semantic_search
-        return knowledge_semantic_search(body.get('query', ''), project=body.get('project', ''), limit=body.get('limit', 5))
+        query = body.get('query', '')
+        if not isinstance(query, str) or not query.strip():
+            return _error_response('query is required', status_code=400)
+        if len(query) > 200:
+            return _error_response('query too long (max 200 chars)', status_code=400)
+        project = body.get('project', '')
+        proj_path = _resolve_semantic_project(project)
+        if proj_path is None:
+            return _error_response(f'Unknown project: {project}', status_code=400)
+        try:
+            limit = max(1, min(int(body.get('limit', 5) or 5), 20))
+        except (TypeError, ValueError):
+            limit = 5
+        return knowledge_semantic_search(query, project=proj_path, limit=limit)
     except Exception as e:
         logger.exception()
         return _error_response('Internal error')
@@ -897,7 +1080,8 @@ async def api_knowledge_explore(body: dict, _admin=Depends(require_role("admin")
         return _error_response('Internal error')
 
 @app.get('/api/knowledge/gaps')
-async def api_knowledge_gaps():
+async def api_knowledge_gaps(_admin=Depends(require_role("admin"))):
+    """Gap discovery triggers an LLM analysis call — admin-only (H-02)."""
     try:
         from .knowledge_explorer import discover_knowledge_gaps
         return {'gaps': discover_knowledge_gaps()}
@@ -909,7 +1093,10 @@ async def api_knowledge_gaps():
 async def api_knowledge_ingest(body: dict, _admin=Depends(require_role("admin"))):
     try:
         from .knowledge import knowledge_ingest
-        return knowledge_ingest(body.get('path', ''), title=body.get('title', ''))
+        result = knowledge_ingest(body.get('path', ''), title=body.get('title', ''))
+        if isinstance(result, dict) and result.get('error'):
+            return _error_response(str(result['error']), status_code=400)
+        return result
     except Exception as e:
         logger.exception()
         return _error_response('Internal error')
@@ -1015,10 +1202,16 @@ async def api_cron_trigger(job_id: str, _admin=Depends(require_role("admin"))):
     return {'triggered': job_id}
 
 @app.put('/api/models/{name}/default')
-async def api_model_set_default(name: str):
+async def api_model_set_default(name: str, _admin=Depends(require_role("admin"))):
     try:
         from .model_router import model_router
         model_router.set_default(name)
+        # model_router._persist_default writes the config without chmod; enforce
+        # owner-only perms here (M-08).
+        try:
+            os.chmod(CONFIG_PATH, 0o600)
+        except OSError:
+            pass
         return {'status': 'default_set', 'provider': name}
     except Exception as e:
         logger.exception()
@@ -1048,7 +1241,9 @@ async def api_security_set_tier(user_id: str, body: dict, _admin=Depends(require
 async def api_browser_browse(body: dict, _admin=Depends(require_role("admin"))):
     try:
         from .browser import web_browse
-        result = web_browse(body.get('url', ''))
+        result = web_browse(body.get('url', ''), mode=body.get('mode', 'dynamic'))
+        if isinstance(result, dict) and result.get('status') == 'error':
+            return _error_response(str(result.get('error', 'browse failed')), status_code=502)
         return result
     except Exception as e:
         logger.exception()
@@ -1059,6 +1254,8 @@ async def api_browser_search(body: dict, _admin=Depends(require_role("admin"))):
     try:
         from .browser import web_search
         result = web_search(body.get('query', ''))
+        if isinstance(result, dict) and result.get('error'):
+            return _error_response(str(result['error']), status_code=502)
         return result
     except Exception as e:
         logger.exception()
@@ -1078,7 +1275,10 @@ async def get_voice_file(path: str):
 async def api_voice_tts(body: dict, _admin=Depends(require_role("admin"))):
     try:
         from .voice import voice_speak
-        return voice_speak(body.get('text', ''), voice=body.get('voice', 'zh-CN-YunxiNeural'), rate=body.get('rate', '+0%'))
+        result = voice_speak(body.get('text', ''), voice=body.get('voice', 'zh-CN-YunxiNeural'), rate=body.get('rate', '+0%'))
+        if isinstance(result, dict) and result.get('error'):
+            return _error_response(str(result['error']), status_code=400)
+        return result
     except Exception as e:
         logger.exception()
         return _error_response('Internal error')
@@ -1093,7 +1293,8 @@ async def api_voice_voices(language: str=''):
         return _error_response('Internal error')
 
 @app.get('/api/home/status')
-async def api_home_status():
+async def api_home_status(_admin=Depends(require_role("admin"))):
+    """Full HA state is sensitive device data — admin-only (H-09)."""
     try:
         from .home_assistant import home_status_full
         return home_status_full()
@@ -1102,7 +1303,8 @@ async def api_home_status():
         return _error_response('Internal error', extra={'entities': [], 'configured': False})
 
 @app.get('/api/home/config')
-async def api_home_config_get():
+async def api_home_config_get(_admin=Depends(require_role("admin"))):
+    """Leaks the HA base URL — admin-only (H-09)."""
     try:
         from .home_assistant import ha_get_config
         return ha_get_config()
@@ -1120,10 +1322,10 @@ async def api_home_config_set(body: dict, _admin=Depends(require_role("admin")))
         return _error_response('Internal error', extra={})
 
 @app.get('/api/home/status/{entity_id}')
-async def api_home_entity(entity_id: str):
+async def api_home_entity(entity_id: str, _admin=Depends(require_role("admin"))):
     try:
         from .home_assistant import get_entity_state
-        return get_entity_state(entity_id)
+        return _result_or_error(get_entity_state(entity_id), status_code=400)
     except Exception as e:
         logger.exception()
         return _error_response('Internal error')
@@ -1132,7 +1334,7 @@ async def api_home_entity(entity_id: str):
 async def api_home_control(body: dict, _admin=Depends(require_role("admin"))):
     try:
         from .home_assistant import home_control
-        return home_control(body.get('entity_id', ''), body.get('service', 'toggle'))
+        return _result_or_error(home_control(body.get('entity_id', ''), body.get('service', 'toggle')), status_code=400)
     except Exception as e:
         logger.exception()
         return _error_response('Internal error')
@@ -1226,35 +1428,65 @@ async def api_collab_audit(limit: int=100, _admin=Depends(require_role("admin"))
         return _error_response('Internal error', extra={'items': []})
 
 _ws_clients: list[WebSocket] = []
+_ws_conns_by_ip: dict[str, int] = {}
+MAX_WS_PER_IP = 5
+MAX_WS_TOTAL = 50
+MAX_WS_FIRST_MSG_WAIT = 10  # seconds (M-06: handshake timeout)
+
 
 @app.websocket('/ws')
 async def ws_endpoint(ws: WebSocket):
-    await ws.accept()
-    try:
-        auth_msg = await ws.receive_text()
-        auth_data = json.loads(auth_msg)
-        token = auth_data.get('token', '')
-        payload = decode_token(token) if token else None
-        # Only an access token (not refresh/MCP/A2A) may open the WS.
-        if not payload or payload.get('type') != 'access':
+    # M-06: Origin check — reject cross-site WebSocket hijacking.
+    origin = ws.headers.get('origin', '')
+    host = ws.headers.get('host', '')
+    if origin:
+        if not (origin in AuthMiddleware.ALLOWED_ORIGINS or (host and host in origin)):
             try:
-                await ws.send_json({'error': 'Authentication required'})
-                await ws.close(code=4001)
+                await ws.close(code=4403)
             except Exception:
-                # Client may have already disconnected — a second close here
-                # triggers the ASGI 'Unexpected websocket.close' race.
                 pass
             return
-    except Exception:
+    # M-06: per-IP + total connection caps.
+    ip = ws.client.host if ws.client else 'unknown'
+    if _ws_conns_by_ip.get(ip, 0) >= MAX_WS_PER_IP or len(_ws_clients) >= MAX_WS_TOTAL:
         try:
+            await ws.close(code=4403)
+        except Exception:
+            pass
+        return
+    await ws.accept()
+
+    # F-12: authenticate from the HttpOnly access_token cookie first.
+    user = get_current_user_from_request(ws)
+    if not user:
+        # Then try a one-time short-lived WS ticket (or legacy token) as the
+        # first message, with a hard timeout so a silent socket can't hang.
+        try:
+            auth_msg = await asyncio.wait_for(ws.receive_text(), timeout=MAX_WS_FIRST_MSG_WAIT)
+            auth_data = json.loads(auth_msg)
+        except Exception:
+            auth_data = {}
+        ticket = auth_data.get('ticket', '') if isinstance(auth_data, dict) else ''
+        token = auth_data.get('token', '') if isinstance(auth_data, dict) else ''
+        if ticket:
+            tuser = consume_ws_ticket(ticket)
+            if tuser:
+                user = tuser
+        elif token:
+            user = validate_access_token(token)
+    if not user:
+        try:
+            await ws.send_json({'error': 'Authentication required'})
             await ws.close(code=4001)
         except Exception:
+            # Client may have already disconnected — a second close here
+            # triggers the ASGI 'Unexpected websocket.close' race.
             pass
         return
 
     _ws_clients.append(ws)
+    _ws_conns_by_ip[ip] = _ws_conns_by_ip.get(ip, 0) + 1
     try:
-        import asyncio
         while True:
             await ws.receive_text()
     except WebSocketDisconnect:
@@ -1264,6 +1496,7 @@ async def ws_endpoint(ws: WebSocket):
     finally:
         if ws in _ws_clients:
             _ws_clients.remove(ws)
+        _ws_conns_by_ip[ip] = max(0, _ws_conns_by_ip.get(ip, 0) - 1)
 
 async def ws_broadcast(data: dict):
     for client in _ws_clients:
@@ -1273,10 +1506,17 @@ async def ws_broadcast(data: dict):
             logger.exception()
 
 @app.post('/api/search/web')
-async def api_web_search(body: dict):
+async def api_web_search(body: dict, _admin=Depends(require_role("admin"))):
     try:
         from .mcp_bridge import tavily_search
-        return await tavily_search(body.get('query', ''), limit=body.get('limit', 10))
+        try:
+            limit = max(1, min(int(body.get('limit', 10) or 10), 20))
+        except (TypeError, ValueError):
+            limit = 10
+        result = await tavily_search(body.get('query', ''), limit=limit)
+        if isinstance(result, dict) and result.get('error'):
+            return _error_response(str(result['error']), status_code=502)
+        return result
     except Exception as e:
         logger.exception()
         return _error_response('Internal error')
@@ -1301,13 +1541,37 @@ async def api_mcp_call(body: dict, _admin=Depends(require_role("admin"))):
         return _error_response('Internal error')
 
 @app.get('/api/proxy/providers')
-async def api_proxy_providers():
+async def api_proxy_providers(_admin=Depends(require_role("admin"))):
     try:
         from .model_router import ModelRouter
         return {'providers': ModelRouter.free_provider_presets()}
     except Exception as e:
         logger.exception()
         return _error_response('Internal error', extra={'providers': []})
+
+
+def _validate_protocol_url(base_url: str, protocol: str) -> str | None:
+    """Return an error string if base_url's path and protocol are inconsistent.
+
+    F-14: an OpenAI-compatible endpoint is ``/v1/chat/completions``; an Anthropic
+    endpoint is ``/v1/messages``. Silently storing a mismatched pair makes the
+    provider unusable (or mis-formats requests), so reject/warn loudly.
+    """
+    protocol = (protocol or 'anthropic').lower()
+    if not base_url:
+        return None
+    try:
+        path = urlparse(base_url).path.lower()
+    except ValueError:
+        return f'Invalid base_url: {base_url}'
+    has_openai = '/v1/chat/completions' in path or path.endswith('/chat/completions')
+    has_anthropic = '/v1/messages' in path or path.endswith('/messages')
+    if protocol == 'openai' and has_anthropic and not has_openai:
+        return f'base_url 使用 Anthropic /v1/messages 路径，但 protocol=openai，两者不匹配'
+    if protocol == 'anthropic' and has_openai and not has_anthropic:
+        return f'base_url 使用 OpenAI /v1/chat/completions 路径，但 protocol=anthropic，两者不匹配'
+    return None
+
 
 @app.post('/api/proxy/add')
 async def api_proxy_add(body: dict, _admin=Depends(require_role("admin"))):
@@ -1316,24 +1580,31 @@ async def api_proxy_add(body: dict, _admin=Depends(require_role("admin"))):
         name = body.get('name', '')
         if not name:
             raise HTTPException(status_code=400, detail='name required')
+        base_url = body.get('base_url', '')
+        protocol = body.get('protocol', 'anthropic')
+        proto_err = _validate_protocol_url(base_url, protocol)
+        if proto_err:
+            raise HTTPException(status_code=400, detail=proto_err)
         CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
         existing = {}
         if CONFIG_PATH.exists():
             with open(CONFIG_PATH) as f:
                 existing = yaml.safe_load(f) or {}
         models = existing.get('models', {})
-        models[name] = {'base_url': body.get('base_url', ''), 'api_key': body.get('api_key', ''), 'model': body.get('model', ''), 'max_tokens': body.get('max_tokens', 4096), 'supports_vision': body.get('supports_vision', False), 'supports_tools': body.get('supports_tools', True), 'protocol': body.get('protocol', 'anthropic'), 'enabled': True}
+        models[name] = {'base_url': base_url, 'api_key': body.get('api_key', ''), 'model': body.get('model', ''), 'max_tokens': body.get('max_tokens', 4096), 'supports_vision': body.get('supports_vision', False), 'supports_tools': body.get('supports_tools', True), 'protocol': protocol, 'enabled': True}
         price = body.get('price')
         if isinstance(price, dict):
             models[name]['price'] = {k: price[k] for k in ('input', 'output', 'cache_read') if k in price}
         existing['models'] = models
-        CONFIG_PATH.write_text(yaml.dump(existing, allow_unicode=True, default_flow_style=False))
+        _write_config_safe(existing)
         # Refresh the shared module-level ModelRouter singleton so the newly
         # added provider becomes visible to /api/models, chat and evolution
         # immediately (previously a throwaway instance was created and never used).
         from .model_router import model_router
         model_router.refresh()
-        return {'status': 'added', 'provider': name}
+        return {'status': 'added', 'provider': name, 'protocol': protocol}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception()
         raise HTTPException(status_code=400, detail=str(e))
@@ -1372,17 +1643,23 @@ async def api_proxy_update(name: str, body: dict, _admin=Depends(require_role("a
             for k in ('input', 'output', 'cache_read'):
                 if k in price:
                     p[k] = price[k]
+        # F-14: validate the final protocol/base_url pair after the merge.
+        proto_err = _validate_protocol_url(m.get('base_url', ''), m.get('protocol', 'anthropic'))
+        if proto_err:
+            raise HTTPException(status_code=400, detail=proto_err)
         existing['models'] = models
-        CONFIG_PATH.write_text(yaml.dump(existing, allow_unicode=True, default_flow_style=False))
+        _write_config_safe(existing)
         from .model_router import model_router
         model_router.refresh()
-        return {'status': 'updated', 'provider': name}
+        return {'status': 'updated', 'provider': name, 'protocol': m.get('protocol', 'anthropic')}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception()
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.get('/api/memory/stats')
-async def api_memory_stats():
+async def api_memory_stats(_admin=Depends(require_role("admin"))):
     try:
         from .memory import get_memory_stats
         return get_memory_stats()
@@ -1391,20 +1668,23 @@ async def api_memory_stats():
         return _error_response('Internal error')
 
 @app.get('/api/memory/search')
-async def api_memory_search(q: str=Query(...), limit: int=10, tag: str=''):
+async def api_memory_search(q: str=Query(...), limit: int=10, tag: str='', _admin=Depends(require_role("admin"))):
     try:
         from .memory import search_memories
+        limit = min(max(int(limit), 1), 100)
         return search_memories(q, limit=limit, tag=tag or None)
     except Exception as e:
         logger.exception()
         return _error_response('Internal error', extra={'results': []})
 
 @app.get('/api/memory/timeline')
-async def api_memory_timeline(days: int=7, limit: int=20):
+async def api_memory_timeline(days: int=7, limit: int=20, _admin=Depends(require_role("admin"))):
     try:
         from .honcho.models import init_honcho_db, get_user, create_user
         from datetime import datetime, timezone
         import time as _time
+        days = min(max(int(days), 1), 365)
+        limit = min(max(int(limit), 1), 200)
         conn = init_honcho_db()
         if not get_user(conn, 'default'):
             create_user(conn, user_id='default')
@@ -1425,7 +1705,7 @@ async def api_memory_timeline(days: int=7, limit: int=20):
         return _error_response('Internal error')
 
 @app.get('/api/memory/detail')
-async def api_memory_detail(category: str='', belief_id: str=''):
+async def api_memory_detail(category: str='', belief_id: str='', _admin=Depends(require_role("admin"))):
     try:
         from .honcho.models import init_honcho_db, get_user, create_user, get_beliefs
         conn = init_honcho_db()
@@ -1442,8 +1722,23 @@ async def api_memory_detail(category: str='', belief_id: str=''):
         logger.exception()
         return _error_response('Internal error')
 
+_memory_ops_times: dict[str, list[float]] = {}
+
+def _memory_op_rate_limit(op: str, max_calls: int = 5, window: int = 300) -> bool:
+    """Return True if the admin op is within its rate limit (H-02)."""
+    now = time.time()
+    times = _memory_ops_times.setdefault(op, [])
+    times[:] = [t for t in times if now - t < window]
+    if len(times) >= max_calls:
+        return False
+    times.append(now)
+    return True
+
+
 @app.post('/api/memory/compress')
-async def api_memory_compress():
+async def api_memory_compress(_admin=Depends(require_role("admin"))):
+    if not _memory_op_rate_limit('compress'):
+        return _error_response('compress rate limit (max 5/5min)', status_code=429)
     try:
         from .memory import compress_memories
         return compress_memories()
@@ -1452,7 +1747,7 @@ async def api_memory_compress():
         return _error_response('Internal error')
 
 @app.get('/api/memory/export')
-async def api_memory_export():
+async def api_memory_export(_admin=Depends(require_role("admin"))):
     try:
         from .memory import export_memories
         return export_memories()
@@ -1461,16 +1756,24 @@ async def api_memory_export():
         return _error_response('Internal error')
 
 @app.post('/api/memory/import')
-async def api_memory_import(body: dict):
+async def api_memory_import(body: dict, _admin=Depends(require_role("admin"))):
+    # SECURITY (H-02): cap the number of memories per import request.
     try:
+        memories = body.get('memories', [])
+        if not isinstance(memories, list):
+            return _error_response('memories must be a list', status_code=400)
+        if len(memories) > 500:
+            return _error_response('import too large (max 500 memories)', status_code=400)
         from .memory import import_memories
-        return import_memories(body, merge=body.get('merge', True))
+        return import_memories({'memories': memories}, merge=body.get('merge', True))
     except Exception as e:
         logger.exception()
         return _error_response('Internal error')
 
 @app.post('/api/memory/seed')
-async def api_memory_seed():
+async def api_memory_seed(_admin=Depends(require_role("admin"))):
+    if not _memory_op_rate_limit('seed'):
+        return _error_response('seed rate limit (max 5/5min)', status_code=429)
     try:
         from .memory import seed_from_claude_memory
         return seed_from_claude_memory()
@@ -1488,7 +1791,7 @@ async def api_evolution_correct(body: dict, _admin=Depends(require_role("admin")
         return _error_response('Internal error')
 
 @app.get('/api/evolution/behaviors')
-async def api_evolution_behaviors():
+async def api_evolution_behaviors(_admin=Depends(require_role("admin"))):
     """Return agent behavior rules from evo.db and recent correction records."""
     try:
         from .behavior_analyzer import get_behavior_patterns
@@ -1498,7 +1801,7 @@ async def api_evolution_behaviors():
         return _error_response('Internal error', extra={'patterns': [], 'recent_corrections': []})
 
 @app.get('/api/evolution/rules')
-async def api_evolution_rules():
+async def api_evolution_rules(_admin=Depends(require_role("admin"))):
     """List all agent rules from evo.db."""
     try:
         from .evo_models import get_rules, init_db
@@ -1521,11 +1824,12 @@ async def api_evolution_rule_toggle(rule_id: int, body: dict={}, _admin=Depends(
         return _error_response('Internal error')
 
 @app.get('/api/evolution/action-log')
-async def api_evolution_action_log(limit: int=50):
+async def api_evolution_action_log(limit: int=50, _admin=Depends(require_role("admin"))):
     """Recent action log entries."""
     try:
         from .evo_models import get_recent_actions, init_db
         init_db()
+        limit = min(max(int(limit), 1), 500)
         return {'actions': get_recent_actions(limit=limit)}
     except Exception as e:
         logger.exception()
@@ -1543,12 +1847,28 @@ async def api_evolution_analyze(body: dict={}, _admin=Depends(require_role("admi
 
 @app.post('/api/evolution/behavior-approve/{suggestion_id}')
 async def api_evolution_behavior_approve(suggestion_id: str, _admin=Depends(require_role("admin"))):
-    """Approve a behavior_improvement suggestion and write to Claude Code memory."""
+    """Approve a behavior_improvement suggestion and write to Claude Code memory.
+
+    Accepts either the legacy SUGGESTIONS_FILE id (``evo-<rule_id>``) or a
+    numeric id from the proposals table (which is what the frontend passes).
+    """
     try:
-        from .adapter import apply_behavior_improvement
+        from .adapter import apply_behavior_improvement, _apply_behavior_improvement
+        from .evo_models import get_proposals, update_proposal_status
+        # Legacy path: SUGGESTIONS_FILE suggestion id (evo-<rule_id>).
         result = apply_behavior_improvement(suggestion_id)
         if result:
             return result
+        # Proposals-table path: numeric proposal id.
+        if suggestion_id.isdigit():
+            pid = int(suggestion_id)
+            prop = next((p for p in get_proposals() if p['id'] == pid), None)
+            if prop and prop.get('proposal_type') == 'behavior_improvement':
+                update_proposal_status(pid, 'approved')
+                applied = _apply_behavior_improvement(prop.get('content', ''), prop.get('detail', ''))
+                if applied:
+                    update_proposal_status(pid, 'applied', result=applied.get('status', ''))
+                    return {**applied, 'proposal_id': pid}
         return _error_response('suggestion not found or not behavior_improvement type', status_code=404)
     except Exception as e:
         logger.exception()
@@ -1556,30 +1876,48 @@ async def api_evolution_behavior_approve(suggestion_id: str, _admin=Depends(requ
 
 @app.post('/api/evolution/behavior-reject/{suggestion_id}')
 async def api_evolution_behavior_reject(suggestion_id: str, _admin=Depends(require_role("admin"))):
-    """Reject a behavior_improvement suggestion."""
+    """Reject a behavior_improvement suggestion (legacy id or numeric proposal id)."""
     try:
         from .adapter import reject_suggestion
+        from .evo_models import get_proposals, update_proposal_status
         result = reject_suggestion(suggestion_id)
         if result:
             return {'status': 'rejected', 'suggestion': result}
+        if suggestion_id.isdigit():
+            pid = int(suggestion_id)
+            prop = next((p for p in get_proposals() if p['id'] == pid), None)
+            if prop and prop.get('proposal_type') == 'behavior_improvement':
+                update_proposal_status(pid, 'rejected')
+                return {'status': 'rejected', 'proposal_id': pid}
         return _error_response('suggestion not found', status_code=404)
     except Exception as e:
         logger.exception()
         return _error_response('Internal error')
 
 @app.post('/api/browser/screenshot')
-async def api_browser_screenshot(body: dict):
+async def api_browser_screenshot(body: dict, _admin=Depends(require_role("admin"))):
+    """Take a browser screenshot. Admin-only and SSRF-hardened (H-03).
+
+    URL validation (http/https + public-IP-only) happens in browser.pw_screenshot;
+    we re-validate here as defence-in-depth and cap the inline image size.
+    """
     try:
         import base64 as _b64
-        import os as _os
-        from .browser import web_screenshot
-        result = web_screenshot(body.get('url', ''), full_page=body.get('full_page', True))
+        from .browser import web_screenshot, _validate_http_url
+        url = body.get('url', '')
+        err = _validate_http_url(url)
+        if err:
+            return _error_response(err, status_code=400)
+        result = web_screenshot(url, full_page=bool(body.get('full_page', True)))
         if result.get('status') == 'ok' and result.get('path'):
             path = result['path']
-            if _os.path.isfile(path):
+            if os.path.isfile(path):
                 try:
                     with open(path, 'rb') as f:
-                        result['image'] = 'data:image/png;base64,' + _b64.b64encode(f.read()).decode()
+                        raw = f.read()
+                    if len(raw) > 5 * 1024 * 1024:
+                        return _error_response('screenshot too large to return inline', status_code=413)
+                    result['image'] = 'data:image/png;base64,' + _b64.b64encode(raw).decode()
                 except Exception:
                     logger.exception('failed to read screenshot file for base64')
         return result
@@ -1588,7 +1926,7 @@ async def api_browser_screenshot(body: dict):
         return _error_response('Internal error')
 
 @app.get('/api/evolution/strategy')
-async def api_evolution_strategy(context: str=''):
+async def api_evolution_strategy(context: str='', _admin=Depends(require_role("admin"))):
     """Select optimal strategy rules for a given context."""
     try:
         from .strategy import select_strategy
@@ -1599,7 +1937,7 @@ async def api_evolution_strategy(context: str=''):
         return _error_response('Internal error', extra={'strategies': []})
 
 @app.get('/api/evolution/effectiveness/{rule_id}')
-async def api_evolution_effectiveness(rule_id: str):
+async def api_evolution_effectiveness(rule_id: str, _admin=Depends(require_role("admin"))):
     """Get effectiveness metrics for a specific rule."""
     try:
         from .strategy import get_effectiveness
@@ -1608,9 +1946,17 @@ async def api_evolution_effectiveness(rule_id: str):
         logger.exception()
         return _error_response('Internal error')
 
+_strategy_detect_times: list[float] = []
+
 @app.post('/api/evolution/strategy-detect')
-async def api_evolution_strategy_detect():
+async def api_evolution_strategy_detect(_admin=Depends(require_role("admin"))):
     """Detect strategy patterns from action log."""
+    # SECURITY (H-02): strategy detection triggers LLM analysis — rate-limit it.
+    now = time.time()
+    _strategy_detect_times[:] = [t for t in _strategy_detect_times if now - t < 60]
+    if len(_strategy_detect_times) >= 5:
+        return _error_response('strategy-detect rate limit (max 5/min)', status_code=429)
+    _strategy_detect_times.append(now)
     try:
         from .strategy import detect_strategy_patterns
         patterns = detect_strategy_patterns()
@@ -1620,7 +1966,7 @@ async def api_evolution_strategy_detect():
         return _error_response('Internal error', extra={'patterns': []})
 
 @app.get('/api/evolution/architecture')
-async def api_evolution_architecture():
+async def api_evolution_architecture(_admin=Depends(require_role("admin"))):
     """Get latest architecture snapshot and model."""
     try:
         from .evo_models import get_latest_architecture_snapshot, init_db

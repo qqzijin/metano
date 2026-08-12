@@ -14,8 +14,9 @@ log = logging.getLogger(__name__)
 
 class WeChatBot:
 
-    def __init__(self, method: str='wcferry'):
+    def __init__(self, method: str='wcferry', allowed_users: list[str] | None = None):
         self.method = method
+        self.allowed_users = allowed_users or []
         self._running = False
         self._wcf = None
 
@@ -85,8 +86,11 @@ class WeChatBot:
                 except Exception:
                     pass  # best-effort
                 wxid = msg.from_user()
-                platform_user = f'wechat:{wxid}'
-                response = asyncio.run(router.route_message('wechat', platform_user, content))
+                # Fail-closed user whitelist (H-08): empty whitelist == deny all.
+                if wxid not in self.allowed_users:
+                    continue
+                # F-16: pass the RAW wxid; the Router adds the platform prefix.
+                response = asyncio.run(router.route_message('wechat', wxid, content))
                 self._wcf.send_text(response, wxid)
                 time.sleep(2)
             except Exception as e:

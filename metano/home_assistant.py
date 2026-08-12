@@ -33,6 +33,26 @@ def _get_ha_config() -> dict:
         logger.exception()
     return {}
 
+
+def _validate_ha_base_url(base_url: str) -> str | None:
+    """Return an error message if the HA base_url is not a safe http(s) URL.
+
+    SECURITY (H-09): the base_url carries the HA bearer token when requests are
+    made; only allow http/https with a plain host so the token can never be
+    sent to a file:/data:/javascript: or other scheme handler.
+    """
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(base_url.strip())
+    except ValueError:
+        return f'Invalid Home Assistant url: {base_url}'
+    if parsed.scheme not in ('http', 'https'):
+        return f'Home Assistant url must use http/https, got: {parsed.scheme or "(none)"}'
+    if not parsed.hostname or parsed.username or parsed.password:
+        return f'Home Assistant url must have a plain host: {base_url}'
+    return None
+
+
 def _ha_request(method: str, path: str, data: dict=None) -> dict:
     """Make a request to Home Assistant REST API."""
     config = _get_ha_config()
@@ -40,6 +60,9 @@ def _ha_request(method: str, path: str, data: dict=None) -> dict:
     token = config.get('token', os.environ.get('HA_TOKEN', ''))
     if not token:
         return {'error': 'Home Assistant not configured. Set HA_URL and HA_TOKEN in gateway_config.yaml or environment.'}
+    url_err = _validate_ha_base_url(base_url)
+    if url_err:
+        return {'error': url_err}
     url = f'{base_url}/api{path}'
     headers = {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
     try:
@@ -130,6 +153,12 @@ def get_all_entities() -> list[dict]:
 
 def get_entity_state(entity_id: str) -> dict:
     """Get state for a specific entity."""
+    # SECURITY (H-09): entity_id is interpolated into the HA REST URL path which
+    # is requested with the stored bearer token. Reuse the same strict
+    # domain.entity validation as home_status/home_control so '..', '/', '\'
+    # or encoded path separators can never redirect the token to another HA API.
+    if not _validate_entity_id(entity_id):
+        return {'error': f'Invalid entity_id: {entity_id}. Expected domain.entity'}
     return _ha_request('GET', f'/states/{entity_id}')
 
 def ha_is_configured() -> bool:
@@ -193,6 +222,9 @@ def ha_set_config(url: str, token: str) -> dict:
     try:
         with os.fdopen(fd, 'w') as f:
             yaml.safe_dump(existing, f, allow_unicode=True, sort_keys=False)
+        # SECURITY (M-08): config holds the HA token — force owner-only perms
+        # (os.replace preserves the temp file's mode, so chmod before rename).
+        os.chmod(tmp, 0o600)
         os.replace(tmp, path)
     except Exception:
         try:

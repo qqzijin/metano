@@ -112,24 +112,69 @@ def verify_password(plain: str, hashed: str) -> bool:
     return bcrypt.checkpw(plain.encode(), hashed.encode())
 
 
-def create_access_token(username: str, role: str) -> str:
+def _current_user_record(username: str) -> Optional[dict]:
+    """Return {username, role, token_version} for a configured user, else None.
+
+    The JWT ``tv`` claim must equal the user's current ``token_version`` for a
+    token to be valid. ``token_version`` is bumped on logout / password change
+    so stolen or old tokens are revoked immediately.
+    """
+    config = _load_config()
+    auth = config.get('auth', {})
+    for user in auth.get('users', []):
+        if user.get('username') == username:
+            return {
+                'username': username,
+                'role': user.get('role', 'user'),
+                'token_version': int(auth.get('token_versions', {}).get(username, 0) or 0),
+            }
+    return None
+
+
+def bump_token_version(username: str) -> int:
+    """Increment a user's token_version, invalidating all previously-issued tokens."""
+    config = _load_config()
+    auth = config.setdefault('auth', {})
+    versions = auth.setdefault('token_versions', {})
+    versions[username] = int(versions.get(username, 0) or 0) + 1
+    _save_config(config)
+    return versions[username]
+
+
+def get_user_by_username(username: str) -> Optional[dict]:
+    """Return {username, role} for a configured user, else None."""
+    rec = _current_user_record(username)
+    if not rec:
+        return None
+    return {'username': rec['username'], 'role': rec['role']}
+
+
+def get_token_version(username: str) -> int:
+    """Current token_version for a user (0 when unset)."""
+    rec = _current_user_record(username)
+    return rec['token_version'] if rec else 0
+
+
+def create_access_token(username: str, role: str, token_version: int = 0) -> str:
     now = datetime.now(timezone.utc)
     payload = {
         "sub": username,
         "role": role,
         "type": "access",
+        "tv": token_version,
         "exp": now + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
         "iat": now,
     }
     return jwt.encode(payload, get_jwt_secret(), algorithm=JWT_ALGORITHM)
 
 
-def create_refresh_token(username: str, role: str) -> str:
+def create_refresh_token(username: str, role: str, token_version: int = 0) -> str:
     now = datetime.now(timezone.utc)
     payload = {
         "sub": username,
         "role": role,
         "type": "refresh",
+        "tv": token_version,
         "exp": now + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS),
         "iat": now,
     }
@@ -167,18 +212,23 @@ def record_login_attempt(ip: str):
 
 
 def set_auth_cookies(response: Response, username: str, role: str) -> dict:
-    access_token = create_access_token(username, role)
-    refresh_token = create_refresh_token(username, role)
+    rec = _current_user_record(username)
+    tv = rec['token_version'] if rec else 0
+    access_token = create_access_token(username, role, token_version=tv)
+    refresh_token = create_refresh_token(username, role, token_version=tv)
 
+    # SECURITY (H-06): Secure flag so the token is never sent over plain HTTP.
+    # Loopback (127.0.0.1/localhost) is still a secure context in modern
+    # browsers; non-loopback deployments MUST use HTTPS.
     response.set_cookie(
         "access_token", access_token,
         max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-        httponly=True, samesite="lax", path="/",
+        httponly=True, samesite="lax", path="/", secure=True,
     )
     response.set_cookie(
         "refresh_token", refresh_token,
         max_age=REFRESH_TOKEN_EXPIRE_DAYS * 86400,
-        httponly=True, samesite="lax", path="/api/auth/refresh",
+        httponly=True, samesite="lax", path="/api/auth/refresh", secure=True,
     )
     return {"username": username, "role": role}
 
@@ -188,14 +238,29 @@ def clear_auth_cookies(response: Response):
     response.delete_cookie("refresh_token", path="/api/auth/refresh")
 
 
-def get_current_user_from_request(request: Request) -> Optional[dict]:
-    token = request.cookies.get("access_token")
+def validate_access_token(token: str) -> Optional[dict]:
+    """Validate an access-token string against the current user record.
+
+    Checks the token type, the user's token_version (revokes on logout /
+    password change) and re-reads the user's current role from config so a
+    role downgrade takes effect immediately.
+    """
     if not token:
         return None
     payload = decode_token(token)
     if not payload or payload.get("type") != "access":
         return None
-    return {"username": payload["sub"], "role": payload.get("role", "user")}
+    rec = _current_user_record(payload["sub"])
+    if not rec:
+        return None
+    if payload.get("tv", 0) != rec["token_version"]:
+        return None
+    return {"username": rec["username"], "role": rec["role"]}
+
+
+def get_current_user_from_request(request: Request) -> Optional[dict]:
+    token = request.cookies.get("access_token")
+    return validate_access_token(token)
 
 
 def try_refresh_from_request(request: Request) -> Optional[str]:
@@ -205,7 +270,53 @@ def try_refresh_from_request(request: Request) -> Optional[str]:
     payload = decode_token(token)
     if not payload or payload.get("type") != "refresh":
         return None
-    return create_access_token(payload["sub"], payload.get("role", "user"))
+    rec = _current_user_record(payload["sub"])
+    if not rec:
+        return None
+    if payload.get("tv", 0) != rec["token_version"]:
+        return None
+    return create_access_token(rec["username"], rec["role"], token_version=rec["token_version"])
+
+
+# ── One-time WebSocket ticket (F-12) ──────────────────────────────────────
+# The access token is HttpOnly, so the front-end cannot read it to send as the
+# WS first message. Instead the front-end fetches a short-lived (30s) one-time
+# ticket from POST /api/auth/ws-ticket (using its normal cookie auth) and sends
+# it as the first WS message. The ticket's jti is consumed once server-side.
+_WS_TICKET_TTL = 30
+_used_ws_tickets: set[str] = set()
+
+
+def create_ws_ticket(username: str, role: str) -> str:
+    now = datetime.now(timezone.utc)
+    payload = {
+        "sub": username,
+        "role": role,
+        "type": "ws_ticket",
+        "tv": 0,
+        "jti": secrets.token_urlsafe(12),
+        "exp": now + timedelta(seconds=_WS_TICKET_TTL),
+        "iat": now,
+    }
+    return jwt.encode(payload, get_jwt_secret(), algorithm=JWT_ALGORITHM)
+
+
+def consume_ws_ticket(token: str) -> Optional[dict]:
+    """Validate and single-use consume a WS ticket. Returns the user or None."""
+    if not token:
+        return None
+    payload = decode_token(token)
+    if not payload or payload.get("type") != "ws_ticket":
+        return None
+    jti = payload.get("jti")
+    if jti and jti in _used_ws_tickets:
+        return None
+    if jti:
+        _used_ws_tickets.add(jti)
+        # Opportunistic prune so the set never grows unboundedly.
+        if len(_used_ws_tickets) > 1000:
+            _used_ws_tickets.clear()
+    return {"username": payload["sub"], "role": payload.get("role", "user")}
 
 
 def _audit(action: str, user_id: str, details: dict):
@@ -231,6 +342,8 @@ def change_password(username: str, old_password: str, new_password: str) -> bool
                 return False
             user["password"] = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt()).decode()
             _save_config(config)
+            # SECURITY (H-06): revoke all previously-issued tokens for this user.
+            bump_token_version(username)
             _audit("password_changed", username, {})
             return True
     return False

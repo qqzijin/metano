@@ -3,7 +3,7 @@ import asyncio
 import json
 import os
 import time
-import hashlib
+import uuid
 from dataclasses import dataclass, field
 from typing import Optional
 from metano.log import logger
@@ -37,14 +37,42 @@ class GatewaySession:
     # brand-new bridge.db session instead of re-attaching the previous one.
     start_new: bool = False
     history: list[dict] = field(default_factory=list)
+    # C-01: per-session token that binds free mode (/auto) to THIS conversation.
+    # Cleared on idle-timeout or /new so a standing free grant cannot leak into
+    # later sessions.
+    free_nonce: str = ''
 
 class MessageRouter:
 
-    def __init__(self):
+    def __init__(self, session_cfg: Optional[dict] = None):
         self.sessions: dict[str, GatewaySession] = {}
         SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
-        self.max_idle_minutes = 30
-        self.max_history = 50
+        # M-08(func): when no config is passed (e.g. the shared `router`
+        # singleton used by web_server /api/chat), fall back to the gateway YAML
+        # so max_idle_minutes/max_history_messages actually take effect instead
+        # of silently staying at 30/50.
+        if session_cfg is None:
+            session_cfg = self._load_session_cfg()
+        try:
+            self.max_idle_minutes = int(session_cfg.get('max_idle_minutes', 30) or 30)
+            self.max_history = int(session_cfg.get('max_history_messages', 50) or 50)
+        except (TypeError, ValueError):
+            logger.exception('router: invalid session config, using defaults')
+            self.max_idle_minutes = 30
+            self.max_history = 50
+
+    @staticmethod
+    def _load_session_cfg() -> dict:
+        """Read the ``session`` block from the gateway config, best-effort."""
+        try:
+            import yaml
+            if GATEWAY_CONFIG.exists():
+                with open(GATEWAY_CONFIG, encoding='utf-8') as f:
+                    cfg = yaml.safe_load(f) or {}
+                return cfg.get('session', {}) or {}
+        except Exception:
+            logger.exception('router: failed to read session config')
+        return {}
 
     def _session_key(self, platform: str, user_id: str) -> str:
         return f'{platform}:{user_id}'
@@ -61,6 +89,9 @@ class MessageRouter:
                 session.history = []
                 session.message_count = 0
                 session.start_new = True
+                # C-01: free mode (/auto) was bound to this conversation; a timed
+                # out session must not carry the grant into a new one.
+                session.free_nonce = ''
             return session
         session = GatewaySession(platform=platform, user_id=user_id)
         self.sessions[key] = session
@@ -143,11 +174,24 @@ class MessageRouter:
             exp_ctx = None
         # Per-user authorization: revoked tools dropped from the default allowlist,
         # explicitly granted tools re-added, and permission prompts skipped only in
-        # free mode.
+        # free mode. SECURITY (C-01): free mode (--dangerously-skip-permissions)
+        # is reachable ONLY by a Web admin, and is additionally bound to the
+        # current conversation via session.free_nonce. External channels always
+        # run safe — _call_claude refuses the skip flag for non-web sessions.
         auth = self._get_auth(f'{platform}:{user_id}')
+        is_web_admin = self._is_web_admin(platform, user_id)
         base_tools = [t for t in self._GATEWAY_ALLOWED_TOOLS if t not in auth['revoked']]
+        if is_web_admin:
+            # Host-level write primitives are reserved for the Web admin; they are
+            # still stripped again in safe mode by _SAFE_EXCLUDED_TOOLS.
+            for t in self._WEB_ADMIN_TOOLS:
+                if t not in auth['revoked'] and t not in base_tools:
+                    base_tools.append(t)
         tools = base_tools + [t for t in auth['granted'] if t not in base_tools]
-        skip = (auth['mode'] == 'free')
+        # free mode only when the /auto grant is bound to THIS conversation via a
+        # non-empty session nonce — a stale/empty binding is never trusted.
+        free_nonce = auth.get('free_session') or ''
+        skip = (auth['mode'] == 'free' and bool(free_nonce) and free_nonce == session.free_nonce)
         response, in_tok, out_tok, cache_tok = await self._call_claude(
             prompt, session, skill_prefix=skill_prefix, allowed_tools=tools, skip_permissions=skip, on_event=on_event,
             provider_name=exp_ctx.get('strategy', '') if exp_ctx else '')
@@ -162,10 +206,14 @@ class MessageRouter:
         try:
             if exp_ctx:
                 from ..route_events import end_route
+                # F-09: surface a model/routing failure explicitly instead of
+                # letting the route-events layer guess from display text.
+                explicit_outcome = 'failure' if response.startswith('Error:') else None
                 end_route(exp_ctx, response=response,
                           latency_ms=(time.time() - _route_started) * 1000,
                           usage={'input_tokens': in_tok, 'output_tokens': out_tok,
-                                 'cache_read_tokens': cache_tok})
+                                 'cache_read_tokens': cache_tok},
+                          outcome=explicit_outcome)
         except Exception:
             logger.exception('route_events: end_route failed')
         try:
@@ -186,18 +234,38 @@ class MessageRouter:
                 model = model_router.get_provider().model or None
             except Exception:
                 logger.exception()
-            sid = persist_exchange(
-                session_id=session.db_session_id,
-                user_key=f'{platform}:{user_id}',
-                platform=platform,
-                msg=message,
-                response=response,
-                usage={'input_tokens': in_tok, 'output_tokens': out_tok, 'cache_read_tokens': cache_tok},
-                model=model,
-            )
-            if sid:
+            # F-07: persist_exchange now returns (session_id, persisted). Only re-pin
+            # the bridge.db session id when the write actually succeeded; otherwise
+            # surface a visible warning so the user knows the reply was not stored.
+            persisted = False
+            sid = ''
+            for attempt in range(3):
+                try:
+                    sid, persisted = persist_exchange(
+                        session_id=session.db_session_id,
+                        user_key=f'{platform}:{user_id}',
+                        platform=platform,
+                        msg=message,
+                        response=response,
+                        usage={'input_tokens': in_tok, 'output_tokens': out_tok, 'cache_read_tokens': cache_tok},
+                        model=model,
+                    )
+                except Exception:
+                    logger.exception('persist_exchange failed')
+                    persisted = False
+                if persisted:
+                    break
+                # Transient DB lock / write failure: back off briefly and retry
+                # (bounded), then fall through to the user-visible warning.
+                if attempt < 2:
+                    await asyncio.sleep(0.2 * (attempt + 1))
+            if persisted and sid:
                 session.db_session_id = sid
                 session.start_new = False
+            else:
+                warning = '⚠️ 会话记录保存失败，本回复可能不会保留在历史记录中。'
+                if warning not in response:
+                    response = response + '\n\n' + warning
         except Exception:
             logger.exception('persist_exchange failed')
         return response
@@ -270,7 +338,7 @@ class MessageRouter:
             if command == 'perms':
                 return self._cmd_perms(user_key)
             if command in ('auto', 'safe'):
-                return self._cmd_mode(command, args, user_key)
+                return self._cmd_mode(command, args, user_key, platform, user_id)
             if command == 'grant':
                 return self._cmd_grant(args, user_key)
             if command == 'revoke':
@@ -296,9 +364,9 @@ class MessageRouter:
             '/search <query> — 搜索知识库\n'
             '── 授权 ──\n'
             '/perms — 查看授权状态\n'
-            '/auto [on|off] — 开启免授权模式\n'
+            '/auto [on|off] — 开启免授权模式（仅 Web 管理员，绑定当前会话）\n'
             '/safe [on|off] — 开启授权模式\n'
-            '/grant <tool> — 授权工具（如 Bash、Edit、Write、Read、WebSearch）\n'
+            '/grant <tool> — 授权只读工具（Read、Glob、Grep、WebSearch、WebFetch）\n'
             '/revoke <tool> — 收回工具\n'
             '/help — 显示本帮助'
         )
@@ -434,7 +502,8 @@ class MessageRouter:
             logger.exception()
             return '授权状态不可用'
 
-    def _cmd_mode(self, command: str, args: list, user_key: str) -> str:
+    def _cmd_mode(self, command: str, args: list, user_key: str,
+                  platform: str = '', user_id: str = '') -> str:
         # SECURITY (S13): only accept on/off/empty — arbitrary args must not
         # silently map to free mode.
         if len(args) > 1:
@@ -442,23 +511,40 @@ class MessageRouter:
         arg = args[0].lower() if args else ''
         if arg not in ('on', 'off', ''):
             return f'用法: /{command} [on|off]（收到未知参数: {arg}）'
-        if command == 'auto':
-            if arg == 'off':
-                self._set_auth(user_key, 'mode', 'safe')
-                return '🔒 授权模式已开启，写操作需授权（当前自动拒绝写工具）'
+        want_free = (command == 'auto' and arg != 'off') or (command == 'safe' and arg == 'off')
+        if want_free:
+            # SECURITY (C-01): free mode maps to --dangerously-skip-permissions.
+            # Only a Web admin may enable it, and the grant is bound to the
+            # current conversation (session.free_nonce) so it cannot carry over
+            # to later sessions or to external channels.
+            if not self._is_web_admin(platform, user_id):
+                return '⚠️ 免授权模式（/auto）仅限 Web 管理员使用，外部渠道一律禁止。'
+            session = self.get_or_create_session(platform, user_id)
+            if not session.free_nonce:
+                session.free_nonce = uuid.uuid4().hex[:8]
+            # Stamp activity so a freshly-created session here (e.g. /auto as the
+            # very first message) is not immediately treated as idle-timed-out,
+            # which would clear the free-mode binding.
+            session.last_active = time.time()
             self._set_auth(user_key, 'mode', 'free')
-            return '✅ 免授权模式已开启，AI 可直接执行工具'
-        # safe
-        if arg == 'off':
-            self._set_auth(user_key, 'mode', 'free')
-            return '✅ 免授权模式已开启，AI 可直接执行工具'
+            self._set_auth(user_key, 'free_session', session.free_nonce)
+            return '✅ 免授权模式已开启（绑定当前会话），AI 可直接执行工具'
+        # safe mode (auto off / safe on)
         self._set_auth(user_key, 'mode', 'safe')
+        self._set_auth(user_key, 'free_session', '')
         return '🔒 授权模式已开启，写操作需授权（当前自动拒绝写工具）'
 
     def _cmd_grant(self, args: list, user_key: str) -> str:
         if not args:
-            return '用法: /grant <tool>，tool 如 Bash、Edit、Write、Read、WebSearch'
-        tool = args[0]
+            return '用法: /grant <tool>，tool 如 Read、Glob、Grep、WebSearch、WebFetch'
+        tool = args[0].strip()
+        # SECURITY (C-02): only a strict enumeration of side-effect-free tools is
+        # ever grantable. Everything else — including every mcp__* tool — is
+        # rejected outright, so a message user cannot pre-approve write or
+        # destructive capabilities through --allowedTools. The grant is also the
+        # intersection with the server capability policy (read-only surface only).
+        if not tool or tool not in self._GRANTABLE_TOOLS or tool.startswith('mcp__'):
+            return f'⚠️ 工具 {tool} 不在可授权白名单内（仅限只读工具 Read/Glob/Grep/WebSearch/WebFetch）'
         auth = self._get_auth(user_key)
         granted = list(auth.get('granted', []) or [])
         revoked = [t for t in (auth.get('revoked', []) or []) if t != tool]
@@ -470,12 +556,17 @@ class MessageRouter:
 
     def _cmd_revoke(self, args: list, user_key: str) -> str:
         if not args:
-            return '用法: /revoke <tool>，tool 如 Bash、Edit、Write、Read、WebSearch'
-        tool = args[0]
+            return '用法: /revoke <tool>，tool 如 Read、Glob、Grep、WebSearch、WebFetch'
+        tool = args[0].strip()
         auth = self._get_auth(user_key)
+        was_granted = tool in (auth.get('granted', []) or [])
+        was_revoked = tool in (auth.get('revoked', []) or [])
         granted = [t for t in (auth.get('granted', []) or []) if t != tool]
         revoked = list(auth.get('revoked', []) or [])
-        if tool not in revoked:
+        # Allow revoking anything in the whitelist OR a legacy grant already held.
+        if not tool or (tool not in self._GRANTABLE_TOOLS and not was_granted and not was_revoked):
+            return f'⚠️ 工具 {tool} 不在可管理范围内'
+        if tool in self._GRANTABLE_TOOLS and tool not in revoked:
             revoked.append(tool)
         self._set_auth(user_key, 'granted', granted)
         self._set_auth(user_key, 'revoked', revoked)
@@ -490,7 +581,7 @@ class MessageRouter:
         the bot would get arbitrary command execution. Only a user who
         explicitly opts into /auto (free) gets that.
         """
-        default = {'mode': 'safe', 'granted': [], 'revoked': []}
+        default = {'mode': 'safe', 'granted': [], 'revoked': [], 'free_session': ''}
         try:
             if AUTH_STATE.exists():
                 with open(AUTH_STATE, encoding='utf-8') as f:
@@ -503,6 +594,7 @@ class MessageRouter:
                     'mode': mode,
                     'granted': list(entry.get('granted', []) or []),
                     'revoked': list(entry.get('revoked', []) or []),
+                    'free_session': entry.get('free_session', '') or '',
                 }
         except Exception:
             logger.exception('auth state read failed')
@@ -516,11 +608,13 @@ class MessageRouter:
             if AUTH_STATE.exists():
                 with open(AUTH_STATE, encoding='utf-8') as f:
                     data = json.load(f)
-            entry = data.setdefault(user_key, {'mode': 'safe', 'granted': [], 'revoked': []})
+            entry = data.setdefault(user_key, {'mode': 'safe', 'granted': [], 'revoked': [], 'free_session': ''})
             if field == 'mode':
                 if value not in ('free', 'safe'):
                     raise ValueError(f'invalid auth mode: {value}')
                 entry['mode'] = value
+            elif field == 'free_session':
+                entry['free_session'] = value or ''
             elif field in ('granted', 'revoked'):
                 seen: list[str] = []
                 for item in (value or []):
@@ -627,9 +721,12 @@ class MessageRouter:
             result = result[:self._MAX_CONTEXT_CHARS - 3] + '...'
         return result
 
-    # Tools allowed for gateway (non-interactive) sessions
+    # Tools allowed for external gateway (non-interactive) sessions. SECURITY
+    # (C-01): Bash/Edit/Write are NOT here — host-level write primitives are
+    # reserved for authenticated Web admins (see _WEB_ADMIN_TOOLS) and are
+    # stripped again in safe mode via _SAFE_EXCLUDED_TOOLS.
     _GATEWAY_ALLOWED_TOOLS = [
-        'Bash', 'Read', 'Edit', 'Write', 'Glob', 'Grep',
+        'Read', 'Glob', 'Grep',
         'WebSearch', 'WebFetch',
         'mcp__tavily__tavily_search', 'mcp__tavily__tavily_extract',
         'mcp__tavily__tavily_crawl', 'mcp__tavily__tavily_research',
@@ -641,6 +738,16 @@ class MessageRouter:
         'mcp__metano__memory_search',
         'mcp__metano__knowledge_search',
     ]
+
+    # C-01: host-level write primitives re-added ONLY for authenticated Web
+    # admins. Still stripped in safe mode; reachable only in admin-gated free
+    # mode bound to the current session.
+    _WEB_ADMIN_TOOLS = ['Bash', 'Edit', 'Write']
+
+    # C-02: strict read-only whitelist for /grant. Any other name — including
+    # every mcp__* tool — is rejected so a message user cannot pre-approve
+    # side-effectful tools through --allowedTools.
+    _GRANTABLE_TOOLS = frozenset({'Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch'})
 
     # Tools stripped in safe mode (no --dangerously-skip-permissions): write /
     # destructive primitives must not be pre-approved via --allowedTools for
@@ -690,6 +797,16 @@ class MessageRouter:
         if context_layers:
             combined = '\n\n'.join(context_layers)
             prompt = f"{combined}\n\n---\n\nUser message: {prompt}\n\nRespond in Chinese."
+        # F-02: honour the provider's protocol — OpenAI-compatible endpoints are
+        # called over HTTP; everything else goes through the claude CLI.
+        try:
+            from ..model_router import model_router
+            provider = model_router.get_provider(provider_name)
+        except Exception:
+            logger.exception("router: provider lookup failed")
+            provider = None
+        if provider and (provider.protocol or 'anthropic').lower() == 'openai':
+            return await self._call_openai_provider(prompt, provider, on_event=on_event)
         tools = allowed_tools or self._GATEWAY_ALLOWED_TOOLS
         if not skip_permissions:
             # SECURITY: in safe mode we do NOT pass --dangerously-skip-permissions,
@@ -698,8 +815,12 @@ class MessageRouter:
             # model cannot touch the filesystem/shell unless the user granted
             # those tools explicitly.
             tools = [t for t in tools if t not in self._SAFE_EXCLUDED_TOOLS]
+        # C-01: the --dangerously-skip-permissions flag is ONLY ever appended for
+        # an authenticated Web admin session, no matter what the stored auth mode
+        # claims. External channel sessions always run safe.
+        skip_effective = bool(skip_permissions) and self._is_web_admin(session.platform, session.user_id)
         cmd = [claude_bin, '-p', prompt]
-        if skip_permissions:
+        if skip_effective:
             cmd.append('--dangerously-skip-permissions')
         cmd += [
             '--allowedTools', ','.join(tools),
@@ -743,12 +864,14 @@ class MessageRouter:
         except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()
-            return 'Response timed out. Please try again.', 0, 0, 0
+            return 'Error: 响应超时，请稍后重试', 0, 0, 0
         except Exception:
             logger.exception()
             # SECURITY (S10): do not echo internal exception details to the
             # channel (leaks paths / stack traces); log them and return generic.
-            return '处理失败，请稍后重试', 0, 0, 0
+            # F-09: the explicit 'Error:' prefix lets route_events judge failure
+            # without guessing from display text.
+            return 'Error: 处理失败，请稍后重试', 0, 0, 0
 
     async def _call_claude_stream_events(self, proc, on_event) -> tuple:
         """Read claude stream-json line-by-line, invoking ``on_event`` with
@@ -808,7 +931,7 @@ class MessageRouter:
         except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()
-            return 'Response timed out. Please try again.', 0, 0, 0
+            return 'Error: 响应超时，请稍后重试', 0, 0, 0
         try:
             stderr = await asyncio.wait_for(proc.stderr.read(), timeout=10)
         except Exception:
@@ -819,8 +942,9 @@ class MessageRouter:
             if err:
                 logger.error(f'claude -p stream stderr: {err[:500]}')
             # SECURITY (S10): never echo stderr (paths / stack traces) back to
-            # the channel; log it and return a generic message.
-            response = '处理失败，请稍后重试'
+            # the channel; log it and return a generic message. F-09: explicit
+            # 'Error:' prefix so route_events records the failure.
+            response = 'Error: 模型返回空响应，请稍后重试'
         return (response,
                 usage.get('input_tokens', 0) or 0,
                 usage.get('output_tokens', 0) or 0,
@@ -988,7 +1112,8 @@ class MessageRouter:
                 # SECURITY (S10): log stderr details but never echo them back to
                 # the channel (leaks paths / stack traces).
                 logger.error(f'claude -p stderr: {stderr.decode(errors="replace")[:500]}')
-            response = '处理失败，请稍后重试'
+            # F-09: explicit 'Error:' prefix so route_events records the failure.
+            response = 'Error: 模型返回空响应，请稍后重试'
         in_tok = usage.get('input_tokens') or 0
         out_tok = usage.get('output_tokens') or 0
         cache_tok = usage.get('cache_read_input_tokens') or 0
@@ -1003,4 +1128,85 @@ class MessageRouter:
             self.sessions[key].history = []
             self.sessions[key].message_count = 0
             self.sessions[key].start_new = True
+            # C-01: free-mode grant does not survive a session reset.
+            self.sessions[key].free_nonce = ''
+
+    def _is_web_admin(self, platform: str, user_id: str) -> bool:
+        """True only for an authenticated Web admin session (platform='web').
+
+        SECURITY (C-01): the free-mode skip flag and the Bash/Edit/Write tools
+        are reachable ONLY through this path. user_id is the JWT username set by
+        web_server; role is re-checked against the auth config here rather than
+        trusting anything sent by the client.
+        """
+        if platform != 'web':
+            return False
+        try:
+            from ..auth import get_users
+            for u in get_users():
+                if u.get('username') == user_id and u.get('role') == 'admin':
+                    return True
+        except Exception:
+            logger.exception()
+        return False
+
+    async def _call_openai_provider(self, prompt: str, provider, on_event=None) -> tuple:
+        """Call an OpenAI-compatible /v1/chat/completions endpoint.
+
+        Used when the selected provider's ``protocol`` is ``openai`` (F-02).
+        Runs the blocking HTTP request in a thread so the gateway loop is not
+        blocked. Most compatible endpoints do not report usage on a plain
+        completion, so tokens are returned as 0 rather than fabricated.
+
+        Returns (response, input_tokens, output_tokens, cache_read_tokens).
+        Failures return an explicit 'Error:'-prefixed response (F-09).
+        """
+        import urllib.request
+        import urllib.error
+
+        def _do() -> tuple:
+            base = (provider.base_url or '').rstrip('/')
+            url = base + '/chat/completions'
+            payload = {
+                'model': provider.model,
+                'messages': [{'role': 'user', 'content': prompt}],
+                'max_tokens': getattr(provider, 'max_tokens', 4096) or 4096,
+            }
+            headers = {'Content-Type': 'application/json'}
+            if provider.api_key:
+                headers['Authorization'] = f'Bearer {provider.api_key}'
+            req = urllib.request.Request(url, data=json.dumps(payload).encode(),
+                                         headers=headers, method='POST')
+            proxy = getattr(provider, 'proxy', '') or ''
+            if proxy and proxy.lower() not in ('direct', 'none'):
+                opener = urllib.request.build_opener(
+                    urllib.request.ProxyHandler({'http': proxy, 'https': proxy}))
+            else:
+                # No explicit proxy: bypass env proxy so a local/LAN endpoint
+                # (e.g. ollama-local) is not routed through the WAN proxy.
+                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            try:
+                with opener.open(req, timeout=120) as resp:
+                    data = json.loads(resp.read().decode())
+                choices = data.get('choices') or []
+                if choices:
+                    msg = choices[0].get('message', {})
+                    content = (msg.get('content') or '').strip()
+                    if content:
+                        return content, 0, 0, 0
+                    return 'Error: 模型返回空响应，请稍后重试', 0, 0, 0
+                return 'Error: 模型响应异常（无 choices）', 0, 0, 0
+            except urllib.error.HTTPError as e:
+                body = e.read().decode(errors='replace')[:200]
+                return f'Error: HTTP {e.code} — {body}', 0, 0, 0
+            except Exception as e:
+                logger.exception('openai call failed')
+                return f'Error: {str(e)[:200]}', 0, 0, 0
+
+        try:
+            return await asyncio.to_thread(_do)
+        except Exception:
+            logger.exception('openai call failed')
+            return 'Error: 处理失败，请稍后重试', 0, 0, 0
+
 router = MessageRouter()

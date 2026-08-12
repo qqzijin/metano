@@ -3,15 +3,21 @@
 The evolution system can not only maintain its data/rules — it can modify its
 own Python code, the way a species mutates and is selected by its environment.
 
-Pipeline: SCAN → GENERATE → VERIFY → APPLY → LOG
+Pipeline: SCAN → GENERATE → VERIFY → (APPROVE) → APPLY → LOG
 
 - **SCAN**      find anti-patterns (code_introspector) and architectural issues
 - **GENERATE**  ask the LLM to produce a unified diff (candidate mutation)
-- **VERIFY**    apply the diff in an isolated git worktree, run the full test
-                suite + import check. This is the "environment": a mutation
-                that breaks tests is selected out and never touches the main
-                system.
-- **APPLY**     a surviving mutation is committed to the source repo, synced to
+- **VERIFY**    apply the diff in an isolated git worktree, run the import check
+                and full test suite INSIDE a bubblewrap sandbox (no network,
+                tmpfs HOME, read-only source tree, scrubbed environment). This
+                is the "environment": a mutation that breaks tests is selected
+                out and never touches the main system — and one that tries to
+                read secrets / touch the network during import/test cannot.
+- **APPROVE**   "tests passed" is deliberately NOT the only safety boundary:
+                an automatically-verified candidate is NOT applied unless an
+                operator approves it (``approve_mutation``) — unless
+                ``SELF_MODIFY_REQUIRE_APPROVAL=0`` is explicitly set.
+- **APPLY**     an approved mutation is committed to the source repo, synced to
                 the runtime instance, and recorded with its git hash.
 - **LOG**       every mutation is persisted to ``self_modify_events`` so any
                 change can be inspected and reverted (the species-level safety
@@ -27,6 +33,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -409,6 +416,149 @@ def _git(args: list[str], cwd: Path) -> str:
     return proc.stdout.strip()
 
 
+class _SandboxUnavailable(Exception):
+    """Raised when the verify sandbox cannot provide OS-level isolation."""
+
+
+def _interpreter_prefixes() -> list[str]:
+    """Host interpreter prefixes to expose read-only inside the verify sandbox.
+
+    Includes the venv root (the directory containing ``pyvenv.cfg``) and the
+    base Python prefix, so the sandboxed interpreter can import the project's
+    dependencies without exposing METANO_HOME data or credentials.
+    """
+    prefixes: list[str] = []
+    exe = Path(sys.executable).resolve()
+    for cand in (exe.parent, exe.parent.parent):
+        if (cand / 'pyvenv.cfg').exists():
+            prefixes.append(str(cand))
+            break
+    prefixes.append(str(Path(sys.base_prefix)))
+    return list(dict.fromkeys(prefixes))
+
+
+def _user_site() -> str | None:
+    """The host user site-packages dir (e.g. ~/.local/lib/python3.x/site-packages).
+
+    In a venv-less dev checkout the project's deps (pytest, yaml, ...) live
+    here; it is hidden by the sandbox's tmpfs HOME, so it is bound read-only
+    and added to PYTHONPATH for the verify run. Returns None when absent.
+    """
+    try:
+        import site
+        p = site.getusersitepackages()
+        if p and Path(p).is_dir():
+            return p
+    except Exception:
+        pass
+    return None
+
+
+def _run_verify_isolated(cmd: list, cwd: Path, timeout: int,
+                         extra_env: dict | None = None,
+                         rw_binds: tuple = ()) -> subprocess.CompletedProcess:
+    """Run a verification command inside a bubblewrap sandbox.
+
+    Isolation: no network (``--unshare-net``), a throwaway tmpfs ``$HOME``, a
+    read-only root filesystem, and a scrubbed minimal environment — no
+    ``os.environ`` is inherited, so API keys / secrets in the daemon's
+    environment never reach the code under test. The mutated source tree and
+    the host interpreter's prefixes are bound read-only so the import / test
+    suite can actually run.
+
+    Raises ``_SandboxUnavailable`` if bwrap cannot provide isolation (non-Linux
+    or bwrap missing) — verification FAILS CLOSED rather than falling back to
+    running untrusted code on the host.
+    """
+    cwd = Path(os.path.abspath(cwd))  # bwrap binds need absolute paths
+    if sys.platform != 'linux':
+        raise _SandboxUnavailable('bwrap sandbox requires Linux')
+    bwrap = shutil.which('bwrap')
+    if not bwrap:
+        raise _SandboxUnavailable('bwrap not found on PATH')
+    home = str(Path.home())
+    argv = [
+        bwrap,
+        '--ro-bind', '/', '/',
+        '--tmpfs', home,
+        '--unshare-net',
+        '--unshare-pid',
+        '--unshare-ipc',
+        '--unshare-uts',
+        '--proc', '/proc',
+        '--dev', '/dev',
+        '--tmpfs', '/tmp',
+        '--tmpfs', '/run',
+        '--tmpfs', '/dev/shm',
+        '--die-with-parent',
+    ]
+    # The mutated source tree must be readable but never writable.
+    argv += ['--ro-bind', str(cwd), str(cwd)]
+    # Re-expose only the interpreter prefixes that the tmpfs mounts would
+    # otherwise hide (a venv under $HOME, a pyenv base under $HOME, ...).
+    # Paths already under the read-only `/` are visible and must NOT be
+    # re-mounted — bwrap cannot mkdir a mount point on a ro root.
+    def _tmpfs_hidden(p: str) -> bool:
+        return p == home or p.startswith(home + os.sep) or p.startswith('/tmp/')
+    extra_pythonpath: list[str] = []
+    for prefix in _interpreter_prefixes():
+        if _tmpfs_hidden(prefix):
+            argv += ['--ro-bind', prefix, prefix]
+    usite = _user_site()
+    if usite and _tmpfs_hidden(usite):
+        # Make the host user site-packages (project deps in a venv-less dev
+        # checkout) visible read-only and reachable via PYTHONPATH.
+        argv += ['--ro-bind', usite, usite]
+        extra_pythonpath.append(usite)
+    # The sandbox python may not resolve the same system site-packages as the
+    # host interpreter (e.g. /usr/local/lib/python3.x/site-packages on Fedora
+    # is derived from sysconfig, not from site.getsitepackages()). Expose the
+    # host's purelib/platlib explicitly so the project's deps are importable.
+    try:
+        import sysconfig
+        for key in ('purelib', 'platlib'):
+            p = sysconfig.get_path(key)
+            if p and Path(p).is_dir() and p.startswith('/') and not _tmpfs_hidden(p):
+                extra_pythonpath.append(p)
+    except Exception:
+        pass
+    # Read-write binds: the throwaway scratch METANO_HOME so the test suite
+    # can create its DBs without touching real host data.
+    for host, sandbox in rw_binds:
+        argv += ['--bind', host, sandbox]
+    argv += ['--setenv', 'HOME', home]
+    argv += ['--'] + list(cmd)
+    env = {
+        'PATH': '/usr/local/bin:/usr/bin:/bin',
+        'HOME': home,
+        'LANG': 'en_US.UTF-8',
+        'LC_ALL': 'en_US.UTF-8',
+        'TERM': 'dumb',
+        'TMPDIR': '/tmp',
+        'PYTHONDONTWRITEBYTECODE': '1',
+        'PYTHONNOUSERSITE': '1',
+    }
+    if extra_pythonpath:
+        env['PYTHONPATH'] = ':'.join(extra_pythonpath)
+    if extra_env:
+        env.update(extra_env)
+    return subprocess.run(
+        argv, capture_output=True, text=True, cwd=str(cwd), timeout=timeout, env=env,
+    )
+
+
+def _approval_required() -> bool:
+    """Whether applying a verified mutation requires explicit human approval.
+
+    'Tests passed' is deliberately NOT the only safety boundary for a mutation
+    that then gets committed and synced into the running instance. Default on;
+    set ``SELF_MODIFY_REQUIRE_APPROVAL=0`` to skip the human checkpoint (an
+    explicit operator decision — not recommended for unattended deployments).
+    """
+    val = os.environ.get('SELF_MODIFY_REQUIRE_APPROVAL', '1').strip().lower()
+    return val not in ('0', 'false', 'no', 'off', '')
+
+
 def verify_candidate(candidate: dict) -> dict:
     """Verify a mutation in an isolated git worktree. Returns verdict dict.
 
@@ -421,6 +571,7 @@ def verify_candidate(candidate: dict) -> dict:
         return {'verdict': 'rejected', 'reason': f'file not mutable: {rel_file}'}
 
     worktree = Path(tempfile.mkdtemp(prefix='metano-selfmod-'))
+    scratch_home: str | None = None
     try:
         _git(['worktree', 'add', '--detach', str(worktree), 'HEAD'], REPO_ROOT)
         # Apply the diff in the worktree.
@@ -437,7 +588,46 @@ def verify_candidate(candidate: dict) -> dict:
         if apply_proc.returncode != 0:
             return {'verdict': 'rejected', 'reason': f'diff apply failed: {apply_proc.stderr[:300]}'}
 
+        # The import/test run uses a scratch METANO_HOME (a throwaway host dir
+        # bound read-write into the sandbox at the default ~/.claude/metano
+        # location), so the code under test never sees the real METANO_HOME
+        # (DBs, .env, config, ...). A minimal config + empty schemas are
+        # initialized once so the test suite has what it expects.
+        scratch_home = tempfile.mkdtemp(prefix='metano-verify-home-')
+        sandbox_home = str(Path.home() / '.claude' / 'metano')  # matches the suite's default METANO_HOME
+        verify_env = {'METANO_HOME': sandbox_home}
+        rw_binds = ((scratch_home, sandbox_home),)
+        _init_verify_home = (
+            "import os, pathlib, yaml\n"
+            "home = pathlib.Path(os.environ['METANO_HOME'])\n"
+            "home.mkdir(parents=True, exist_ok=True)\n"
+            "cfg = {'auth': {'jwt_secret': 'metano-verify-scratch-secret-0123456789abcdef'}}\n"
+            "(home / 'gateway_config.yaml').write_text(yaml.safe_dump(cfg))\n"
+            "from metano.db import init_db as _d\n_d()\n"
+            "from metano.evo_models import init_db as _e\n_e()\n"
+            "from metano.memory import _get_conn as _m\n"
+            "_c = _m(); _c.__enter__(); _c.__exit__(None, None, None)\n"
+        )
+        init_script = worktree / '_verify_init.py'
+        init_script.write_text(_init_verify_home)
+        try:
+            try:
+                init_proc = _run_verify_isolated(
+                    [sys.executable, str(init_script)], worktree, timeout=120,
+                    extra_env=verify_env, rw_binds=rw_binds,
+                )
+            except _SandboxUnavailable as e:
+                return {'verdict': 'rejected', 'reason': f'verify sandbox unavailable: {e}'}
+        finally:
+            init_script.unlink(missing_ok=True)
+        if init_proc.returncode != 0:
+            return {'verdict': 'rejected',
+                    'reason': f'verify DB init failed: {(init_proc.stdout or "")[-200:]}{(init_proc.stderr or "")[-200:]}'}
+
         # Import check: every metano module must import under the mutated tree.
+        # Runs INSIDE a bubblewrap sandbox (no network, tmpfs HOME, read-only
+        # source, scrubbed env) so a hostile mutation cannot read secrets, hit
+        # the network, or write to the host while it is being imported/tested.
         # Use a temp script (python3 -c cannot hold a multi-line for-loop).
         import_check = """import sys, pathlib
 pkg = pathlib.Path("metano")
@@ -459,20 +649,27 @@ print("IMPORT_OK", len(mods))
             f.write(import_check)
             check_script = f.name
         try:
-            import_proc = subprocess.run(
-                ['python3', check_script],
-                capture_output=True, text=True, cwd=str(worktree), timeout=90,
-            )
+            try:
+                import_proc = _run_verify_isolated(
+                    [sys.executable, check_script], worktree, timeout=120,
+                    extra_env=verify_env, rw_binds=rw_binds,
+                )
+            except _SandboxUnavailable as e:
+                return {'verdict': 'rejected', 'reason': f'verify sandbox unavailable: {e}'}
         finally:
             os.unlink(check_script)
         if import_proc.returncode != 0:
             return {'verdict': 'rejected', 'reason': f'import failed: {import_proc.stdout[:300]}{import_proc.stderr[:300]}'}
 
-        # Full test suite.
-        test_proc = subprocess.run(
-            ['python3', '-m', 'pytest', 'tests/', '-q', '--ignore=tests/test_cron_daemon.py'],
-            capture_output=True, text=True, cwd=str(worktree), timeout=300,
-        )
+        # Full test suite (also sandboxed).
+        try:
+            test_proc = _run_verify_isolated(
+                [sys.executable, '-m', 'pytest', 'tests/', '-q',
+                 '-p', 'no:cacheprovider', '--ignore=tests/test_cron_daemon.py'],
+                worktree, timeout=300, extra_env=verify_env, rw_binds=rw_binds,
+            )
+        except _SandboxUnavailable as e:
+            return {'verdict': 'rejected', 'reason': f'verify sandbox unavailable: {e}'}
         if test_proc.returncode != 0:
             tail = (test_proc.stdout or '')[-300:] + (test_proc.stderr or '')[-300:]
             return {'verdict': 'rejected', 'reason': f'tests failed: {tail}'}
@@ -487,6 +684,8 @@ print("IMPORT_OK", len(mods))
             _git(['worktree', 'remove', '--force', str(worktree)], REPO_ROOT)
         except Exception:
             logger.exception('self_modify: worktree cleanup failed')
+        if scratch_home:
+            shutil.rmtree(scratch_home, ignore_errors=True)
 
 
 # ── APPLY ───────────────────────────────────────────────────────────────
@@ -545,7 +744,8 @@ def record_event(candidate: dict, verdict: str, commit_hash: str = '', event_id:
             file=rel_file,
             diff=diff,
         )
-    status = {'verified': 'verified', 'applied': 'applied', 'rejected': 'rejected', 'reverted': 'reverted'}.get(verdict, 'candidate')
+    status = {'verified': 'verified', 'applied': 'applied', 'rejected': 'rejected',
+              'reverted': 'reverted', 'pending_approval': 'pending_approval'}.get(verdict, 'candidate')
     update_self_modify_event(
         event_id,
         verify_result=verdict,
@@ -585,6 +785,13 @@ def self_modify_daily(dry_run: bool = False, max_mutations: int = 3) -> dict:
             record_event(candidate, 'rejected', event_id=event_id)
             result['rejected'] += 1
             continue
+        if _approval_required():
+            # Human approval is the final safety gate: the candidate passed
+            # verification but is NOT auto-applied. An operator reviews and
+            # calls approve_mutation(event_id) to apply (or reject) it.
+            record_event(candidate, 'pending_approval', event_id=event_id)
+            result['pending_approval'] = result.get('pending_approval', 0) + 1
+            continue
         applied = apply_candidate(candidate, event_id)
         if applied['status'] == 'applied':
             record_event(candidate, 'applied', commit_hash=applied.get('commit_hash', ''), event_id=event_id)
@@ -595,6 +802,41 @@ def self_modify_daily(dry_run: bool = False, max_mutations: int = 3) -> dict:
 
     result['status'] = 'completed'
     return result
+
+
+def approve_mutation(event_id: int, approved: bool = True) -> dict:
+    """Human approval checkpoint for a verified, pending mutation.
+
+    A candidate that passed verification is not applied automatically (see
+    ``_approval_required``). This is the explicit operator step that turns a
+    ``pending_approval`` event into an applied mutation (commit + sync to the
+    runtime instance). ``approved=False`` rejects it instead.
+
+    Returns {'status': 'applied'|'rejected'|'not_found'|'wrong_state', ...}.
+    """
+    from .evo_models import get_self_modify_event, update_self_modify_event
+    event = get_self_modify_event(event_id)
+    if not event:
+        return {'status': 'not_found'}
+    if not approved:
+        update_self_modify_event(event_id, status='rejected')
+        return {'status': 'rejected'}
+    if event['status'] != 'pending_approval':
+        return {'status': 'wrong_state', 'current': event['status']}
+    issue = event.get('issue') or ''
+    candidate = {
+        'file': event.get('file', ''),
+        'diff': event.get('diff', ''),
+        'issue': {'pattern': issue} if isinstance(issue, str) else (issue or {}),
+    }
+    if not candidate['file'] or not candidate['diff']:
+        return {'status': 'wrong_state', 'current': 'event missing file/diff'}
+    applied = apply_candidate(candidate, event_id)
+    if applied['status'] == 'applied':
+        record_event(candidate, 'applied', commit_hash=applied.get('commit_hash', ''), event_id=event_id)
+        return {'status': 'applied', 'commit_hash': applied['commit_hash']}
+    record_event(candidate, 'rejected', event_id=event_id)
+    return applied
 
 
 def revert_mutation(event_id: int) -> dict:

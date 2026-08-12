@@ -51,8 +51,10 @@ def _split_message(text: str, max_len: int = MAX_MESSAGE_LENGTH) -> list[str]:
             split_at = text.rfind(" ", 0, max_len)
         if split_at < max_len // 2:
             split_at = max_len
-        chunks.append(text[:split_at + 1])
-        text = text[split_at + 1:]
+        # F-17: no-boundary fallback must slice at exactly max_len, not +1, so a
+        # chunk never exceeds the platform limit.
+        chunks.append(text[:split_at])
+        text = text[split_at:]
     return chunks
 
 
@@ -138,9 +140,9 @@ class FeishuBot:
             if len(self._processed) > 1000:
                 self._processed = set(list(self._processed)[-500:])
 
-            # Auth check
+            # Auth check — fail closed (H-08): empty whitelist denies everyone.
             sender_id = sender.sender_id.open_id if sender.sender_id else ""
-            if self.allowed_users and sender_id not in self.allowed_users:
+            if sender_id not in self.allowed_users:
                 logger.info(f"Ignoring message from unauthorized user: {sender_id}")
                 return
 
@@ -250,11 +252,11 @@ class FeishuBot:
     def _process_and_reply_sync(self, chat_id: str, msg_id: str, sender_id: str, chat_type: str, user_text: str):
         """Sync wrapper: runs async route_message in a new event loop within the thread pool."""
         try:
-            platform_user = f"feishu:{sender_id}"
+            # F-16: pass the RAW sender open_id; the Router adds the platform prefix.
             response = asyncio.run(
                 self.router.route_message(
                     platform="feishu",
-                    user_id=platform_user,
+                    user_id=sender_id,
                     message=user_text,
                 )
             )
@@ -262,9 +264,15 @@ class FeishuBot:
             self._remove_read_indicator(msg_id)
             self._send_reply(chat_id, response, msg_id)
         except Exception as e:
+            # F-17: a processing exception must reach the user — never leave them
+            # with no reply and no failure state.
             logger.error(f"Error in async message processing: {e}", exc_info=True)
             self._remove_typing_indicator(msg_id)
             self._remove_read_indicator(msg_id)
+            try:
+                self._send_reply(chat_id, "抱歉，处理你的消息时出错了，请稍后再试。", msg_id)
+            except Exception:
+                logger.exception('feishu: failed to send error receipt')
 
     def _extract_text(self, content: str, msg_type: str) -> str:
         """Extract plain text from Feishu message content."""
@@ -361,19 +369,22 @@ class FeishuBot:
 
         md_text = _text_to_feishu_md(text)
         chunks = _split_message(md_text)
+        sent_any = False
 
         for i, chunk in enumerate(chunks):
-            body = CreateMessageRequestBody.builder() \
-                .msg_type("text" if not _has_markdown(chunk) else "interactive") \
-                .content(self._build_content(chunk)) \
-                .receive_id(chat_id) \
-                .build()
-
-            # For text messages, use simpler API
             try:
                 self._send_text_message(chat_id, chunk, reply_to if i == 0 else "")
+                sent_any = True
             except Exception as e:
                 logger.error(f"Failed to send Feishu message: {e}")
+
+        if not sent_any:
+            # F-17: retries exhausted — send a short error receipt so the user
+            # gets a visible failure instead of silence.
+            try:
+                self._send_text_message(chat_id, "⚠️ 回复发送失败，请稍后再试。", reply_to)
+            except Exception:
+                logger.exception('feishu: error receipt send failed')
 
     def _send_text_message(self, chat_id: str, text: str, reply_to: str = ""):
         """Send a text message to Feishu chat with retry."""

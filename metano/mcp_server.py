@@ -1,5 +1,7 @@
 """MCP stdio server exposing session search, analytics, and cron tools."""
 import json
+import os
+import re
 import sqlite3
 import time
 import functools
@@ -61,28 +63,148 @@ mcp = FastMCP('metano')
 def _get_conn() -> sqlite3.Connection:
     return get_db()
 
+
+# ── Authentication / ownership helpers (H-07) ──────────────────────────────
+# The remote Streamable HTTP layer (metano.mcp_gateway.MCPAuthMiddleware)
+# captures the authenticated JWT subject + scope in a contextvar before the
+# FastMCP app runs; these helpers read it so every data tool can confine its
+# query to the caller's own rows.  Local stdio calls have no subject → the
+# trusted local operator (full access).
+from .mcp_gateway import get_mcp_auth, is_admin_read
+
+_SAFE_BASENAME_RE = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
+
+
+def _auth_subject() -> Optional[str]:
+    """Authenticated subject of the current MCP request, or None for stdio."""
+    return get_mcp_auth()[0]
+
+
+def _auth_admin_read() -> bool:
+    """True when the caller may read instance-wide data.
+
+    Local stdio (no subject) and admin-read scoped tokens return True; a
+    user-level remote token returns False.
+    """
+    subject, scopes = get_mcp_auth()
+    return subject is None or is_admin_read(scopes)
+
+
+def _owner_cond(col: str = 'sessions.user_key') -> tuple[str, list]:
+    """Build a SQL ``WHERE`` fragment + params confining rows to the subject.
+
+    Local stdio and admin-read callers see everything (``('', [])``).  A
+    user-level remote token is restricted to its own ``user_key`` — the raw
+    subject or the ``web:<subject>`` form used by web-login sessions.
+    """
+    subject, scopes = get_mcp_auth()
+    if subject is None or is_admin_read(scopes):
+        return '', []
+    return f"({col} = ? OR {col} = ?)", [subject, f'web:{subject}']
+
+
+def _memory_denied() -> bool:
+    """True when the caller must NOT see instance-wide memory data.
+
+    The ``memories`` and honcho tables have no per-user column, so a user-level
+    remote token is refused rather than leaking the whole instance.
+    """
+    subject, scopes = get_mcp_auth()
+    return subject is not None and not is_admin_read(scopes)
+
+
+def _clip(value, lo: int, hi: int, default: int) -> int:
+    """Coerce ``value`` to an int inside ``[lo, hi]`` (default on garbage)."""
+    try:
+        v = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(lo, min(hi, v))
+
+
+# ── Gateway capability policy (C-02) ──────────────────────────────────────
+# Tools that the gateway allowlist (``/grant``, ``--allowedTools``) is permitted
+# to pre-authorize for a non-interactive model.  Everything with a write /
+# destructive side effect — or an instance-wide read surface — is excluded: a
+# stray ``/grant mcp__metano__home_control`` must never reach the CLI's
+# ``--allowedTools`` (which would bypass the safe-mode boundary).
+GATEWAY_PREAUTHORIZABLE_TOOLS: frozenset[str] = frozenset({
+    # subject-scoped session / analytics reads
+    'session_search', 'session_list', 'session_get',
+    'analytics_summary', 'analytics_daily',
+    # read-only status / log / suggestions
+    'evolution_status', 'evolution_log', 'evolution_suggestions',
+    # skills / models / web search (no local mutation)
+    'skills_list', 'skill_view', 'model_list',
+    'web_search', 'web_search_tavily', 'x_search',
+    # read-only queries (stdio/gateway = local operator)
+    'personality_list', 'personality_current',
+    'memory_search', 'memory_stats', 'memory_timeline', 'memory_detail',
+    'knowledge_search', 'knowledge_list',
+    'honcho_profile', 'honcho_beliefs',
+    'voice_list',
+})
+
+
+def is_gateway_preauthorizable(tool: str) -> bool:
+    """True when a tool may be pre-authorized via the gateway allowlist.
+
+    Accepts the bare tool name or the ``mcp__metano__<name>`` form used in
+    gateway CLI tool strings.  The gateway's ``/grant`` handler MUST call this
+    and reject any tool that is not preauthorizable — an unknown string or an
+    ``mcp__metano__`` write/destructive tool must never reach ``--allowedTools``.
+    """
+    name = tool or ''
+    if name.startswith('mcp__metano__'):
+        name = name[len('mcp__metano__'):]
+    return name in GATEWAY_PREAUTHORIZABLE_TOOLS
+
 @mcp.tool()
 def session_search(query: str, limit: int=10) -> str:
     """Search Claude Code session messages by substring. Supports Chinese and partial words."""
+    limit = _clip(limit, 1, 100, 10)
+    cond, params = _owner_cond('s.user_key')
+    where = 'WHERE m.content LIKE ?'
+    if cond:
+        where += f' AND {cond}'
     conn = _get_conn()
     pattern = f'%{query}%'
-    rows = conn.execute('SELECT m.session_id, m.role, substr(m.content, 1, 200) as snippet, m.timestamp, s.title FROM messages m JOIN sessions s ON s.id = m.session_id WHERE m.content LIKE ? ORDER BY m.timestamp DESC LIMIT ?', (pattern, limit)).fetchall()
+    rows = conn.execute(
+        f'SELECT m.session_id, m.role, substr(m.content, 1, 200) as snippet, m.timestamp, s.title '
+        f'FROM messages m JOIN sessions s ON s.id = m.session_id {where} '
+        f'ORDER BY m.timestamp DESC LIMIT ?',
+        (pattern, *params, limit)).fetchall()
     results = [{'session_id': r['session_id'], 'title': r['title'], 'role': r['role'], 'snippet': r['snippet'], 'timestamp': r['timestamp']} for r in rows]
     return json.dumps(results, ensure_ascii=False, indent=2)
 
 @mcp.tool()
 def session_list(limit: int=20, offset: int=0) -> str:
     """List recent Claude Code sessions with titles, token counts, and model info."""
+    limit = _clip(limit, 1, 100, 20)
+    offset = _clip(offset, 0, 10000, 0)
+    cond, params = _owner_cond('sessions.user_key')
+    where = f'WHERE {cond}' if cond else ''
     conn = _get_conn()
-    rows = conn.execute('SELECT id, title, model, message_count, tool_call_count, input_tokens, output_tokens, estimated_cost_usd, started_at, last_active FROM sessions ORDER BY last_active DESC LIMIT ? OFFSET ?', (limit, offset)).fetchall()
+    rows = conn.execute(
+        f'SELECT id, title, model, message_count, tool_call_count, input_tokens, output_tokens, estimated_cost_usd, started_at, last_active '
+        f'FROM sessions {where} ORDER BY last_active DESC LIMIT ? OFFSET ?',
+        (*params, limit, offset)).fetchall()
     results = [dict(r) for r in rows]
     return json.dumps(results, ensure_ascii=False, indent=2)
 
 @mcp.tool()
 def session_get(session_id: str, limit: int=100) -> str:
-    """Get messages for a specific session by ID."""
+    """Get messages for a specific session by ID (owner-scoped)."""
+    limit = _clip(limit, 1, 500, 100)
+    cond, params = _owner_cond('s.user_key')
+    where = 'WHERE m.session_id = ?'
+    if cond:
+        where += f' AND {cond}'
     conn = _get_conn()
-    rows = conn.execute('SELECT id, role, content, tool_name, timestamp, input_tokens, output_tokens, duration_ms FROM messages WHERE session_id = ? ORDER BY timestamp ASC LIMIT ?', (session_id, limit)).fetchall()
+    rows = conn.execute(
+        f'SELECT m.id, m.role, m.content, m.tool_name, m.timestamp, m.input_tokens, m.output_tokens, m.duration_ms '
+        f'FROM messages m JOIN sessions s ON s.id = m.session_id {where} ORDER BY m.timestamp ASC LIMIT ?',
+        (session_id, *params, limit)).fetchall()
     results = [dict(r) for r in rows]
     return json.dumps(results, ensure_ascii=False, indent=2)
 
@@ -94,21 +216,35 @@ def analytics_summary(days: int=7) -> str:
     message-level (by actual message date), ``sessions`` lists each conversation's
     input/output/cache tokens, ``by_project`` splits usage by channel/project.
     """
+    days = _clip(days, 1, 365, 7)
     conn = _get_conn()
     cutoff = time.time() - days * 86400
-    total = conn.execute('SELECT COUNT(*) as session_count, SUM(message_count) as message_count, SUM(tool_call_count) as tool_call_count, SUM(input_tokens) as input_tokens, SUM(output_tokens) as output_tokens, SUM(cache_read_tokens) as cache_read_tokens, SUM(estimated_cost_usd) as estimated_cost_usd FROM sessions WHERE last_active >= ?', (cutoff,)).fetchone()
-    by_model = conn.execute('SELECT model, COUNT(*) as session_count, SUM(input_tokens) as input_tokens, SUM(output_tokens) as output_tokens, SUM(cache_read_tokens) as cache_read_tokens, SUM(estimated_cost_usd) as estimated_cost_usd FROM sessions WHERE last_active >= ? GROUP BY model', (cutoff,)).fetchall()
-    by_project = conn.execute('SELECT project, COUNT(*) as session_count, SUM(input_tokens) as input_tokens, SUM(output_tokens) as output_tokens, SUM(cache_read_tokens) as cache_read_tokens, SUM(estimated_cost_usd) as estimated_cost_usd FROM sessions WHERE last_active >= ? GROUP BY project ORDER BY SUM(input_tokens) DESC', (cutoff,)).fetchall()
-    sessions = conn.execute('SELECT id, title, project, model, message_count, input_tokens, output_tokens, cache_read_tokens, estimated_cost_usd, started_at, last_active FROM sessions WHERE last_active >= ? ORDER BY (input_tokens + output_tokens + cache_read_tokens) DESC LIMIT 20', (cutoff,)).fetchall()
+    cond, params = _owner_cond('sessions.user_key')
+    where = 'WHERE last_active >= ?'
+    if cond:
+        where += f' AND {cond}'
+    total = conn.execute(f'SELECT COUNT(*) as session_count, SUM(message_count) as message_count, SUM(tool_call_count) as tool_call_count, SUM(input_tokens) as input_tokens, SUM(output_tokens) as output_tokens, SUM(cache_read_tokens) as cache_read_tokens, SUM(estimated_cost_usd) as estimated_cost_usd FROM sessions {where}', (cutoff, *params)).fetchone()
+    by_model = conn.execute(f'SELECT model, COUNT(*) as session_count, SUM(input_tokens) as input_tokens, SUM(output_tokens) as output_tokens, SUM(cache_read_tokens) as cache_read_tokens, SUM(estimated_cost_usd) as estimated_cost_usd FROM sessions {where} GROUP BY model', (cutoff, *params)).fetchall()
+    by_project = conn.execute(f'SELECT project, COUNT(*) as session_count, SUM(input_tokens) as input_tokens, SUM(output_tokens) as output_tokens, SUM(cache_read_tokens) as cache_read_tokens, SUM(estimated_cost_usd) as estimated_cost_usd FROM sessions {where} GROUP BY project ORDER BY SUM(input_tokens) DESC', (cutoff, *params)).fetchall()
+    sessions = conn.execute(f'SELECT id, title, project, model, message_count, input_tokens, output_tokens, cache_read_tokens, estimated_cost_usd, started_at, last_active FROM sessions {where} ORDER BY (input_tokens + output_tokens + cache_read_tokens) DESC LIMIT 20', (cutoff, *params)).fetchall()
     result = {'period_days': days, 'total': dict(total) if total else {}, 'by_model': [dict(r) for r in by_model], 'by_project': [dict(r) for r in by_project], 'sessions': [dict(r) for r in sessions]}
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 @mcp.tool()
 def analytics_daily(days: int=30) -> str:
     """Daily token/cost time series (message-level, by actual consumption day)."""
+    days = _clip(days, 1, 365, 30)
     conn = _get_conn()
     cutoff = time.time() - days * 86400
-    rows = conn.execute("SELECT date(m.timestamp, 'unixepoch', 'localtime') as day, COUNT(DISTINCT m.session_id) as session_count, COALESCE(SUM(m.input_tokens),0) as input_tokens, COALESCE(SUM(m.output_tokens),0) as output_tokens FROM messages m WHERE m.timestamp >= ? GROUP BY day ORDER BY day", (cutoff,)).fetchall()
+    cond, params = _owner_cond('s.user_key')
+    where = 'WHERE m.timestamp >= ?'
+    if cond:
+        where += f' AND {cond}'
+    rows = conn.execute(
+        f"SELECT date(m.timestamp, 'unixepoch', 'localtime') as day, COUNT(DISTINCT m.session_id) as session_count, "
+        f"COALESCE(SUM(m.input_tokens),0) as input_tokens, COALESCE(SUM(m.output_tokens),0) as output_tokens "
+        f"FROM messages m JOIN sessions s ON s.id = m.session_id {where} GROUP BY day ORDER BY day",
+        (cutoff, *params)).fetchall()
     return json.dumps([dict(r) for r in rows], ensure_ascii=False, indent=2)
 
 def _load_cron_jobs() -> list[dict]:
@@ -126,12 +262,38 @@ def cron_list() -> str:
     """List persistent cron jobs."""
     return json.dumps(_load_cron_jobs(), ensure_ascii=False, indent=2)
 
+_JOB_NAME_RE = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
+
 @mcp.tool()
 def cron_add(name: str, prompt: str, schedule_expr: str, schedule_kind: str='cron') -> str:
-    """Create a persistent cron job. schedule_kind: 'cron' (cron expression) or 'interval' (minutes). schedule_expr: cron expression like '0 9 * * 1-5' or interval in minutes like '30'."""
+    """Create a persistent cron job. schedule_kind: 'cron' or 'interval' (minutes).
+
+    Job name must match ``^[A-Za-z0-9_-]{1,64}$`` (M-03 — prevents output-dir
+    traversal via the job name).  Only 'claude'-type jobs are created here:
+    arbitrary ``type=shell`` jobs are refused.
+    """
     import uuid
+    if not name or not _JOB_NAME_RE.match(name):
+        return json.dumps({'error': f"Invalid job name {name!r}: must match ^[A-Za-z0-9_-]{{1,64}}$"})
+    if schedule_kind not in ('cron', 'interval'):
+        return json.dumps({'error': f"Invalid schedule_kind {schedule_kind!r}: must be 'cron' or 'interval'"})
+    expr = str(schedule_expr or '').strip()
+    if not expr:
+        return json.dumps({'error': 'schedule_expr is required'})
+    if schedule_kind == 'interval':
+        try:
+            minutes = int(expr)
+        except (TypeError, ValueError):
+            return json.dumps({'error': f"Invalid interval expr {expr!r}: must be an integer number of minutes"})
+        if not (1 <= minutes <= 10080):
+            return json.dumps({'error': 'interval must be between 1 and 10080 minutes'})
+    elif len(expr.split()) != 5:
+        return json.dumps({'error': f"Invalid cron expr {expr!r}: expected 5 fields (minute hour day month weekday)"})
     jobs = _load_cron_jobs()
-    job = {'id': uuid.uuid4().hex[:12], 'name': name, 'prompt': prompt, 'schedule': {'kind': schedule_kind, 'expr': schedule_expr}, 'enabled': True, 'last_run_at': None, 'next_run_at': None, 'last_error': None}
+    job = {'id': uuid.uuid4().hex[:12], 'name': name, 'prompt': prompt,
+           'schedule': {'kind': schedule_kind, 'expr': expr},
+           'type': 'claude', 'action': '',
+           'enabled': True, 'last_run_at': None, 'next_run_at': None, 'last_error': None}
     jobs.append(job)
     _save_cron_jobs(jobs)
     return json.dumps(job, ensure_ascii=False, indent=2)
@@ -195,17 +357,75 @@ def personality_list() -> str:
         personalities.append({'name': f.stem, 'preview': f.read_text()[:100]})
     return json.dumps(personalities, ensure_ascii=False, indent=2)
 
+_PERSONALITY_NAME_RE = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
+PERSONALITY_PENDING = PERSONALITIES_DIR.parent / 'personality_pending.json'
+
+
+def _atomic_write_text(path: Path, content: str):
+    """Atomic write: temp file in the same dir + os.replace (never partial)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f'.{path.name}.tmp')
+    tmp.write_text(content, encoding='utf-8')
+    os.replace(tmp, path)
+
+
 @mcp.tool()
 def personality_set(name: str) -> str:
-    """Switch Claude Code's personality. This updates ~/CLAUDE.md with the chosen personality template. Available: default, kawaii, catgirl, pirate, shakespeare, concise, technical, noir, surfer, uwu, philosopher, hype."""
+    """Stage a personality switch for approval (does NOT overwrite ~/CLAUDE.md).
+
+    The candidate is staged to a pending file and applied atomically by
+    ``personality_apply`` after explicit admin approval — a model/remote caller
+    can never directly overwrite ~/CLAUDE.md. Available: default, kawaii,
+    catgirl, pirate, shakespeare, concise, technical, noir, surfer, uwu,
+    philosopher, hype.
+    """
+    if not name or not _PERSONALITY_NAME_RE.match(name):
+        return json.dumps({'error': f"Invalid personality name {name!r}: must match ^[A-Za-z0-9_-]{{1,64}}$"})
     PERSONALITIES_DIR.mkdir(parents=True, exist_ok=True)
-    src = PERSONALITIES_DIR / f'{name}.md'
-    if not src.exists():
+    base = PERSONALITIES_DIR.resolve()
+    src = (base / f'{name}.md').resolve()
+    if not src.is_relative_to(base) or not src.is_file():
         available = [f.stem for f in PERSONALITIES_DIR.glob('*.md')]
         return json.dumps({'error': f"Personality '{name}' not found", 'available': available})
-    content = src.read_text()
-    CLAUDE_MD.write_text(content)
-    return json.dumps({'personality': name, 'status': 'active'}, ensure_ascii=False, indent=2)
+    content = src.read_text(encoding='utf-8', errors='replace')
+    _atomic_write_text(PERSONALITY_PENDING, json.dumps(
+        {'name': name, 'content': content, 'requested_at': time.time()},
+        ensure_ascii=False))
+    return json.dumps({'personality': name, 'status': 'pending_approval',
+                       'note': 'staged for approval; run personality_apply to activate'},
+                      ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+def personality_apply(name: str='') -> str:
+    """Apply a previously staged personality to ~/CLAUDE.md (atomic replace).
+
+    This is the approval step for a staged ``personality_set``.  It atomically
+    replaces ~/CLAUDE.md via a temp file + ``os.replace`` so a crash never leaves
+    a half-written file.  It is excluded from the remote and gateway tool
+    whitelists — only callers authorized to modify global config should invoke it.
+    """
+    if not PERSONALITY_PENDING.exists():
+        return json.dumps({'error': 'no pending personality to apply'})
+    try:
+        data = json.loads(PERSONALITY_PENDING.read_text(encoding='utf-8'))
+    except Exception as e:
+        return json.dumps({'error': f'failed to read pending personality: {e}'})
+    target = data.get('name') or ''
+    if name and target != name:
+        return json.dumps({'error': f'pending personality is {target!r}, not {name!r}'})
+    if not _PERSONALITY_NAME_RE.match(target):
+        return json.dumps({'error': 'staged personality name is invalid'})
+    try:
+        _atomic_write_text(CLAUDE_MD, data.get('content', ''))
+    except Exception as e:
+        logger.exception()
+        return json.dumps({'error': f'failed to apply personality: {e}'})
+    try:
+        PERSONALITY_PENDING.unlink()
+    except OSError:
+        pass
+    return json.dumps({'personality': target, 'status': 'active'}, ensure_ascii=False, indent=2)
 
 @mcp.tool()
 def personality_current() -> str:
@@ -378,9 +598,25 @@ def skill_view(name: str, full: bool=False, file_path: str='') -> str:
 @mcp.tool()
 def skill_manage(action: str, name: str, category: str='', description: str='', content: str='', old_string: str='', new_string: str='', version: str='1.0.0', author: str='') -> str:
     """Manage skills: create, edit, patch, delete, or get info. Actions: create (new skill), edit (replace body), patch (find/replace in body), delete (remove), info (show path/source)."""
+    # M-04: strict basename validation — name/category are joined onto the skills
+    # directory, so a '/' or '..' would escape it (path traversal / arbitrary write).
+    if not name or not _SAFE_BASENAME_RE.match(name):
+        return json.dumps({'error': f'Invalid skill name {name!r}: must match ^[A-Za-z0-9_-]{{1,64}}$'})
     if action == 'create':
-        if not category or not description or (not content):
+        if not category or not _SAFE_BASENAME_RE.match(category):
+            return json.dumps({'error': f'Invalid skill category {category!r}: must match ^[A-Za-z0-9_-]{{1,64}}$'})
+        if not description or (not content):
             return json.dumps({'error': 'create requires: name, category, description, content'})
+        # Containment belt-and-suspenders: the resolved target must stay inside
+        # SKILLS_DIR even if the manager gains a new way to combine paths.
+        try:
+            from .paths import SKILLS_DIR
+            base = SKILLS_DIR.resolve()
+            target = (base / category / name).resolve()
+            if not target.is_relative_to(base):
+                return json.dumps({'error': f'Skill path escapes skills directory: {category}/{name}'})
+        except Exception as e:
+            return json.dumps({'error': f'skill path validation failed: {e}'})
         result = _skill_manager.create(name, category, description, content, version, author)
     elif action == 'edit':
         if not content:
@@ -564,13 +800,38 @@ def knowledge_list(doc_type: str='') -> str:
 
 @mcp.tool()
 def security_check(user_id: str, message: str, capability: str='chat') -> str:
-    """Check if a message is allowed (permission + rate limit + content filter)."""
+    """Check if a message is allowed (permission + rate limit + content filter).
+
+    A user-level remote token may only check its own subject.
+    """
+    subject, scopes = get_mcp_auth()
+    if subject is not None and not is_admin_read(scopes):
+        user_id = subject
     result = _security.check_message(user_id, message, capability)
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 @mcp.tool()
 def security_status(user_id: str) -> str:
-    """Get security status for a user (tier, rate limits, blocked count)."""
+    """Get security status for a user (tier, rate limits, blocked count).
+
+    A user-level token may only inspect its own subject; admin-read (or local
+    stdio) callers may inspect any user.  Unknown user ids are reported without
+    creating an in-memory UserSecurity record (H-07 — an attacker must not be
+    able to grow the memory map with arbitrary ids).
+    """
+    subject, scopes = get_mcp_auth()
+    if subject is not None and not is_admin_read(scopes):
+        user_id = subject
+    known = getattr(_security, '_users', {})
+    if user_id not in known:
+        return json.dumps({
+            'user_id': user_id,
+            'tier': 'guest',
+            'capabilities': [],
+            'rate_limit': '0/20 per 60s',
+            'blocked_count': 0,
+            'note': 'unknown user (no record created)',
+        }, ensure_ascii=False, indent=2)
     result = _security.get_user_status(user_id)
     return json.dumps(result, ensure_ascii=False, indent=2)
 
@@ -624,13 +885,23 @@ def memory_add(content: str, category: str='general', importance: float=0.5, tag
 def memory_search(query: str='', limit: int=10, tag: str='') -> str:
     """Search accumulated memories for relevant information.
     query: content keywords (empty string returns nothing unless tag is given).
-    tag: optional scenario keyword to filter by (e.g. 'backend', 'test,verify'). Omit for full-text search."""
+    tag: optional scenario keyword to filter by (e.g. 'backend', 'test,verify'). Omit for full-text search.
+    The memory store is instance-wide; user-level remote tokens are refused here (admin-read required)."""
+    limit = _clip(limit, 1, 50, 10)
+    if _memory_denied():
+        return json.dumps({'query': query, 'tag': tag, 'results': [], 'count': 0,
+                           'method': 'denied',
+                           'reason': 'instance-wide memory requires admin-read scope'},
+                          ensure_ascii=False, indent=2)
     result = search_memories(query, limit=limit, tag=tag or None)
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 @mcp.tool()
 def memory_stats() -> str:
-    """Get memory system statistics."""
+    """Get memory system statistics. Instance-wide — user-level remote tokens are refused."""
+    if _memory_denied():
+        return json.dumps({'error': 'instance-wide memory stats require admin-read scope'},
+                          ensure_ascii=False, indent=2)
     result = get_memory_stats()
     return json.dumps(result, ensure_ascii=False, indent=2)
 
@@ -655,7 +926,14 @@ def web_search_tavily(query: str, limit: int=10) -> str:
 
 @mcp.tool()
 def memory_timeline(days: int=7, limit: int=20) -> str:
-    """加载近期观察的时间线上下文（Layer 2）。需要了解近期用户活动时使用。days: 回看天数(1-90)，limit: 最多返回条数(1-50)。"""
+    """加载近期观察的时间线上下文（Layer 2）。需要了解近期用户活动时使用。days: 回看天数(1-90)，limit: 最多返回条数(1-50)。
+    Honcho observations are instance-wide ('default' user) — user-level remote tokens are refused."""
+    days = _clip(days, 1, 90, 7)
+    limit = _clip(limit, 1, 50, 20)
+    if _memory_denied():
+        return json.dumps({'observations': 0, 'formatted': '',
+                           'reason': 'instance-wide timeline requires admin-read scope'},
+                          ensure_ascii=False, indent=2)
     from .honcho.models import init_honcho_db, get_honcho_db, get_user, create_user, get_observations
     from datetime import datetime, timezone
     conn = init_honcho_db()
@@ -676,7 +954,12 @@ def memory_timeline(days: int=7, limit: int=20) -> str:
 
 @mcp.tool()
 def memory_detail(category: str='', belief_id: str='') -> str:
-    """加载完整信念/观察详情（Layer 3）。需要特定信念的完整内容时使用。category: 按类别过滤(如habit/preference/knowledge)，belief_id: 按ID查看单条。"""
+    """加载完整信念/观察详情（Layer 3）。需要特定信念的完整内容时使用。category: 按类别过滤(如habit/preference/knowledge)，belief_id: 按ID查看单条。
+    Honcho beliefs are instance-wide ('default' user) — user-level remote tokens are refused."""
+    if _memory_denied():
+        return json.dumps({'beliefs': [],
+                           'reason': 'instance-wide memory detail requires admin-read scope'},
+                          ensure_ascii=False, indent=2)
     from .honcho.models import init_honcho_db, get_honcho_db, get_user, create_user, get_beliefs
     conn = init_honcho_db()
     if not get_user(conn, 'default'):

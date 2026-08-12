@@ -1,6 +1,7 @@
 """RAG knowledge base: document ingestion, chunking, embedding, and retrieval."""
 
 import hashlib
+import ipaddress
 import json
 import logging
 import math
@@ -13,7 +14,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from .paths import KB_DIR, KB_DB, home_dir
+from .paths import KB_DIR, KB_DB, EXPLORATION_DIR, home_dir
 
 PROJECT_ROOT = home_dir()
 ALLOWED_INGEST_PREFIXES = [PROJECT_ROOT, Path.home() / "scrapling-project", Path.home() / "DailyHotApi"]
@@ -404,13 +405,67 @@ def _chunk_text(text: str, size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP)
     return [c for c in chunks if c]
 
 
+def _download_url_to_temp(url: str, max_bytes: int = 5 * 1024 * 1024,
+                          timeout: int = 15) -> Path | dict:
+    """Download an http(s) URL into a temp file under EXPLORATION_DIR.
+
+    Returns (temp_path, suggested_title). Refuses non-http(s) schemes and hosts
+    that resolve to private/loopback/link-local addresses (SSRF guard). On
+    failure returns {'error': ...}.
+    """
+    import socket
+    from urllib.parse import urlparse
+    import urllib.request
+
+    parsed = urlparse(url.strip())
+    if parsed.scheme not in ('http', 'https'):
+        return {"error": f'Only http/https URLs are supported, got: {parsed.scheme or "(none)"}'}
+    if not parsed.hostname or parsed.username or parsed.password:
+        return {"error": f"Invalid URL: {url}"}
+    try:
+        infos = socket.getaddrinfo(parsed.hostname, None, proto=socket.IPPROTO_TCP)
+    except OSError as e:
+        return {"error": f"Cannot resolve {parsed.hostname}: {e}"}
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0].split('%')[0])
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+            return {"error": f"Refusing to download from non-public host: {parsed.hostname}"}
+    req = urllib.request.Request(url, headers={'User-Agent': 'metano-knowledge/1.0'})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = resp.read(max_bytes + 1)
+            if len(data) > max_bytes:
+                return {"error": f"URL content exceeds {max_bytes} bytes"}
+    except Exception as e:
+        return {"error": f"URL download failed: {e}"}
+    suffix = Path(parsed.path).suffix.lower()
+    if suffix not in {'.md', '.txt', '.html', '.json', '.csv'}:
+        suffix = '.html'
+    EXPLORATION_DIR.mkdir(parents=True, exist_ok=True)
+    dest = EXPLORATION_DIR / f'url_{hashlib.sha256(url.encode()).hexdigest()[:12]}{suffix}'
+    dest.write_bytes(data)
+    return dest, Path(parsed.path).name or 'page'
+
+
 def knowledge_ingest(path: str, title: str = "", doc_type: str = "auto") -> dict:
     """Ingest a document into the knowledge base.
 
-    path: file path or directory
+    path: file path, directory, or http(s) URL
     title: document title (optional, uses filename)
     doc_type: text, markdown, code, json, auto
     """
+    # URL support (F-15): recognize http(s) and download into the KB dir first.
+    p_str = str(path).strip()
+    if p_str.startswith(('http://', 'https://')):
+        dl = _download_url_to_temp(p_str)
+        if isinstance(dl, dict) and dl.get('error'):
+            return {"error": dl["error"]}
+        temp_path, url_name = dl
+        result = knowledge_ingest(str(temp_path), title=title or url_name, doc_type=doc_type)
+        if result.get('status') == 'ingested':
+            result['source'] = p_str
+        return result
+
     p = Path(path)
     err = _validate_ingest_path(path)
     if err:
@@ -543,7 +598,7 @@ def knowledge_semantic_search(query: str, project: str = "", limit: int = 5) -> 
     Returns structured results with file paths and content snippets.
     """
     from .knowledge_explorer import semantic_search
-    return semantic_search(query, project=project)
+    return semantic_search(query, project=project, limit=limit)
 
 
 def knowledge_search(query: str, limit: int = 5) -> dict:

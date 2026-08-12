@@ -60,6 +60,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import secrets
 import time
 import uuid
@@ -106,6 +107,7 @@ PUBLIC_PATHS = {
 _SCOPE_TIERS: dict[str, int] = {
     "a2a:read": 1,   # read-only: tasks/get, tasks/list, SSE subscribe
     "a2a:task": 2,   # full delegation: message/send, message:stream, tasks/cancel + reads
+    "a2a:admin": 3,  # instance-wide task visibility (bypasses owner checks)
 }
 # Minimum scope tier required to invoke each method / REST binding.
 _METHOD_MIN_SCOPE: dict[str, str] = {
@@ -363,8 +365,47 @@ def _extract_text(parts: list) -> str:
     return "\n\n".join(c for c in chunks if c).strip()
 
 
+# M-02: task ids are stored as ``AGENT_DIR / f'{task_id}.json'`` — a fixed
+# charset/length keeps them from ever being a path-traversal primitive.
+_TASK_ID_RE = re.compile(r'^[A-Za-z0-9_-]{12,64}$')
+
+
+def _valid_task_id(task_id: str) -> bool:
+    return bool(task_id) and bool(_TASK_ID_RE.match(task_id))
+
+
+def _admin_scope(scopes: Optional[list[str]]) -> bool:
+    """True when a token's scopes grant instance-wide task access."""
+    return bool(scopes) and any(s in ("a2a:admin", "admin") for s in scopes)
+
+
+def _check_task_access(user: str, scopes: Optional[list[str]], task) -> None:
+    """Raise ``FORBIDDEN`` unless the caller may access ``task``.
+
+    Ownership model (M-02): a task is readable/cancelable only by its creator
+    (the token ``sub`` recorded as ``task.owner``).  ``a2a:admin``-scoped tokens
+    bypass the owner check.  Legacy tasks (created before owner tracking,
+    ``owner == ''``) remain visible to any authenticated caller so historical
+    tasks survive a restart (F-18); new tasks are strictly owner-isolated.
+    """
+    owner = getattr(task, "owner", "") or ""
+    if _admin_scope(scopes):
+        return
+    if owner == "":
+        return  # legacy task — pre-owner-tracking, keep accessible
+    if owner and user and owner == user:
+        return
+    raise _RPCError(A2AErrorCode.FORBIDDEN,
+                    "Forbidden: task does not belong to this subject")
+
+
 def _get_agent_task(task_id: str):
-    """Resolve an AgentTask from the delegator (memory, then disk)."""
+    """Resolve an AgentTask from the delegator (memory, then disk).
+
+    Returns ``None`` for malformed ids (rejects path-traversal attempts).
+    """
+    if not _valid_task_id(task_id):
+        return None
     t = delegator._tasks.get(task_id)
     if t is None:
         t = delegator._load_task(task_id)
@@ -434,7 +475,7 @@ def _rpc_error(code: int, rpc_id: Any = None, data: Any = None) -> dict:
 
 # ── RPC handlers ───────────────────────────────────────────────────────────
 
-async def _handle_message_send(params: dict) -> dict:
+async def _handle_message_send(params: dict, user: str = "", scopes: Optional[list[str]] = None) -> dict:
     msg = params.get("message") or {}
     if not isinstance(msg, dict):
         msg = params
@@ -476,7 +517,7 @@ async def _handle_message_send(params: dict) -> dict:
         before = set(delegator._tasks.keys())
         try:
             bg = asyncio.create_task(
-                delegator._spawn_async_impl(text, model=model, timeout=timeout))
+                delegator._spawn_async_impl(text, model=model, timeout=timeout, owner=user))
         except BaseException:
             # create_task failing is essentially impossible outside loop
             # shutdown; release the slot we pre-acquired above.
@@ -507,23 +548,25 @@ async def _handle_message_send(params: dict) -> dict:
     return _build_task(delegator._tasks[task_id])
 
 
-async def _handle_tasks_get(params: dict) -> dict:
+async def _handle_tasks_get(params: dict, user: str = "", scopes: Optional[list[str]] = None) -> dict:
     task_id = params.get("id")
     if not task_id:
         raise _RPCError(A2AErrorCode.INVALID_PARAMS, "Missing required param 'id'")
     t = _get_agent_task(task_id)
     if t is None:
         raise KeyError(f"Task '{task_id}' not found")
+    _check_task_access(user, scopes, t)
     return _build_task(t)
 
 
-async def _handle_tasks_cancel(params: dict) -> dict:
+async def _handle_tasks_cancel(params: dict, user: str = "", scopes: Optional[list[str]] = None) -> dict:
     task_id = params.get("id")
     if not task_id:
         raise _RPCError(A2AErrorCode.INVALID_PARAMS, "Missing required param 'id'")
     t = _get_agent_task(task_id)
     if t is None:
         raise KeyError(f"Task '{task_id}' not found")
+    _check_task_access(user, scopes, t)
     if t.status in ("completed", "failed", "timeout", "canceled"):
         raise _RPCError(A2AErrorCode.TASK_NOT_CANCELABLE,
                         f"Task '{task_id}' is in terminal state '{t.status}'")
@@ -551,19 +594,26 @@ async def _handle_tasks_cancel(params: dict) -> dict:
     return _build_task(t)
 
 
-async def _handle_tasks_list(params: dict) -> dict:
+async def _handle_tasks_list(params: dict, user: str = "", scopes: Optional[list[str]] = None) -> dict:
     context_id = params.get("contextId")
     status_filter = params.get("status")
     try:
         page_size = int(params.get("pageSize", 50))
     except (TypeError, ValueError):
         page_size = 50
+    page_size = max(1, min(page_size, 200))
 
     tasks: list[dict] = []
-    for entry in delegator.list_tasks():
+    # F-18: enumerate both live in-memory tasks AND historical tasks persisted
+    # on disk (so tasks/list survives a restart).
+    for entry in delegator.list_tasks_from_disk():
         at = _get_agent_task(entry["id"])
         if at is None:
             continue
+        try:
+            _check_task_access(user, scopes, at)
+        except _RPCError:
+            continue  # skip tasks the caller may not see
         if context_id and _task_context.get(at.id) != context_id:
             continue
         state = _MAP_STATE.get(at.status, "working")
@@ -581,7 +631,7 @@ _METHODS: dict[str, Any] = {
 }
 
 
-async def _dispatch_one(body: Any, scopes: Optional[list[str]] = None) -> dict:
+async def _dispatch_one(body: Any, scopes: Optional[list[str]] = None, user: str = "") -> dict:
     if not isinstance(body, dict) or not body.get("method"):
         return _rpc_error(A2AErrorCode.INVALID_REQUEST)
     method = body["method"]
@@ -600,7 +650,7 @@ async def _dispatch_one(body: Any, scopes: Optional[list[str]] = None) -> dict:
     if handler is None:
         return _rpc_error(A2AErrorCode.METHOD_NOT_FOUND, rpc_id)
     try:
-        result = await handler(params)
+        result = await handler(params, user, scopes)
         return {"jsonrpc": "2.0", "result": result, "id": rpc_id}
     except _RPCError as e:
         return _rpc_error(e.code, rpc_id, data=e.data)
@@ -754,13 +804,14 @@ def create_a2a_app() -> FastAPI:
     @app.post("/rpc")
     async def rpc_endpoint(request: Request):
         scopes = getattr(request.state, "a2a_scope", []) or []
+        user = getattr(request.state, "a2a_user", "") or ""
         try:
             body = await request.json()
         except Exception:
             return JSONResponse(content=_rpc_error(A2AErrorCode.PARSE_ERROR))
         if isinstance(body, list):
-            return JSONResponse(content=[await _dispatch_one(b, scopes) for b in body])
-        return JSONResponse(content=await _dispatch_one(body, scopes))
+            return JSONResponse(content=[await _dispatch_one(b, scopes, user) for b in body])
+        return JSONResponse(content=await _dispatch_one(body, scopes, user))
 
     # ── REST bindings ──────────────────────────────────────────────────
     @app.post("/message:send")
@@ -769,18 +820,21 @@ def create_a2a_app() -> FastAPI:
         if denied is not None:
             return denied
         scopes = getattr(request.state, "a2a_scope", []) or []
+        user = getattr(request.state, "a2a_user", "") or ""
         body = await request.json()
         rpc = {"method": "message/send", "params": body, "id": _next_id()}
-        return JSONResponse(content=await _dispatch_one(rpc, scopes))
+        return JSONResponse(content=await _dispatch_one(rpc, scopes, user))
 
     @app.post("/message:stream")
     async def rest_message_stream(request: Request):
         denied = _scope_response(request, "message/send")
         if denied is not None:
             return denied
+        scopes = getattr(request.state, "a2a_scope", []) or []
+        user = getattr(request.state, "a2a_user", "") or ""
         try:
             body = await request.json()
-            send_result = await _handle_message_send(body)
+            send_result = await _handle_message_send(body, user, scopes)
         except _RPCError as e:
             return JSONResponse(content=_rpc_error(e.code, data=e.data))
         except Exception as e:
@@ -800,6 +854,7 @@ def create_a2a_app() -> FastAPI:
         if denied is not None:
             return denied
         scopes = getattr(request.state, "a2a_scope", []) or []
+        user = getattr(request.state, "a2a_user", "") or ""
         params: dict[str, Any] = {}
         if context_id:
             params["contextId"] = context_id
@@ -808,7 +863,7 @@ def create_a2a_app() -> FastAPI:
         if page_size:
             params["pageSize"] = page_size
         rpc = {"method": "tasks/list", "params": params, "id": _next_id()}
-        return JSONResponse(content=await _dispatch_one(rpc, scopes))
+        return JSONResponse(content=await _dispatch_one(rpc, scopes, user))
 
     # NOTE: the `:subscribe` / `:cancel` routes MUST be registered before the
     # bare `/{task_id}` route — Starlette stops at the first full match (path +
@@ -820,6 +875,15 @@ def create_a2a_app() -> FastAPI:
         denied = _scope_response(request, "tasks/subscribe")
         if denied is not None:
             return denied
+        user = getattr(request.state, "a2a_user", "") or ""
+        scopes = getattr(request.state, "a2a_scope", []) or []
+        t = _get_agent_task(task_id)
+        if t is None:
+            return JSONResponse(status_code=404, content={"detail": "Task not found"})
+        try:
+            _check_task_access(user, scopes, t)
+        except _RPCError as e:
+            return JSONResponse(status_code=403, content={"detail": e.message})
         return EventSourceResponse(_subscribe_events(task_id))
 
     @app.post("/tasks/{task_id}:cancel")
@@ -828,8 +892,9 @@ def create_a2a_app() -> FastAPI:
         if denied is not None:
             return denied
         scopes = getattr(request.state, "a2a_scope", []) or []
+        user = getattr(request.state, "a2a_user", "") or ""
         rpc = {"method": "tasks/cancel", "params": {"id": task_id}, "id": _next_id()}
-        return JSONResponse(content=await _dispatch_one(rpc, scopes))
+        return JSONResponse(content=await _dispatch_one(rpc, scopes, user))
 
     @app.get("/tasks/{task_id}")
     async def rest_get_task(
@@ -841,10 +906,11 @@ def create_a2a_app() -> FastAPI:
         if denied is not None:
             return denied
         scopes = getattr(request.state, "a2a_scope", []) or []
+        user = getattr(request.state, "a2a_user", "") or ""
         params: dict[str, Any] = {"id": task_id}
         if history_length is not None:
             params["historyLength"] = history_length
         rpc = {"method": "tasks/get", "params": params, "id": _next_id()}
-        return JSONResponse(content=await _dispatch_one(rpc, scopes))
+        return JSONResponse(content=await _dispatch_one(rpc, scopes, user))
 
     return app

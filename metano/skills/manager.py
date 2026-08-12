@@ -3,7 +3,7 @@
 import yaml
 from pathlib import Path
 from .loader import SKILLS_DIR, SkillLoader
-from .validator import validate_frontmatter, validate_content
+from .validator import validate_frontmatter, validate_content, validate_skill_ident
 
 
 class SkillManager:
@@ -50,6 +50,18 @@ class SkillManager:
     def create(self, name: str, category: str, description: str, content: str,
                version: str = "1.0.0", author: str = "") -> dict:
         """Create a new skill. Returns result dict."""
+        # Security (M-04): validate name + category before touching the
+        # filesystem, then enforce directory containment and reject symlinks.
+        ident_err = validate_skill_ident(name, category)
+        if ident_err:
+            return {"error": ident_err}
+        skill_dir = (SKILLS_DIR / category / name).resolve()
+        if not skill_dir.is_relative_to(SKILLS_DIR.resolve()):
+            return {"error": f"Skill path escapes skills directory: {skill_dir!s}"}
+        if skill_dir.is_symlink() or any(
+            p.is_symlink() for p in skill_dir.parents if p != SKILLS_DIR.resolve() and SKILLS_DIR.resolve() in p.parents
+        ):
+            return {"error": "Skill path resolves through a symlink; refusing to write"}
         # Build SKILL.md content
         fm = {
             "name": name,
@@ -67,8 +79,7 @@ class SkillManager:
         if parsed is None:
             return {"error": "Validation failed", "warnings": warnings}
 
-        # Write file
-        skill_dir = SKILLS_DIR / category / name
+        # Write file (skill_dir was validated above).
         skill_dir.mkdir(parents=True, exist_ok=True)
         skill_path = skill_dir / "SKILL.md"
         skill_path.write_text(skill_md)
