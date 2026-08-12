@@ -40,6 +40,12 @@ INJECT_TAGS = [
     'memory',         # memory-system time-dimension / quality metrics
 ]
 
+# F-4 isolation: general Claude Code discipline is injected into every project
+# (that's the memory system's design), but metano-specific learned knowledge
+# (evolution/memory) only flows into the metano project itself.
+GENERAL_TAGS = ['tooling', 'edit', 'workflow', 'undercover', 'security']
+METANO_TAGS = ['evolution', 'memory']
+
 # Per-tag result cap. Lower keeps the injected context tight.
 PER_TAG_LIMIT = 4
 # Hard cap on total injected context length (chars). Avoids bloating the model
@@ -55,11 +61,42 @@ def _load_stdin_event() -> dict:
         return {}
 
 
+def _cwd_in_metano(cwd: str) -> bool:
+    """F-4: whether the session's project is metano (or an allow-listed one).
+
+    Metano-specific tags (evolution/memory) are only injected into allow-listed
+    projects. Default allow-list: ``METANO_HOOK_PROJECTS`` env (comma-separated)
+    if set, else METANO_HOME and the source repo. Unknown cwd → inject all tags
+    (compatibility: the hook historically injected everywhere).
+    """
+    if not cwd:
+        return False  # fail-closed: unknown project gets only GENERAL tags
+    allowed = os.environ.get('METANO_HOOK_PROJECTS', '')
+    paths = [p.strip() for p in allowed.split(',') if p.strip()] if allowed else [
+        os.environ.get('METANO_HOME', '') or os.path.expanduser('~/.claude/metano'),
+        os.path.expanduser('~/metano'),
+    ]
+    try:
+        cwd_res = os.path.realpath(cwd)
+        for p in paths:
+            if not p:
+                continue
+            base = os.path.realpath(p)
+            if cwd_res == base or cwd_res.startswith(base + os.sep):
+                return True
+    except Exception:
+        return True
+    return False
+
+
 def main() -> None:
     event = _load_stdin_event()
+    # F-4: scope metano-specific tags to the metano project.
+    cwd = event.get('cwd') or os.getcwd()
+    active_tags = INJECT_TAGS if _cwd_in_metano(cwd) else GENERAL_TAGS
     seen: set[str] = set()
     lines: list[str] = []
-    for tag in INJECT_TAGS:
+    for tag in active_tags:
         try:
             res = search_memories('', tag=tag, limit=PER_TAG_LIMIT)
         except Exception:

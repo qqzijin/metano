@@ -35,7 +35,8 @@ CREATE TABLE IF NOT EXISTS observations (
     session_id TEXT,
     content TEXT NOT NULL,
     category TEXT NOT NULL DEFAULT 'general',
-    timestamp REAL NOT NULL
+    timestamp REAL NOT NULL,
+    confidence REAL NOT NULL DEFAULT 0.5
 );
 
 CREATE INDEX IF NOT EXISTS idx_beliefs_user ON beliefs(user_id);
@@ -45,6 +46,8 @@ CREATE INDEX IF NOT EXISTS idx_observations_user ON observations(user_id);
 MIGRATIONS = [
     "ALTER TABLE beliefs ADD COLUMN last_reinforced_at REAL NOT NULL DEFAULT 0",
     "ALTER TABLE beliefs ADD COLUMN reinforcement_count INTEGER NOT NULL DEFAULT 0",
+    # A11: observations confidence was computed by the harvester but never stored.
+    "ALTER TABLE observations ADD COLUMN confidence REAL NOT NULL DEFAULT 0.5",
 ]
 
 
@@ -145,15 +148,16 @@ def get_user(conn: sqlite3.Connection, user_id: str) -> dict | None:
 
 
 def add_observation(conn: sqlite3.Connection, user_id: str, content: str,
-                    category: str = "general", session_id: str = "") -> dict:
+                    category: str = "general", session_id: str = "", confidence: float = 0.5) -> dict:
     obs_id = uuid.uuid4().hex[:12]
     now = time.time()
     conn.execute(
-        "INSERT INTO observations (id, user_id, session_id, content, category, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
-        (obs_id, user_id, session_id, content, category, now),
+        "INSERT INTO observations (id, user_id, session_id, content, category, timestamp, confidence) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (obs_id, user_id, session_id, content, category, now, confidence),
     )
     conn.commit()
-    return {"id": obs_id, "user_id": user_id, "content": content, "category": category}
+    return {"id": obs_id, "user_id": user_id, "content": content, "category": category, "confidence": confidence}
 
 
 def get_observations(conn: sqlite3.Connection, user_id: str, limit: int = 50) -> list[dict]:
@@ -224,8 +228,10 @@ def update_belief(conn: sqlite3.Connection, belief_id: str, content: str,
 
 def contradict_belief(conn: sqlite3.Connection, belief_id: str) -> dict | None:
     now = time.time()
+    # A10: contradicting must also reset confidence/reinforcement so a refuted
+    # belief can't linger as high-confidence "core" in later retrieval/reflection.
     conn.execute(
-        "UPDATE beliefs SET contradicted = 1, updated_at = ? WHERE id = ?",
+        "UPDATE beliefs SET contradicted = 1, confidence = 0.0, reinforcement_count = 0, updated_at = ? WHERE id = ?",
         (now, belief_id),
     )
     conn.commit()
@@ -256,6 +262,9 @@ def get_profile(conn: sqlite3.Connection, user_id: str) -> dict:
 
 def belief_stage(belief: dict) -> str:
     """Classify belief lifecycle stage."""
+    # A10: a refuted belief can never be core/established.
+    if belief.get("contradicted"):
+        return "contradicted"
     conf = belief.get("confidence", 0.5)
     count = belief.get("reinforcement_count", 0)
     if conf >= 0.8 and count >= 5:

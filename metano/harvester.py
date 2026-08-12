@@ -217,7 +217,10 @@ def harvest_session(conn: sqlite3.Connection, session_id: str, user_id: str | No
     for c in corrections:
         summary = c['user_content'][:80]
         obs_content = f"[用户纠正] {summary}"
-        add_observation(honcho_conn, user_id, obs_content, "correction", session_id)
+        # A11: persist the confidence the harvester computed — corrections are
+        # direct user signals, so they carry high confidence.
+        add_observation(honcho_conn, user_id, obs_content, "correction", session_id,
+                        confidence=c.get("strength", "moderate") in ("high", "strong") and 0.95 or 0.8)
         total_obs += 1
         results.append({
             "observation": obs_content[:100],

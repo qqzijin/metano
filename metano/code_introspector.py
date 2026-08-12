@@ -10,6 +10,7 @@ from pathlib import Path
 
 from .honcho.models import get_honcho_db, add_observation, get_user, create_user
 from .evo_models import log_action, EVO_DB_PATH
+from .strategy import record_outcome
 from metano.log import logger
 
 AGENT_USER_ID = "hermes-introspector"
@@ -238,7 +239,10 @@ def introspect_and_report() -> dict:
     findings = scan_source_tree()
 
     if not findings:
-        log_action('introspect', 'code_scan_clean', detail='No anti-patterns found')
+        # A12: close the action's outcome — pending-only introspect rows made
+        # strategy stats blind to the introspect phase.
+        action_id = log_action('introspect', 'code_scan_clean', detail='No anti-patterns found')
+        record_outcome(action_id, outcome='success', detail='No anti-patterns found')
         return {'findings': 0, 'new_observations': 0, 'new_proposals': 0}
 
     conn = get_honcho_db()
@@ -291,7 +295,9 @@ def introspect_and_report() -> dict:
                 new_proposals += 1
 
         summary = f"Found {len(findings)} issues, {new_obs} new observations, {new_proposals} new proposals"
-        log_action('introspect', 'code_scan', action_detail=summary)
+        # A12: record the outcome so introspect no longer stays pending forever.
+        action_id = log_action('introspect', 'code_scan', action_detail=summary)
+        record_outcome(action_id, outcome='success', detail=summary)
 
         return {'findings': len(findings), 'new_observations': new_obs, 'new_proposals': new_proposals}
     finally:
