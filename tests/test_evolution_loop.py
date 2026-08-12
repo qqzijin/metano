@@ -70,8 +70,8 @@ class TestCronSchedule:
         assert len(jobs) > 0
         actions = [j.get('action', '') for j in jobs]
         assert 'evolution.harvest' in actions
-        assert 'evolution.reflect' in actions
-        assert 'evolution.adapt' in actions
+        # reflect/adapt/maintain 已合并为每日 evolution.maintenance
+        assert 'evolution.maintenance' in actions
         assert 'evolution.evaluate' in actions
 
     def test_compute_next_run_plain_string(self):

@@ -29,9 +29,7 @@ ACTIONS = {}
 DEFAULT_JOBS = [
     {"name": "harvest", "action": "evolution.harvest", "schedule": {"kind": "interval", "expr": "30"}, "enabled": True, "timeout": 180},
     {"name": "introspect", "action": "evolution.introspect", "schedule": {"kind": "cron", "expr": "0 */2 * * *"}, "enabled": True, "timeout": 120},
-    {"name": "adapt", "action": "evolution.adapt", "schedule": {"kind": "cron", "expr": "0 3 * * *"}, "enabled": True, "timeout": 180},
-    {"name": "reflect", "action": "evolution.reflect", "schedule": {"kind": "cron", "expr": "0 4 * * *"}, "enabled": True, "timeout": 180},
-    {"name": "maintain", "action": "evolution.maintain", "schedule": {"kind": "cron", "expr": "15 4 * * *"}, "enabled": True, "timeout": 300},
+    {"name": "maintenance", "action": "evolution.maintenance", "schedule": {"kind": "cron", "expr": "3 3 * * *"}, "enabled": True, "timeout": 900},
     {"name": "self-modify", "action": "self_modify.daily", "schedule": {"kind": "cron", "expr": "30 4 * * *"}, "enabled": True, "timeout": 600},
     {"name": "knowledge-sink", "action": "knowledge.sink", "schedule": {"kind": "cron", "expr": "30 5 * * *"}, "enabled": True, "timeout": 120},
     {"name": "architect", "action": "evolution.architect", "schedule": {"kind": "cron", "expr": "0 5 * * 0"}, "enabled": True, "timeout": 180},
@@ -48,6 +46,7 @@ def _register_default_actions():
     """Register all evolution system cron actions."""
     from .evolution import (
         cron_harvest, cron_reflect, cron_adapt, cron_maintain,
+        cron_evolution_maintenance,
         cron_explore, cron_architect, cron_introspect, cron_evaluate,
     )
     from .db import cron_purge_sessions
@@ -58,6 +57,8 @@ def _register_default_actions():
     register_action('evolution.reflect', cron_reflect)
     register_action('evolution.adapt', cron_adapt)
     register_action('evolution.maintain', cron_maintain)
+    # Combined daily belief-lifecycle pass (maintain → reflect → adapt)
+    register_action('evolution.maintenance', cron_evolution_maintenance)
     register_action('evolution.explore', cron_explore)
     register_action('evolution.architect', cron_architect)
     register_action('evolution.introspect', cron_introspect)

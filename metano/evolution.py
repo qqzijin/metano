@@ -226,6 +226,27 @@ def cron_maintain():
     return results
 
 
+def cron_evolution_maintenance():
+    """Daily evolution maintenance: maintain → reflect → adapt, one pass.
+
+    Merges three former daily jobs (maintain/reflect/adapt) into a single
+    coherent belief-lifecycle run so the phases happen in order instead of as
+    three scattered jobs. Maintain is deterministic (decay/compress/merge);
+    reflect and adapt call the LLM (bounded by the cost circuit).
+    """
+    if _is_paused():
+        return {'status': 'paused'}
+    results = {
+        'maintain': cron_maintain(),
+        'reflect': cron_reflect(),
+        'adapt': cron_adapt(),
+    }
+    _log('maintain', 'evolution_maintenance', {
+        k: (v or {}).get('status', 'done') for k, v in results.items()
+    })
+    return results
+
+
 def generate_temporal_abstraction(conn, user_id: str) -> dict:
     """Generate temporal abstractions: summarize belief trends over time.
 
