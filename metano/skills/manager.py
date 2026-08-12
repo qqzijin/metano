@@ -78,6 +78,11 @@ class SkillManager:
         parsed, warnings = validate_frontmatter(skill_md)
         if parsed is None:
             return {"error": "Validation failed", "warnings": warnings}
+        # C6: surface dangerous-command warnings from the skill body too
+        # (validate_content was dead code; now it feeds the write path).
+        content_warnings = validate_content(content or '')
+        if content_warnings:
+            warnings = (warnings or []) + content_warnings
 
         # Write file (skill_dir was validated above).
         skill_dir.mkdir(parents=True, exist_ok=True)
@@ -109,6 +114,10 @@ class SkillManager:
         parsed, warnings = validate_frontmatter(skill_md)
         if parsed is None:
             return {"error": "Validation failed", "warnings": warnings}
+        # C6: dangerous-command check on the edited body.
+        content_warnings = validate_content(content or '')
+        if content_warnings:
+            warnings = (warnings or []) + content_warnings
 
         rec.path.write_text(skill_md)
         self.loader.discover_all(force=True)

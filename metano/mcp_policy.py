@@ -92,6 +92,7 @@ DESTRUCTIVE_TOOLS: list[str] = [
     "voice_speak",              # plays audio on the host
     "skill_manage",             # create/edit/patch/delete skills on disk
     "personality_set",          # overwrites ~/CLAUDE.md
+    "personality_apply",        # applies a staged personality (F-1: was unregistered)
     "honcho_compress",          # merges/removes user beliefs
     "memory_compress",          # merges/removes memories
 ]
@@ -116,6 +117,7 @@ ALL_TOOL_TIERS: dict[str, str] = {
     # personality
     "personality_list": "read",
     "personality_set": "destructive",
+    "personality_apply": "destructive",
     "personality_current": "read",
     # curator
     "curator_report": "write",  # dry_run=False auto-fixes memory files

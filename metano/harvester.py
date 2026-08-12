@@ -12,7 +12,7 @@ import time
 import re
 
 from .db import get_db, init_db
-from .honcho.models import get_honcho_db, init_honcho_db, get_user, create_user, add_observation
+from .honcho.models import get_honcho_db, init_honcho_db, get_user, create_user, add_observation, user_key_to_honcho_user
 from .honcho.dialectic import extract_observations, dialectic_reason
 
 HARVEST_STATE_SCHEMA = """
@@ -155,7 +155,7 @@ def _detect_tool_errors(assistant_msgs: list[dict]) -> list[dict]:
     return errors
 
 
-def harvest_session(conn: sqlite3.Connection, session_id: str, user_id: str = "default",
+def harvest_session(conn: sqlite3.Connection, session_id: str, user_id: str | None = None,
                      max_seconds: float = 120) -> dict:
     """Extract observations from a single session's messages.
 
@@ -165,8 +165,17 @@ def harvest_session(conn: sqlite3.Connection, session_id: str, user_id: str = "d
     3. Tool call failures (from assistant messages)
 
     max_seconds: time budget — skips LLM-dependent steps if exceeded.
+
+    C5: unless a user is explicitly supplied, harvest into the session owner's
+    honcho profile (mapped from the session's ``user_key``) instead of a shared
+    ``default`` — otherwise one user's messages poison everyone's profile.
     """
     _ensure_harvest_state(conn)
+
+    # C5: derive the owner from the session's user_key when not explicitly given.
+    if not user_id:
+        row = conn.execute("SELECT user_key FROM sessions WHERE id = ?", (session_id,)).fetchone()
+        user_id = user_key_to_honcho_user(row["user_key"]) if row and row["user_key"] else "default"
 
     # Get ALL messages for this session
     rows = conn.execute(

@@ -322,7 +322,7 @@ class MessageRouter:
             if command == 'whoami':
                 return self._cmd_whoami(platform, user_id)
             if command == 'profile':
-                return self._cmd_profile()
+                return self._cmd_profile(platform, user_id)
             if command == 'memory':
                 return self._cmd_memory(args)
             if command == 'search':
@@ -381,12 +381,13 @@ class MessageRouter:
             logger.exception()
         return f'平台: {platform} | 用户: {user_id} | 等级: {tier}'
 
-    def _cmd_profile(self) -> str:
+    def _cmd_profile(self, platform: str, user_id: str) -> str:
         try:
-            from ..honcho.models import get_honcho_db, get_profile
+            from ..honcho.models import get_honcho_db, get_profile, user_key_to_honcho_user
+            honcho_user = user_key_to_honcho_user(f'{platform}:{user_id}')
             conn = get_honcho_db()
             try:
-                profile = get_profile(conn, 'default')
+                profile = get_profile(conn, honcho_user)
                 summary = profile.get('belief_summary') or '暂无画像'
             finally:
                 conn.close()
@@ -652,16 +653,23 @@ class MessageRouter:
     _MAX_CONTEXT_CHARS = 3000
     _MAX_MESSAGE_LENGTH = 4000
 
-    def _build_system_context(self) -> str:
-        """Build system context from Honcho profile and memory for claude -p."""
+    def _build_system_context(self, platform: str, user_id: str) -> str:
+        """Build system context from Honcho profile and memory for claude -p.
+
+        C5: scoped to the real user (mapped from ``platform:user_id``) instead of
+        a shared ``default`` profile — otherwise one user's harvested
+        preferences leak into every conversation.
+        """
         context_parts = []
         try:
-            from ..honcho.models import get_honcho_db, get_profile, get_user, create_user
+            from ..honcho.models import (get_honcho_db, get_profile, get_user, create_user,
+                                         user_key_to_honcho_user)
+            honcho_user = user_key_to_honcho_user(f'{platform}:{user_id}')
             conn = get_honcho_db()
             try:
-                if not get_user(conn, 'default'):
-                    create_user(conn, user_id='default')
-                profile = get_profile(conn, 'default')
+                if not get_user(conn, honcho_user):
+                    create_user(conn, user_id=honcho_user)
+                profile = get_profile(conn, honcho_user)
                 beliefs = profile.get('beliefs', [])
                 if beliefs:
                     lines = ['## User Profile']
@@ -679,7 +687,7 @@ class MessageRouter:
                         context_parts.append('\n'.join(lines))
                 try:
                     from ..honcho.models import get_observations
-                    obs = get_observations(conn, 'default', limit=5)
+                    obs = get_observations(conn, honcho_user, limit=5)
                     if obs:
                         lines = ['## Recent Observations']
                         for o in obs:
@@ -698,6 +706,10 @@ class MessageRouter:
                 conn.close()
         except Exception:
             logger.exception("router: honcho context build failed")
+        # C6: mark LLM-extracted (potentially injected) honcho content as untrusted
+        # so the model treats it as data, not as instructions to follow.
+        if context_parts:
+            context_parts = [f'<untrusted_data>\n{chr(10).join(context_parts)}\n</untrusted_data>']
         try:
             from pathlib import Path
             memory_index = Path.home() / '.claude' / 'projects' / '-home-dk' / 'memory' / 'MEMORY.md'
@@ -788,7 +800,7 @@ class MessageRouter:
         import os
         import shutil
         claude_bin = os.environ.get('CLAUDE_BIN') or shutil.which('claude') or '/home/dk/local/node/bin/claude'
-        system_ctx = self._build_system_context()
+        system_ctx = self._build_system_context(session.platform, session.user_id)
         context_layers = []
         if skill_prefix:
             context_layers.append(skill_prefix)

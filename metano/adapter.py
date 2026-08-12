@@ -85,7 +85,7 @@ def apply_beliefs_to_claude_md(dry_run: bool=True) -> dict:
         if dry_run:
             return {'action': 'claude_md', 'status': 'dry_run', 'injection_preview': injection[:500], 'belief_count': len(eligible)}
         content = CLAUDE_MD.read_text() if CLAUDE_MD.exists() else ''
-        if MARKER_START in content:
+        if MARKER_START in content and MARKER_END in content:
             start_idx = content.index(MARKER_START)
             end_idx = content.index(MARKER_END) + len(MARKER_END)
             new_content = content[:start_idx] + injection + content[end_idx:]
