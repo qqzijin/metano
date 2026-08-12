@@ -4,7 +4,7 @@ import os
 import time
 from pathlib import Path
 from .harvester import harvest_recent_sessions
-from .adapter import execute_adaptation_cycle, load_suggestions, approve_suggestion, reject_suggestion
+from .adapter import execute_adaptation_cycle
 from .reflector import reflect_on_model
 from .honcho.models import init_honcho_db, get_honcho_db, get_profile, get_user, create_user, get_beliefs, decay_beliefs, archive_old_contradictions, belief_stage
 from .honcho.dialectic import compress_beliefs

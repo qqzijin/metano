@@ -224,30 +224,6 @@ def save_suggestions(suggestions: list[dict]):
         add_proposal(ptype, content, detail=detail, source=source)
         existing_contents.add(content)
 
-def load_suggestions() -> list[dict]:
-    """Load all suggestions from evo.db proposals table."""
-    return get_proposals()
-
-def approve_suggestion(suggestion_id: str) -> dict | None:
-    """Mark a suggestion as approved."""
-    proposals = get_proposals()
-    for p in proposals:
-        if str(p['id']) == suggestion_id:
-            update_proposal_status(p['id'], 'approved')
-            _log('suggestion_approve', {'suggestion_id': suggestion_id})
-            return p
-    return None
-
-def reject_suggestion(suggestion_id: str) -> dict | None:
-    """Mark a suggestion as rejected."""
-    proposals = get_proposals()
-    for p in proposals:
-        if str(p['id']) == suggestion_id:
-            update_proposal_status(p['id'], 'rejected')
-            _log('suggestion_reject', {'suggestion_id': suggestion_id})
-            return p
-    return None
-
 def execute_adaptation_cycle(dry_run: bool=True) -> dict:
     """Run the full belief-to-action adaptation cycle.
 

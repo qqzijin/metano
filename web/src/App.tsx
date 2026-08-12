@@ -27,7 +27,6 @@ import KnowledgeGraphPage from "@/pages/KnowledgeGraphPage";
 import ConfigPage from "@/pages/ConfigPage";
 import EvolutionPage from "@/pages/EvolutionPage";
 import LogsPage from "@/pages/LogsPage";
-import ProfilesPage from "@/pages/ProfilesPage";
 import CronPage from "@/pages/CronPage";
 import SecurityPage from "@/pages/SecurityPage";
 import BrowserPage from "@/pages/BrowserPage";
@@ -121,7 +120,8 @@ function MainLayout() {
             <Route path="/evolution" element={<EvolutionPage />} />
             <Route path="/self-modify" element={<Navigate to="/evolution" replace />} />
             <Route path="/logs" element={<LogsPage />} />
-            <Route path="/profiles" element={<ProfilesPage />} />
+            {/* 用户画像已并入记忆系统(画像 tab) */}
+            <Route path="/profiles" element={<Navigate to="/memory" replace />} />
             <Route path="/cron" element={<CronPage />} />
             <Route path="/security" element={<SecurityPage />} />
             <Route path="/browser" element={<BrowserPage />} />

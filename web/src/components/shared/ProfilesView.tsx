@@ -1,7 +1,6 @@
 import { User } from "lucide-react";
-import { PageHeader } from "@/components/layout/PageHeader";
 import { EmptyState } from "@/components/shared/EmptyState";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useProfile } from "@/api/hooks";
@@ -22,7 +21,11 @@ function computeStage(b: any): string {
   return "draft";
 }
 
-export default function ProfilesPage() {
+/**
+ * 用户画像（honcho 信念 + 观察）展示。
+ * 从 ProfilesPage 抽取，供 /profiles 与记忆中心共用。
+ */
+export function ProfilesView() {
   const { data: profile, isLoading, isError } = useProfile();
 
   if (isError) return <div className="text-sm text-destructive">加载失败，请检查服务或刷新重试</div>;
@@ -42,8 +45,6 @@ export default function ProfilesPage() {
 
   return (
     <>
-      <PageHeader title="用户画像" description={`${beliefs.length} 条信念`} />
-
       {/* 说明：百分比是置信度而非成熟度。stage 由 置信度 + 强化次数 共同决定，
           所以会出现"established 的置信度低于 draft"——draft 可能单次置信高但强化次数不足。 */}
       <p className="text-xs text-muted-foreground mb-4 leading-relaxed">
@@ -54,10 +55,7 @@ export default function ProfilesPage() {
 
       {profile?.belief_summary && (
         <Card className="mb-4">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-xs text-muted-foreground">信念摘要</CardTitle>
-          </CardHeader>
-          <CardContent className="pt-0">
+          <CardContent className="pt-4">
             <div className="text-sm whitespace-pre-wrap break-words">{profile.belief_summary}</div>
           </CardContent>
         </Card>
@@ -111,3 +109,5 @@ export default function ProfilesPage() {
     </>
   );
 }
+
+export default ProfilesView;

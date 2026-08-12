@@ -7,6 +7,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { ProfilesView } from "@/components/shared/ProfilesView";
 import { useMemoryStats, useMemorySearch, useMemoryCompress, useMemorySeed, useMemoryExport, useProfile, useAgentRules } from "@/api/hooks";
 import { RoleGuard } from "@/components/auth/RoleGuard";
 import { toast } from "sonner";
@@ -128,6 +130,12 @@ export default function MemoryPage() {
     <RoleGuard role="admin">
       <>
       <PageHeader title="记忆系统" description="统一记忆体系：跨会话记忆 + 用户画像 + 行为规则" />
+      <Tabs defaultValue="memory" className="space-y-4">
+        <TabsList>
+          <TabsTrigger value="memory">跨会话记忆</TabsTrigger>
+          <TabsTrigger value="profile">用户画像</TabsTrigger>
+        </TabsList>
+        <TabsContent value="memory">
 
       {/* 记忆体系总览 */}
       <Card className="mb-6">
@@ -375,6 +383,11 @@ export default function MemoryPage() {
           </CardContent>
         </Card>
       )}
+        </TabsContent>
+        <TabsContent value="profile">
+          <ProfilesView />
+        </TabsContent>
+      </Tabs>
       </>
     </RoleGuard>
   );

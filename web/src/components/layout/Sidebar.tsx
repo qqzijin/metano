@@ -35,7 +35,7 @@ const NAV_GROUPS = [
       { to: "/evolution", icon: Dna, label: "进化系统" },
       { to: "/browser", icon: Globe, label: "浏览器" },
       { to: "/voice", icon: Mic, label: "语音" },
-      { to: "/home", icon: Home, label: "智能家居" },
+      // 智能家居 /home 入口隐藏：未配置 HA 时无内容；配置后可从 URL 访问
       { to: "/memory", icon: Brain, label: "记忆系统" },
       { to: "/mcp-tools", icon: Puzzle, label: "MCP工具" },
     ],
@@ -44,7 +44,7 @@ const NAV_GROUPS = [
     label: "系统",
     items: [
       { to: "/security", icon: Shield, label: "安全管理" },
-      { to: "/profiles", icon: User, label: "用户画像" },
+      // 用户画像已并入 记忆系统 → 画像 tab
       { to: "/cron", icon: Clock, label: "定时任务" },
       { to: "/config", icon: Settings, label: "配置" },
     ],

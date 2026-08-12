@@ -139,20 +139,20 @@ def run_tests() -> list[str]:
             errs.append("  MISSING: .by_stage")
         errors.extend(f"4. {e}" for e in errs)
 
-    # === 5. /api/evolution/suggestions ===
-    print("5. /api/evolution/suggestions")
-    d = fetch("/api/evolution/suggestions")
+    # === 5. /api/evolution/proposals (suggestions renamed) ===
+    print("5. /api/evolution/proposals")
+    d = fetch("/api/evolution/proposals")
     item = first_item(d, ["items"])
     if not item:
-        print("  (no suggestions - skipped)")
+        print("  (no proposals - skipped)")
     else:
-        errs = check_fields("suggestion", item, {
+        errs = check_fields("proposal", item, {
             "id": str, "type": str, "content": str, "status": str,
         })
         # belief_id should exist
         if "belief_id" not in item:
             errs.append("  MISSING: .belief_id")
-        # suggestion field should exist
+        # suggestion field should exist (alias)
         if "suggestion" not in item:
             errs.append("  MISSING: .suggestion")
         errors.extend(f"5. {e}" for e in errs)

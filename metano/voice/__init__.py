@@ -1,3 +1,3 @@
-"""Voice/audio: TTS via edge-tts."""
+"""Voice/TTS via edge-tts (single implementation in tts.py)."""
 
-from .core import voice_speak, voice_list_voices
+from .tts import voice_speak, voice_list_voices, speak, synthesize, list_voices

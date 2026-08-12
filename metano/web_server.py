@@ -518,40 +518,7 @@ async def api_evolution():
         logger.exception()
         return _error_response('Internal error', extra={'paused': True})
 
-@app.get('/api/evolution/suggestions')
-async def api_evolution_suggestions():
-    try:
-        from .adapter import load_suggestions
-        return {'items': load_suggestions()}
-    except Exception as e:
-        logger.exception()
-        return _error_response('Internal error', extra={'items': []})
-
-@app.post('/api/evolution/approve/{suggestion_id}')
-async def api_evolution_approve(suggestion_id: str, _admin=Depends(require_role("admin"))):
-    try:
-        from .adapter import approve_suggestion
-        result = approve_suggestion(suggestion_id)
-        if result:
-            return {'status': 'approved', 'suggestion': result}
-        return _error_response('suggestion not found', status_code=404)
-    except Exception as e:
-        logger.exception()
-        return _error_response('Internal error')
-
-@app.post('/api/evolution/reject/{suggestion_id}')
-async def api_evolution_reject(suggestion_id: str, _admin=Depends(require_role("admin"))):
-    try:
-        from .adapter import reject_suggestion
-        result = reject_suggestion(suggestion_id)
-        if result:
-            return {'status': 'rejected', 'suggestion': result}
-        return _error_response('suggestion not found', status_code=404)
-    except Exception as e:
-        logger.exception()
-        return _error_response('Internal error')
-
-# ── Proposal CRUD API (replaces old suggestion endpoints) ──
+# ── Proposal CRUD API (suggestions old endpoints removed — same table) ──
 
 @app.get('/api/evolution/proposals')
 async def api_proposals(status: str = None, proposal_type: str = None):
