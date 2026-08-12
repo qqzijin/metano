@@ -164,14 +164,14 @@ def _check_rule_followed(rule_content: str, tool_name: str, file_path: str,
 
     # Rule: "使用中文回复" — check user message content
     if '中文' in c:
-        message = event_data.get('message', '')
+        message = event_data.get('message') or event_data.get('prompt') or ''
         if message:
             import re
             return bool(re.search(r'[一-鿿]', message))
 
     # Rule: "简洁、结构化"
     if '简洁' in c or '结构化' in c:
-        message = event_data.get('message', '')
+        message = event_data.get('message') or event_data.get('prompt') or ''
         if message and len(message) > 2000:
             return False
         if message:

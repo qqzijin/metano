@@ -1,6 +1,7 @@
 """Evolution orchestrator: coordinates Observe → Reason → Act → Reflect cycle."""
 import json
 import os
+import sys
 import time
 from pathlib import Path
 from .harvester import harvest_recent_sessions
@@ -523,6 +524,17 @@ def session_end(session_id: str='') -> dict:
     """
     if _is_paused():
         return {'status': 'paused'}
+    if not session_id:
+        # Prefer the SessionEnd hook input's session_id (F-5-class: the hook was
+        # ignoring stdin and falling back to the last-message heuristic, which
+        # harvests the wrong session in multi-session setups).
+        try:
+            import json as _json
+            raw = sys.stdin.read() if not sys.stdin.isatty() else ''
+            if raw.strip():
+                session_id = (_json.loads(raw).get('session_id') or _json.loads(raw).get('sessionId') or '')
+        except Exception:
+            pass
     if not session_id:
         try:
             conn = init_db()
