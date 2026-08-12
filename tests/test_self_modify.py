@@ -24,8 +24,8 @@ def no_llm(monkeypatch):
     def fake_call_llm(system, user, max_tokens=1500, timeout=45):
         # Return a JSON {old, new} edit targeting metano/__init__.py.
         return json.dumps({
-            'old': '__version__ = "3.1.0"',
-            'new': '__version__ = "3.1.0"\n# self-modify test marker',
+            'old': '__version__ = "3.2.0"',
+            'new': '__version__ = "3.2.0"\n# self-modify test marker',
         }), 0.0
     monkeypatch.setattr('metano.llm_call.call_llm', fake_call_llm)
 
