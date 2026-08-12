@@ -69,6 +69,31 @@ def beliefs_to_claude_md_injection(beliefs: list[dict]) -> str:
     lines.append(MARKER_END)
     return '\n'.join(lines)
 
+_MAX_INJECTION_CHARS = 12000
+_SUSPICIOUS_INJECTION_MARKERS = (
+    'ignore previous instructions', 'ignore all previous', 'you are now',
+    'override your instructions', 'disregard your', 'system prompt',
+    '<|im_start|>', '<|im_end|>',
+)
+
+
+def _claude_md_content_policy(injection: str) -> tuple[bool, str]:
+    """H4: content policy for the auto-generated CLAUDE.md section.
+
+    Returns ``(ok, reason)``. Rejects content that could hijack the host agent:
+    empty, oversized, or carrying prompt-injection instruction markers.
+    """
+    if not injection or not injection.strip():
+        return False, 'empty injection'
+    if len(injection) > _MAX_INJECTION_CHARS:
+        return False, f'injection too large ({len(injection)} chars, cap {_MAX_INJECTION_CHARS})'
+    low = injection.lower()
+    for marker in _SUSPICIOUS_INJECTION_MARKERS:
+        if marker in low:
+            return False, f'content policy: suspicious instruction marker {marker!r}'
+    return True, ''
+
+
 def apply_beliefs_to_claude_md(dry_run: bool=True) -> dict:
     """Inject learned beliefs into CLAUDE.md within marked section.
 
@@ -82,6 +107,11 @@ def apply_beliefs_to_claude_md(dry_run: bool=True) -> dict:
         if not eligible:
             return {'action': 'claude_md', 'status': 'skipped', 'reason': 'no eligible beliefs (confidence >= 0.7)'}
         injection = beliefs_to_claude_md_injection(eligible)
+        # H4: content policy — reject empty/oversized/injection-marked content
+        # before it can reach ~/CLAUDE.md (the persistent prompt surface).
+        ok, reason = _claude_md_content_policy(injection)
+        if not ok:
+            return {'action': 'claude_md', 'status': 'rejected', 'reason': reason}
         if dry_run:
             return {'action': 'claude_md', 'status': 'dry_run', 'injection_preview': injection[:500], 'belief_count': len(eligible)}
         content = CLAUDE_MD.read_text() if CLAUDE_MD.exists() else ''
@@ -483,11 +513,36 @@ def _apply_behavior_improvement(content: str, detail: str) -> dict:
     return {'status': 'applied', 'type': 'behavior_improvement', 'rule_id': rule_id}
 
 
+def _coerce_config_value(raw: str, old_value):
+    """Coerce a string proposal value to the existing key's scalar type (H9).
+
+    Refuses to corrupt structured values — dict/list keys are never reached
+    here (the caller returns early); scalars are coerced to the old type so a
+    proposal can't silently replace a number/boolean with an unparsed string.
+    """
+    text = raw.strip()
+    if isinstance(old_value, bool):
+        return text.lower() in ('true', '1', 'yes', 'on')
+    if isinstance(old_value, int):
+        try:
+            return int(text)
+        except ValueError:
+            return old_value
+    if isinstance(old_value, float):
+        try:
+            return float(text)
+        except ValueError:
+            return old_value
+    return raw
+
+
 def _apply_config_change(content: str, detail: str) -> dict:
     """Modify gateway_config.yaml based on proposal content.
 
     Parses the proposal to extract key/value changes and applies them.
     Only modifies existing keys — never adds new ones without user confirmation.
+    H9: type-safe — structured (dict/list) values are never replaced by the
+    string form of a proposal, so a malformed proposal can't corrupt the config.
     """
     import yaml
     if not CONFIG_FILE.exists():
@@ -503,8 +558,12 @@ def _apply_config_change(content: str, detail: str) -> dict:
             # Only modify keys that already exist in config
             if key in config:
                 old_value = config[key]
-                config[key] = value
-                changes.append({'key': key, 'old': old_value, 'new': value})
+                if isinstance(old_value, (dict, list)):
+                    return {'status': 'failed',
+                            'reason': f"key {key!r} is structured ({type(old_value).__name__}); refusing to replace"}
+                new_value = _coerce_config_value(value, old_value)
+                config[key] = new_value
+                changes.append({'key': key, 'old': old_value, 'new': new_value})
     if not changes:
         return {'status': 'failed', 'reason': 'no valid key=value changes found'}
     CONFIG_FILE.write_text(yaml.dump(config, allow_unicode=True, default_flow_style=False))
