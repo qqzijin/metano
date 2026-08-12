@@ -1,4 +1,5 @@
 ---
+trust: bundled
 name: debug
 description: Systematic debugging assistant — reproduce, isolate, diagnose, fix
 version: 1.0.0

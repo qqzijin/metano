@@ -1,4 +1,5 @@
 ---
+trust: bundled
 name: spike
 description: "Throwaway experiments to validate an idea before build."
 version: 1.0.0

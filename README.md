@@ -35,7 +35,7 @@
 | 🤝 **多设备协作** | A2A v1.0 AgentCard（JWS 签名）+ 跨设备协同页（CollabPage）；跨设备任务执行（A2A message/send + tasks/get 轮询，本地/远程均可派发） |
 | 🧪 **Be-ACTIVE 即时学习** | 检测到用户纠正后立即生成规则/技能提案，不等定时任务 |
 | 🔬 **自我进化（Self-Modify）** | 进化系统自主修改自己的代码：扫描反模式 → LLM 生成修复 → 沙箱隔离验证（bwrap，无网络/无真实密钥）→ 人工审批 → 应用 → git 回滚；默认停用，需显式开启 + 审批 |
-| 🛠️ **运维** | `healthcheck.sh` 健康检查 · `backup.sh` 数据库备份 · `maintain_daily.sh` 每日维护（备份+健康+VACUUM+清理）· 定时任务 9 个 · 会话保留（180天/512MB）· 每周知识主动探索 |
+| 🛠️ **运维** | `healthcheck.sh` 健康检查 · `backup.sh` 数据库备份 · `maintain_daily.sh` 每日维护（备份+健康+VACUUM+清理）· 定时任务 9 个内置（+可选运维 shell 任务）· 会话保留（180天/512MB）· 每周知识主动探索 |
 
 ## 🧬 自我进化系统
 
@@ -82,7 +82,9 @@ Maintain (维护)     信念衰减、合并、归档、时间趋势抽象、成�
 
 **Be-ACTIVE 即时学习**：SessionEnd 检测到纠正信号（"不对/错了/重复/必须验证..."）→ 立即在后台分析并生成行为规则 + 技能改进提案，无需等待每日 cron。
 
-**内置定时任务**（`cron/jobs.json`，9 项）：harvest（每 30min）· introspect（每 2h）· maintenance（每日 03:03，信念生命周期）· self-modify（每日 04:30，默认停用）· knowledge-sink（每日 05:30）· evaluate（每 6h）· explore（周日 03:00）· architect（周日 05:00）· session-retention（周日 06:00）。运维脚本（`backup.sh`/`healthcheck.sh`/`maintain_daily.sh`）由 `metano.sh`/手工运行，不注册为默认 cron 任务。
+**内置定时任务**（`cron/jobs.json`，默认 9 个进化任务）：harvest（每 30min）· introspect（每 2h）· maintenance（每日 03:03，信念生命周期）· self-modify（每日 04:30，内置默认停用，需显式开启）· knowledge-sink（每日 05:30）· evaluate（每 6h）· explore（周日 03:00）· architect（周日 05:00）· session-retention（周日 06:00）。
+
+运行实例的 `cron/jobs.json` **可能额外注册运维类 shell 任务**（如 `healthcheck` 每小时、`maintain-daily` 每日 02:30），因此实际任务数可多于 9（例如当前运行实例为 11）。注意：这类 shell 任务经 cron daemon 在 bwrap 沙箱（`--tmpfs $HOME`）内执行，**看不到真实 `METANO_HOME` 会直接失败**——运维脚本（`backup.sh` / `healthcheck.sh` / `maintain_daily.sh`）应改由 `metano.sh` 创建的 systemd user timer（`metano-maintain.timer`，每日 02:30）在沙箱外执行，或手工运行。
 
 **安全机制**：
 - CLAUDE.md 注入用 `<!-- LEARNED-PREFS-START/END -->` 标记隔离，可原子回滚
@@ -190,13 +192,14 @@ git clone <仓库地址> metano && cd metano
 ./metano.sh status               # 查看各服务状态
 ./metano.sh stop / restart       # 停止 / 重启全部服务
 ./metano.sh setup                # 重新运行 gen_config.py 并启动
+./metano.sh maintain-timer       # （重）建每日维护 systemd timer（沙箱外执行 backup/healthcheck/vacuum）
 
 bash healthcheck.sh              # 健康检查（web/gateway/cron/cocoindex），--repair 自动重启 DOWN 的服务
 ```
 
 > Claude Code 集成（进化引擎依赖）：配置 `hooks.example.json` 到 `~/.claude/settings.local.json`，详见 DEPLOYMENT.md 第 6 节。
 
-> 生产部署：`ecosystem.config.js` 为 PM2 进程管理配置（metano-web/cron/gateway 等）。
+> 服务管理：默认走 **systemd 用户服务**（`metano-web` / `metano-cron` / `metano-gateway`，由 `metano.sh` 自动创建 unit；每日维护走 `metano-maintain.timer`）。`ecosystem.config.js` 为**遗留 PM2 配置**，仅作参考——与 systemd 并存会冲突，不建议使用。
 
 ## ⚙️ 环境变量
 
@@ -365,7 +368,7 @@ metano/
 
 **A2A**：`/.well-known/agent-card.json` 暴露 AgentCard，`/a2a` 支持 JSON-RPC task 委派（跨设备协作）。
 
-## ⏰ 定时任务（cron 9 个）
+## ⏰ 定时任务（cron 默认 9 个内置进化任务）
 
 | 任务 | 调度 | 职责 |
 |------|------|------|
@@ -373,13 +376,15 @@ metano/
 | `introspect` | 每 2 小时 | 代码反模式扫描 → 生成提案 |
 | `evaluate` | 每 6 小时 | 评估已应用提案的效果 |
 | `maintenance` | 每日 03:03 | 进化维护一次跑完：信念衰减/压缩/合并 → LLM 反思 → 信念适应 |
-| `self-modify` | 每日 04:30 | 自举：扫描反模式 → 修复 → 沙箱验证 → 审批 → 应用（**默认停用**，需显式开启） |
+| `self-modify` | 每日 04:30 | 自举：扫描反模式 → 修复 → 沙箱验证 → 审批 → 应用（**内置默认停用**，`DEFAULT_JOBS=False`；需在 `cron/jobs.json` 显式开启） |
 | `knowledge-sink` | 每日 05:30 | 进化经验沉淀知识库 + 成功经验综合为规则 |
 | `explore` | 周日 03:00 | 主动探索知识缺口（2 主题/次） |
 | `architect` | 周日 05:00 | 架构自审 + 重构提案 |
 | `session-retention` | 周日 06:00 | 会话保留清理（180 天/512MB） |
 
-调度分散避开整点批量。运维脚本（`backup.sh` / `healthcheck.sh` / `maintain_daily.sh`）不注册为默认 cron 任务，由 `metano.sh` 启动或手工运行。
+调度分散避开整点批量。上述 9 个为**内置进化任务**（`cron_daemon.DEFAULT_JOBS` 种子）；运行实例的 `cron/jobs.json` 可能额外注册运维类 shell 任务（`healthcheck` / `maintain-daily`），实际任务数可多于 9。
+
+> **运维脚本执行方式（重要）**：`backup.sh` / `healthcheck.sh` / `maintain_daily.sh` 是 **shell 脚本**，若注册为 cron daemon 的 shell 任务，会在 bwrap 沙箱（`--tmpfs $HOME`）内执行而**看不到真实 `METANO_HOME` → 直接失败**。因此它们**不应注册为默认 cron 任务**，而应由 `metano.sh` 创建的 systemd user timer（`metano-maintain.timer`，每日 02:30，`metano.sh start` 或 `metano.sh maintain-timer` 创建）在沙箱外执行，或手工运行。健康检查 `healthcheck.sh` 已改用 `systemctl --user is-active` 判定（兼容 systemd；无 systemd 时回退 pidfile）。
 
 ## 🧪 测试
 

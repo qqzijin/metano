@@ -1,4 +1,5 @@
 ---
+trust: bundled
 name: skills-info
 description: List, view, and manage available skills
 version: 1.0.0

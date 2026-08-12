@@ -1,4 +1,5 @@
 ---
+trust: bundled
 name: explain
 description: Explain concepts clearly with analogies and progressive depth
 version: 1.0.0

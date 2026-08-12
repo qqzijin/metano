@@ -1,4 +1,5 @@
 ---
+trust: bundled
 name: design-md
 description: Author/validate/export Google's DESIGN.md token spec files.
 version: 1.0.0

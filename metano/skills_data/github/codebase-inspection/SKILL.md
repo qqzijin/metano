@@ -1,4 +1,5 @@
 ---
+trust: bundled
 name: codebase-inspection
 description: "Inspect codebases w/ pygount: LOC, languages, ratios."
 version: 1.0.0

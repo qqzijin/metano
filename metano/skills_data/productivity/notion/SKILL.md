@@ -1,4 +1,5 @@
 ---
+trust: bundled
 name: notion
 description: "Notion API + ntn CLI: pages, databases, markdown, Workers."
 version: 2.0.0
@@ -35,8 +36,10 @@ Talk to Notion two ways. Same integration token works for both — pick by what'
 ### 2. Install `ntn` (preferred path on macOS / Linux)
 
 ```bash
-# Recommended
-curl -fsSL https://ntn.dev | bash
+# Recommended — 安全安装：先下载脚本并审阅再执行，不要直接把下载内容交给 bash 执行
+curl -fsSL https://ntn.dev -o /tmp/ntn-install.sh
+less /tmp/ntn-install.sh          # 先审阅脚本内容
+bash /tmp/ntn-install.sh          # 确认无误后执行
 
 # Or via npm (needs Node 22+, npm 10+)
 npm install --global ntn

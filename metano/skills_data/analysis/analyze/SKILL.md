@@ -1,4 +1,5 @@
 ---
+trust: bundled
 name: analyze
 description: Deep analysis of a topic with structured reasoning and evidence
 version: 1.0.0

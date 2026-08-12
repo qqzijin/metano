@@ -26,6 +26,33 @@ if [ "${REPAIR:-0}" != "1" ] && [ "${REPAIR_ENV:-0}" = "1" ]; then
   REPAIR=1
 fi
 
+# ---- bwrap 沙箱守卫 ----
+# cron daemon 的 shell 任务在 bwrap(--tmpfs $HOME) 内执行，真实 METANO_HOME 不可见。
+# 此时健康检查无法运行 —— 报告 SKIP 并退出 0，避免误报 DOWN 触发错误修复。
+# 真正的定时健康检查应通过 systemd timer(metano-maintain.timer) 或手动执行。
+if [ ! -d "$BRIDGE_DIR" ]; then
+  echo "metano healthcheck — $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  echo "[SKIP] METANO_HOME($BRIDGE_DIR) 不可见（bwrap 沙箱把 \$HOME 挂成空 tmpfs）—— 无法执行健康检查。"
+  echo "       请改用 systemd timer（metano-maintain.timer）或手动执行本脚本。"
+  echo "Summary: SKIP"
+  exit 0
+fi
+
+# ---- systemd 用户服务判定 ----
+# systemd_active <web|gateway|cron>：优先用 systemctl --user is-active（与
+# systemd 部署兼容，C3：daemon 在跑但无 pidfile）。无 systemd 或连不上用户总线
+# 时返回 1，由调用方回退到 pidfile 判定（兼容 metano.sh 的 nohup 后台模式）。
+have_systemd() {
+  command -v systemctl >/dev/null 2>&1 || return 1
+  [ -n "${XDG_RUNTIME_DIR:-}" ] || return 1
+  [ -S "$XDG_RUNTIME_DIR/systemd/private" ] || [ -S "$XDG_RUNTIME_DIR/bus" ] || return 1
+  return 0
+}
+systemd_active() {
+  local svc="$1"
+  systemctl --user is-active "metano-$svc" 2>/dev/null | grep -qE '^(active|activating)$'
+}
+
 # Per-service status: OK | DEGRADED | DOWN
 declare -A STATUS
 declare -A DETAIL
@@ -71,9 +98,11 @@ check_web() {
   fi
 }
 
-# ---- gateway: pidfile + process match ----
+# ---- gateway: systemd 优先，pidfile 回退 ----
 check_gateway() {
-  if pidfile_alive "$BRIDGE_DIR/gateway.pid" "metano.gateway"; then
+  if have_systemd && systemd_active gateway; then
+    set_status gateway OK "systemd: metano-gateway active"
+  elif pidfile_alive "$BRIDGE_DIR/gateway.pid" "metano.gateway"; then
     set_status gateway OK "PID $(cat "$BRIDGE_DIR/gateway.pid")"
   elif pidfile_alive "$BRIDGE_DIR/gateway.pid"; then
     set_status gateway DEGRADED "PID $(cat "$BRIDGE_DIR/gateway.pid") alive but wrong process"
@@ -82,9 +111,11 @@ check_gateway() {
   fi
 }
 
-# ---- cron: pidfile + process match ----
+# ---- cron: systemd 优先，pidfile 回退 ----
 check_cron() {
-  if pidfile_alive "$BRIDGE_DIR/cron.pid" "metano.cron_daemon"; then
+  if have_systemd && systemd_active cron; then
+    set_status cron OK "systemd: metano-cron active"
+  elif pidfile_alive "$BRIDGE_DIR/cron.pid" "metano.cron_daemon"; then
     set_status cron OK "PID $(cat "$BRIDGE_DIR/cron.pid")"
   elif pidfile_alive "$BRIDGE_DIR/cron.pid"; then
     set_status cron DEGRADED "PID $(cat "$BRIDGE_DIR/cron.pid") alive but wrong process"

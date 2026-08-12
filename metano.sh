@@ -44,6 +44,44 @@ EOF
     return 0
 }
 
+# ── systemd user timer：每日维护在 bwrap 外执行 ──
+# cron daemon 的 shell 任务（backup.sh / maintain_daily.sh / healthcheck.sh）
+# 在 bwrap(--tmpfs $HOME) 内运行，真实 METANO_HOME 不可见 → 全部无法执行。
+# 改由 systemd user timer 直接运行 maintain_daily.sh（不经 bwrap），保证
+# 备份与健康检查真实可跑。失败自动补跑（Persistent=true）。
+_ensure_maintain_timer() {
+    command -v systemctl >/dev/null 2>&1 || return 1
+    local unit="$HOME/.config/systemd/user/metano-maintain.service"
+    local timer="$HOME/.config/systemd/user/metano-maintain.timer"
+    mkdir -p "$HOME/.config/systemd/user"
+    cat > "$unit" <<EOF
+[Unit]
+Description=metano daily maintenance (backup + healthcheck --repair + vacuum) — runs outside bwrap
+
+[Service]
+Type=oneshot
+WorkingDirectory=$BRIDGE_DIR
+Environment=METANO_HOME=$BRIDGE_DIR
+ExecStart=/bin/bash $BRIDGE_DIR/maintain_daily.sh
+EOF
+    cat > "$timer" <<EOF
+[Unit]
+Description=Daily trigger for metano-maintain (02:30)
+
+[Timer]
+OnCalendar=*-*-* 02:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+    systemctl --user daemon-reload
+    systemctl --user enable "metano-maintain.timer" 2>/dev/null || true
+    systemctl --user start "metano-maintain.timer" 2>/dev/null || true
+    echo "maintain timer ready (metano-maintain.timer → 每日 02:30, 在 bwrap 外运行)"
+    return 0
+}
+
 # ── 无 systemd 时的传统后台方式（pid 文件）──
 _start_bg() {
     local svc="$1"
@@ -123,6 +161,7 @@ case "${1:-start}" in
         _op web start
         _op cron start
         _op gateway start
+        _ensure_maintain_timer
         start_ccc_daemon
         echo ""
         echo "Dashboard:  http://0.0.0.0:9120"
@@ -175,5 +214,9 @@ case "${1:-start}" in
         echo "Running setup start..."
         "$0" start
         ;;
-    *) echo "Usage: $0 {start|stop|restart|status|setup} [web|cron|gateway|cocoindex]" ;;
+    maintain-timer)
+        _ensure_maintain_timer
+        systemctl --user list-timers metano-maintain.timer 2>/dev/null || true
+        ;;
+    *) echo "Usage: $0 {start|stop|restart|status|setup|maintain-timer} [web|cron|gateway|cocoindex]" ;;
 esac

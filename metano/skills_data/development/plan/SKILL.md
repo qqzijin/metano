@@ -1,4 +1,5 @@
 ---
+trust: bundled
 name: plan
 description: "Plan mode: write markdown plan to .hermes/plans/, no exec."
 version: 1.0.0

@@ -2,6 +2,9 @@
 // 自我进化引擎 依赖的 Claude Code 钩子配置
 // 复制下面内容到 ~/.claude/settings.local.json 的 "hooks" 字段
 // （把 __PROJECT_ROOT__ 换成你的项目绝对路径）
+//
+// B11：SessionStart 不再引用 metano.evolution.session_start（该函数不存在）。
+// 实际 SessionStart 钩子是仓库根的 hook_inject_memory.py（按 tag 注入记忆）。
 // ============================================================
 {
   "hooks": {
@@ -11,7 +14,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd __PROJECT_ROOT__ && python3 -c \"from metano.evolution import session_start; session_start()\"",
+            "command": "cd __PROJECT_ROOT__ && python3 hook_inject_memory.py",
             "timeout": 5
           }
         ]

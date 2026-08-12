@@ -16,6 +16,17 @@ BACKUP_ROOT="$METANO_DIR/backups"
 RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-7}"
 LOG_FILE="$BACKUP_ROOT/backup.log"
 
+# ── bwrap 沙箱守卫 ──
+# cron daemon 的 shell 任务在 bwrap(--tmpfs $HOME) 内运行，真实 METANO_DIR 不可见，
+# sqlite3 .backup 拿到的会是空 tmpfs → 备份静默失败。检测到沙箱直接跳过并返回 0
+# （避免 cron 误记失败）；真正的备份由 systemd timer(metano-maintain.timer) 在
+# bwrap 外执行，或手动运行。
+if [ ! -d "$METANO_DIR" ]; then
+    echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] SKIP: $METANO_DIR 不可见（bwrap 沙箱屏蔽了 \$HOME?）。"
+    echo "        请通过 systemd timer（metano-maintain.timer）或手动执行本脚本。"
+    exit 0
+fi
+
 # 数据库列表（相对 METANO_DIR 的路径）
 DATABASES=(
     "bridge.db"

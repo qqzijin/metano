@@ -4,6 +4,10 @@
 # 安装（推荐 venv）:
 #   pip install -r requirements.txt
 #
+# 版本策略（M9 依赖锁版）：以下版本已精确锁定（==）到 2026-08-12 在
+# /home/dk 运行实例验证过的可用稳定版。升级依赖前请先在测试环境验证，
+# 不要盲目放宽到 >= 区间。可选分组见文件底部（同样建议锁版）。
+#
 # 可选分组（按需安装，见文件底部）:
 #   [embedding]  pip install -r requirements-embedding.txt   # 本地向量嵌入 (torch)
 #   [browser]    pip install playwright && playwright install chromium
@@ -11,32 +15,32 @@
 # =============================================================================
 
 # ── 核心：Web / API ──────────────────────────────────────────────────────────
-fastapi>=0.104.0      # Web 框架（metano/web_server.py）
-uvicorn>=0.24.0       # ASGI 服务器（metano/serve.py，默认端口 9120）
-pydantic>=2.0         # FastAPI 数据模型（依赖透传，显式声明）
-httpx>=0.25.0         # FastAPI TestClient / 集成测试（pyproject.toml 声明）
+fastapi==0.136.1      # Web 框架（metano/web_server.py）
+uvicorn==0.47.0       # ASGI 服务器（metano/serve.py，默认端口 9120）
+pydantic==2.13.1      # FastAPI 数据模型（依赖透传，显式声明）
+httpx==0.28.1         # FastAPI TestClient / 集成测试（pyproject.toml 声明）
 
 # ── 核心：认证 / 配置 ────────────────────────────────────────────────────────
-pyjwt>=2.8.0          # JWT 令牌签发与校验（metano/auth.py: import jwt）
-bcrypt>=4.1.0         # 密码哈希（metano/auth.py）
-pyyaml>=6.0           # gateway_config.yaml 解析（auth.py / gateway/launcher.py / home_assistant.py）
+pyjwt==2.12.1         # JWT 令牌签发与校验（metano/auth.py: import jwt）
+bcrypt==5.0.0         # 密码哈希（metano/auth.py）
+pyyaml==6.0.3         # gateway_config.yaml 解析（auth.py / gateway/launcher.py / home_assistant.py）
 
 # ── 核心：MCP 服务器 ─────────────────────────────────────────────────────────
-mcp>=1.0.0            # MCP stdio 服务器（metano/mcp_server.py: FastMCP，60+ 工具）
+mcp==1.27.1           # MCP stdio 服务器（metano/mcp_server.py: FastMCP，60+ 工具）
 
 # ── 核心：HTTP 客户端 ────────────────────────────────────────────────────────
-requests>=2.31        # Home Assistant / 图片生成（home_assistant.py / image_gen.py）
+requests==2.32.3      # Home Assistant / 图片生成（home_assistant.py / image_gen.py）
 
 # ── 核心：定时任务 / 搜索 / WebSocket ─────────────────────────────────────────
-croniter>=1.3         # cron 表达式解析（metano/cron_daemon.py）
-duckduckgo-search>=4.0  # 默认网页搜索（metano/mcp_server.py web_search / browser.py）
-websockets>=12.0      # WebSocket（gateway/qq.py 等）
+croniter==6.2.2       # cron 表达式解析（metano/cron_daemon.py）
+duckduckgo-search==8.1.1  # 默认网页搜索（metano/mcp_server.py web_search / browser.py）
+websockets==13.1      # WebSocket（gateway/qq.py 等）
 
 # ── 语音 TTS（voice 工具，懒加载，轻量）──────────────────────────────────────
-edge-tts>=6.1         # 语音合成（metano/voice/core.py / voice/tts.py）
+edge-tts==7.2.8       # 语音合成（metano/voice/core.py / voice/tts.py）
 
 # ── 消息网关：飞书（gateway 启动时顶层导入 lark_oapi，属必需）────────────────
-lark-oapi>=1.6        # 飞书适配器（metano/gateway/feishu.py）
+lark-oapi==1.6.5      # 飞书适配器（metano/gateway/feishu.py）
 
 # ════════════════════════════════════════════════════════════════════════════
 # 可选分组（按需安装）
@@ -45,15 +49,15 @@ lark-oapi>=1.6        # 飞书适配器（metano/gateway/feishu.py）
 #   推荐替代方案：将 METANO_EMBED_PYTHON 指向已装有这些库的解释器
 #   （例如 cocoindex 的 pipx venv），metano 自身无需安装。
 #   pip install -r requirements-embedding.txt
-#       (sentence-transformers>=2.7, torch>=2.1)
+#       (sentence-transformers>=2.7, torch>=2.1)   # 建议锁版后安装
 #
 # [browser] Playwright 浏览器自动化（web_browse / web_screenshot / web_content）：
 #   懒加载（metano/browser.py），不装则浏览器相关工具不可用。
-#   pip install playwright && playwright install chromium
+#   pip install playwright==1.59.0 && playwright install chromium
 #
 # [gateway] 额外消息平台（懒加载，仅启用对应平台时安装）：
-#   python-telegram-bot>=20.0   # Telegram（metano/gateway/telegram.py）
-#   discord.py>=2.3             # Discord（metano/gateway/discord_bot.py）
+#   python-telegram-bot==22.7   # Telegram（metano/gateway/telegram.py）
+#   discord.py==2.7.1           # Discord（metano/gateway/discord_bot.py）
 #
 # 说明：
 # - 微信网关 wcferry 不在 PyPI 正常分发，按官方文档单独安装，且仅在

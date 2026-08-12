@@ -1,4 +1,5 @@
 ---
+trust: bundled
 name: native-mcp
 description: "metano MCP: built-in tool surface, remote read-only /mcp, external servers via ~/.mcp.json."
 version: 1.1.0

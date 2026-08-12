@@ -1,4 +1,5 @@
 ---
+trust: bundled
 name: translate
 description: Translate text between languages with natural, fluent output
 version: 1.0.0

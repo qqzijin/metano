@@ -1,4 +1,5 @@
 ---
+trust: bundled
 name: xurl
 description: "X/Twitter via xurl CLI: post, search, DM, media, v2 API."
 version: 1.1.1
@@ -56,7 +57,10 @@ Pick ONE method. On Linux, the shell script or `go install` are the easiest.
 
 ```bash
 # Shell script (installs to ~/.local/bin, no sudo, works on Linux + macOS)
-curl -fsSL https://raw.githubusercontent.com/xdevplatform/xurl/main/install.sh | bash
+# 安全安装：先下载脚本并审阅再执行，不要直接把下载内容交给 bash 执行
+curl -fsSL https://raw.githubusercontent.com/xdevplatform/xurl/main/install.sh -o /tmp/xurl-install.sh
+less /tmp/xurl-install.sh          # 先审阅脚本内容
+bash /tmp/xurl-install.sh          # 确认无误后执行
 
 # Homebrew (macOS)
 brew install --cask xdevplatform/tap/xurl

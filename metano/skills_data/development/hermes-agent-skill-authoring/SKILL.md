@@ -1,4 +1,5 @@
 ---
+trust: bundled
 name: hermes-agent-skill-authoring
 description: "Author metano SKILL.md: frontmatter, validator, structure, skill_manage."
 version: 1.1.0

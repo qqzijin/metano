@@ -15,6 +15,17 @@ set -u
 
 BRIDGE_DIR="${METANO_HOME:-$HOME/.claude/metano}"
 LOG_FILE="$BRIDGE_DIR/logs/maintain-daily.log"
+
+# ── bwrap 沙箱守卫 ──
+# cron daemon 的 shell 任务在 bwrap(--tmpfs $HOME) 内运行，真实 BRIDGE_DIR 不可见。
+# 每日维护必须在 bwrap 外执行（systemd timer metano-maintain.timer / 手动）。
+# 检测到沙箱直接跳过并返回 0，避免在空 tmpfs 上跑出一堆假失败日志。
+if [ ! -d "$BRIDGE_DIR" ]; then
+    echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] SKIP: $BRIDGE_DIR 不可见（bwrap 沙箱屏蔽了 \$HOME?）。"
+    echo "        请通过 systemd timer（metano-maintain.timer）或手动执行本脚本。"
+    exit 0
+fi
+
 mkdir -p "$(dirname "$LOG_FILE")"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"; }

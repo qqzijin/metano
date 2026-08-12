@@ -1,4 +1,5 @@
 ---
+trust: bundled
 name: himalaya
 description: "Himalaya CLI: IMAP/SMTP email from terminal."
 version: 1.1.0
@@ -32,7 +33,10 @@ Himalaya is a CLI email client that lets you manage emails from the terminal usi
 
 ```bash
 # Pre-built binary (Linux/macOS — recommended)
-curl -sSL https://raw.githubusercontent.com/pimalaya/himalaya/master/install.sh | PREFIX=~/.local sh
+# 安全安装：先下载脚本并审阅再执行，不要直接把下载内容交给 sh 执行
+curl -fsSL https://raw.githubusercontent.com/pimalaya/himalaya/master/install.sh -o /tmp/himalaya-install.sh
+less /tmp/himalaya-install.sh          # 先审阅脚本内容
+PREFIX=~/.local sh /tmp/himalaya-install.sh   # 确认无误后执行
 
 # macOS via Homebrew
 brew install himalaya

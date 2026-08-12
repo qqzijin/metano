@@ -1,4 +1,5 @@
 ---
+trust: bundled
 name: summarize
 description: Summarize text, documents, or conversation history with configurable length and focus
 version: 1.0.0

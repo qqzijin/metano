@@ -1,4 +1,5 @@
 ---
+trust: bundled
 name: brainstorm
 description: Generate creative ideas and explore possibilities systematically
 version: 1.0.0

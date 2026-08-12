@@ -1,4 +1,5 @@
 ---
+trust: bundled
 name: code-review
 description: Review code for bugs, security issues, style, and best practices
 version: 1.0.0
