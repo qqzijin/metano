@@ -24,18 +24,18 @@
 | 🧬 **自我进化引擎** | `Observe → Reason → Act → Reflect → Maintain` 五阶段闭环，系统从会话中持续学习你的偏好并内化为行为规则 |
 | 💾 **用户建模 (Honcho)** | 信念生命周期：DRAFT → ESTABLISHED → CORE，置信度驱动，观察→信念方言推理 |
 | 🧠 **记忆技能库** | 自动收割会话 → 提取观察 → 生成信念 → 注入 CLAUDE.md（原子回滚）；记忆带场景 tag，SessionStart 按 tag 注入上下文 |
-| 🔧 **技能系统** | 48+ 内置技能（源自 Hermes Agent 精选），支持技能发现、校验、自定义 |
-| 📚 **RAG 知识库 + 本地向量** | 文档导入、分块、本地向量检索（chunks embedding，离线，无需外部冷启动） |
+| 🔧 **技能系统** | 48+ 内置技能（源自 Hermes Agent 精选），支持技能发现、校验、自定义、**编辑/删除（内置受保护）**，使用频率统计 |
+| 📚 **RAG 知识库 + 本地向量** | 文档导入（`.md` 优先）、分块、本地向量检索（chunks embedding，离线）；目录批量导入默认跳过代码文件，知识库专注知识文档 |
 | 🕸️ **知识图谱** | 实体-关系图，PPR（Personalized PageRank）相关扩散检索，前端可视化页 |
 | 🔌 **MCP 服务器** | 60+ 工具注册给 Claude Code（stdin/stdout 协议）+ 只读远程 MCP（Streamable HTTP，JWT 鉴权，跨设备协同） |
 | 💬 **多平台网关** | Discord / Telegram / QQ / 微信 / 飞书 / Web Chat 统一路由 |
-| 🖥️ **Web 控制面板** | React 19 + FastAPI，20+ 页面，移动端适配（汉堡菜单+抽屉）；聊天支持 **SSE 流式输出 + 思考过程 + 工具调用卡片 + Markdown 渲染**，跨路由流不中断 |
+| 🖥️ **Web 控制面板** | React 19 + FastAPI，精简导航：**工具中心**（技能+MCP）· **设置中心**（配置+安全）· **记忆中心**（记忆+画像）· 搜索统一入口；聊天支持 **SSE 流式输出 + 思考过程 + 工具调用卡片 + Markdown 渲染**，跨路由流不中断 |
 | 🔄 **配置热重载** | `gateway_config.yaml` 变更自动热重载（web 进程轮询，改价格/模型/凭据免重启） |
 | 🧭 **经验记忆 + 路由反馈** | 任务签名分类 + ε-greedy bandit 路由 + Reflexion 反思经验注入（`DO:/AVOID:`），让 AI 越用越聪明 |
-| 🤝 **多设备协作** | A2A v1.0 AgentCard（JWS 签名）+ 跨设备协同页（CollabPage） |
+| 🤝 **多设备协作** | A2A v1.0 AgentCard（JWS 签名）+ 跨设备协同页（CollabPage）；跨设备任务执行（A2A message/send + tasks/get 轮询，本地/远程均可派发） |
 | 🧪 **Be-ACTIVE 即时学习** | 检测到用户纠正后立即生成规则/技能提案，不等定时任务 |
 | 🔬 **自我进化（Self-Modify）** | 进化系统自主修改自己的代码：扫描反模式 → LLM 生成修复 → 隔离验证（全量测试）→ 应用 → git 回滚；每次变异有记录，验证门 + 回滚保障系统永不写死 |
-| 🛠️ **运维** | `healthcheck.sh` 健康检查 · `backup.sh` 数据库备份 · `maintain_daily.sh` 每日维护 · 会话保留（180天/512MB）· 每周知识主动探索 |
+| 🛠️ **运维** | `healthcheck.sh` 健康检查 · `backup.sh` 数据库备份 · `maintain_daily.sh` 每日维护（备份+健康+VACUUM+清理）· 定时任务 11 个 · 会话保留（180天/512MB）· 每周知识主动探索 |
 
 ## 🧬 自我进化系统
 
@@ -296,7 +296,7 @@ metano/
 ├── metano.sh                # 服务启动脚本（start/stop/status/restart/setup + 按服务）
 ├── healthcheck.sh           # 健康检查（web/gateway/cron/cocoindex，支持 --repair）
 ├── backup.sh                # 数据库自动备份（5 DB + 配置，7 天保留）
-├── maintain_daily.sh        # 每日维护（健康检查--repair + DB VACUUM + 清理）
+├── maintain_daily.sh        # 每日维护（备份 + 健康检查--repair + DB VACUUM + 清理）
 ├── hook_inject_memory.py    # SessionStart hook：按 tag 注入记忆
 ├── sink_claude_prefs.py     # 低频 CLAUDE.md 经验下沉到记忆库（带 tag）
 ├── backfill_memory_tags.py  # 为存量记忆回填场景 tag
@@ -313,7 +313,7 @@ metano/
 │   ├── a2a_server.py        #   A2A v1.0 服务（AgentCard / JSON-RPC / tasks）
 │   ├── route_events.py      #   经验记忆闭环核心（任务签名 + bandit + reward）
 │   ├── experience.py        #   Reflexion 反思经验 + DO:/AVOID: prompt 注入
-│   ├── collab.py            #   跨设备协作（A2A 委派 + 协作控制面）
+│   ├── collab.py            #   跨设备协作（A2A 客户端派发 message/send+tasks/get，本地/远程执行）
 │   ├── auth.py              #   登录认证（JWT access/refresh + 角色）
 │   ├── evolution.py         #   自我进化协调器（Observe→Reason→Act→Reflect→Maintain）
 │   ├── harvester.py         #   观察收割器
@@ -341,7 +341,7 @@ metano/
 └── personalities/           # 人格模板（12）
 ```
 
-## 🔗 MCP 工具（部分，60+）
+## 🔗 MCP 工具（部分，64+ 内置 + 外部）
 
 **进化系统**：`evolution_status` · `evolution_run` · `evolution_approve` · `evolution_suggestions` · `evolution_log`
 
@@ -364,6 +364,24 @@ metano/
 **只读远程 MCP**（跨设备协同，D 方案）：`/mcp` 端点暴露 16 个只读工具子集（`session_search` · `knowledge_search` · `memory_search` 等），Bearer JWT 鉴权（`aud=metano-mcp`，`POST /api/mcp/token` 签发 1h token），支持局域网跨设备访问（`allowed_hosts` 配置）。另一台机器在 Claude Code 中配置 `metano-local` MCP server 即可调用本机工具。
 
 **A2A**：`/.well-known/agent-card.json` 暴露 AgentCard，`/a2a` 支持 JSON-RPC task 委派（跨设备协作）。
+
+## ⏰ 定时任务（cron 11 个）
+
+| 任务 | 调度 | 职责 |
+|------|------|------|
+| `harvest` | 每 30 分钟 | 收割未处理会话 → 观察/纠正/工具错误 |
+| `introspect` | 每 2 小时 | 代码反模式扫描 → 生成提案 |
+| `evaluate` | 每 6 小时 | 评估已应用提案的效果 |
+| `healthcheck` | 每小时 | 服务健康检查（shell） |
+| `maintain-daily` | 每日 02:30 | 备份 + 健康修复 + VACUUM + 清理（shell） |
+| `maintenance` | 每日 03:03 | 进化维护一次跑完：信念衰减/压缩/合并 → LLM 反思 → 信念适应 |
+| `self-modify` | 每日 04:30 | 自举：扫描反模式 → 修复 → 验证 → 应用 |
+| `knowledge-sink` | 每日 05:30 | 进化经验沉淀知识库 + 成功经验综合为规则 |
+| `explore` | 周日 03:00 | 主动探索知识缺口（2 主题/次） |
+| `architect` | 周日 05:00 | 架构自审 + 重构提案 |
+| `session-retention` | 周日 06:00 | 会话保留清理（180 天/512MB） |
+
+调度分散避开整点批量。
 
 ## 🧪 测试
 
