@@ -175,7 +175,7 @@ class AgentDelegator:
             return {'id': task_id, 'status': 'failed', 'result': '',
                     'error': agent_task.error, 'duration_seconds': 0}
         import shutil
-        claude_bin = shutil.which('claude') or '/home/dk/local/node/bin/claude'
+        claude_bin = os.environ.get('CLAUDE_BIN') or shutil.which('claude') or '/home/dk/local/node/bin/claude'
         task_id = uuid.uuid4().hex[:12]
         agent_task = AgentTask(id=task_id, task=task, model=model, status='running',
                                started_at=time.time())
@@ -240,7 +240,7 @@ class AgentDelegator:
         the start so an A2A caller can discover its id immediately.
         """
         import shutil
-        claude_bin = shutil.which('claude') or '/home/dk/local/node/bin/claude'
+        claude_bin = os.environ.get('CLAUDE_BIN') or shutil.which('claude') or '/home/dk/local/node/bin/claude'
         task_id = uuid.uuid4().hex[:12]
         agent_task = AgentTask(id=task_id, task=task, model=model, status='running',
                                started_at=time.time())

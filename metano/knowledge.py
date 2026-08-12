@@ -45,12 +45,10 @@ def _find_embed_python() -> Optional[str]:
     forced = os.environ.get("METANO_EMBED_PYTHON")
     if forced and Path(forced).exists():
         return forced
-    for cand in (
-        str(Path.home() / ".local/share/pipx/venvs/cocoindex-code/bin/python"),
-        "/home/dk/.local/share/pipx/venvs/cocoindex-code/bin/python",
-    ):
-        if Path(cand).exists():
-            return cand
+    # 用 $HOME 动态定位 pipx venv（不硬编码本机绝对路径）
+    cand = Path.home() / ".local/share/pipx/venvs/cocoindex-code/bin/python"
+    if cand.exists():
+        return str(cand)
     return None
 
 

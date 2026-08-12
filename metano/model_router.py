@@ -188,7 +188,7 @@ class ModelRouter:
         provider = self.get_provider(provider_name)
         if (provider.protocol or 'anthropic').lower() == 'openai':
             return self._call_openai(prompt, provider, timeout=timeout)
-        claude_bin = shutil.which('claude') or '/home/dk/local/node/bin/claude'
+        claude_bin = os.environ.get('CLAUDE_BIN') or shutil.which('claude') or '/home/dk/local/node/bin/claude'
         cmd = [claude_bin, '-p', prompt]
         if session_id:
             cmd = [claude_bin, '--resume', session_id, '-p', prompt]
