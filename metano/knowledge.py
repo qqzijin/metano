@@ -422,9 +422,15 @@ def knowledge_ingest(path: str, title: str = "", doc_type: str = "auto") -> dict
 
     # Handle directory
     if p.is_dir():
+        # 目录批量导入默认只导文档类（.md/.txt/.json/.csv），跳过代码文件
+        # （.py/.js/.yaml/.yml）——知识库应存知识文档而非源码。显式指定
+        # doc_type='code' 时才把代码文件一并导入。
+        doc_suffixes = {".txt", ".md", ".json", ".csv"}
+        code_suffixes = {".py", ".js", ".yaml", ".yml"}
+        allowed = doc_suffixes if doc_type != "code" else doc_suffixes | code_suffixes
         results = []
         for f in p.rglob("*"):
-            if f.is_file() and f.suffix in (".txt", ".md", ".py", ".js", ".json", ".yaml", ".yml", ".csv"):
+            if f.is_file() and f.suffix.lower() in allowed:
                 r = knowledge_ingest(str(f), doc_type=doc_type)
                 results.append(r)
         return {"status": "batch", "count": len(results), "results": results}
