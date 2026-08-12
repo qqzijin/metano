@@ -1,5 +1,6 @@
 """Honcho data models and SQLite schema for dialectic user modeling."""
 
+import json
 import sqlite3
 import uuid
 import time
