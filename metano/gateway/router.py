@@ -680,7 +680,7 @@ class MessageRouter:
         """
         import os
         import shutil
-        claude_bin = shutil.which('claude') or '/home/dk/local/node/bin/claude'
+        claude_bin = os.environ.get('CLAUDE_BIN') or shutil.which('claude') or '/home/dk/local/node/bin/claude'
         system_ctx = self._build_system_context()
         context_layers = []
         if skill_prefix:
