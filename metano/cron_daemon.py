@@ -2,6 +2,18 @@
 
 Runs as a background process, checking jobs.json every 60 seconds,
 and executing registered actions or `claude -p "<prompt>"` when a job is due.
+
+Reliability hardening (H-06 / C-01):
+- jobs.json is written atomically (temp file + ``os.replace``) under a
+  process-wide write lock, so concurrent writers (daemon tick, Web CRUD, MCP
+  CRUD) can never corrupt the canonical store. ``load_jobs`` / ``save_jobs``
+  are the single code path for reading/writing ``cron/jobs.json``.
+- The daemon claims a due job *before* executing it by advancing and
+  persisting ``next_run_at``, so a crash / SIGKILL / restart in the middle of a
+  run can never re-run the same slot. An in-process ``_ACTIVE_JOBS`` set guards
+  against re-entrant same-name executions within one process.
+- SIGTERM / SIGINT trigger a graceful shutdown: in-flight jobs finish, the
+  pid file is removed, then the process exits.
 """
 import fcntl
 import json
@@ -11,6 +23,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from datetime import datetime, timezone
@@ -35,6 +48,17 @@ ACTIONS = {}
 
 # Concurrency limiter shared by daemon tick and Web/MCP trigger endpoints.
 _RUN_SEMAPHORE = threading.Semaphore(MAX_CONCURRENT_JOBS)
+
+# In-process write lock for jobs.json (cross-process safety uses flock on a
+# dedicated lock file, see ``save_jobs``). Serializes readers/writers so a
+# read-modify-write cycle performed by one thread is not interleaved by another
+# thread in the same process.
+_JOBS_LOCK = threading.Lock()
+
+# In-process "claim" set: job names currently being executed by run_job(). Used
+# to refuse re-entrant same-name executions (H-06 idempotency).
+_ACTIVE_JOBS: set = set()
+_ACTIVE_JOBS_LOCK = threading.Lock()
 
 # Default evolution schedules, auto-seeded on first run (when cron/jobs.json
 # does not exist yet) so the self-evolving engine works out of the box.
@@ -82,12 +106,22 @@ def _register_default_actions():
     register_action('retention.purge_sessions', cron_purge_sessions)
     register_action('self_modify.daily', self_modify_daily)
 
+
+def _jobs_lock_path() -> Path:
+    """Path of the cross-process write-lock file (computed lazily so tests can
+    monkeypatch ``CRON_DIR``)."""
+    return CRON_DIR / '.jobs.lock'
+
+
 def load_jobs() -> list[dict]:
     """Load jobs from the canonical store (``cron/jobs.json``).
 
     Shared by the daemon tick and the Web/MCP CRUD layer (F-01): jobs.json is
     the single source of truth. Returns a list of job dicts; on first run
     (no file yet) the default schedules are seeded and persisted.
+
+    Reads are lock-free and safe because ``save_jobs`` only ever replaces the
+    file atomically — a reader can never observe a partially-written file.
     """
     if JOBS_FILE.exists():
         data = json.loads(JOBS_FILE.read_text())
@@ -101,9 +135,39 @@ def load_jobs() -> list[dict]:
     return list(DEFAULT_JOBS)
 
 def save_jobs(jobs: list[dict]):
-    """Persist jobs to the canonical store (``cron/jobs.json``)."""
+    """Persist jobs to the canonical store (``cron/jobs.json``).
+
+    Atomic and serialized (H-06): the payload is written to a temp file in the
+    same directory, fsynced, then ``os.replace``-d over the real file so a
+    crash at any point leaves either the old complete file or the new complete
+    file — never a torn write. An in-process mutex plus a cross-process flock
+    serialize concurrent writers (daemon tick, Web CRUD, MCP CRUD).
+    """
     CRON_DIR.mkdir(parents=True, exist_ok=True)
-    JOBS_FILE.write_text(json.dumps(jobs[:MAX_JOBS], ensure_ascii=False, indent=2))
+    payload = json.dumps(jobs[:MAX_JOBS], ensure_ascii=False, indent=2).encode('utf-8')
+    with _JOBS_LOCK:
+        lock_fd = open(_jobs_lock_path(), 'w')
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            fd, tmp_path = tempfile.mkstemp(dir=str(CRON_DIR), prefix='.jobs.json.', suffix='.tmp')
+            try:
+                with os.fdopen(fd, 'wb') as f:
+                    f.write(payload)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_path, JOBS_FILE)
+            except BaseException:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
+        finally:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            finally:
+                lock_fd.close()
+
 
 def compute_next_run(schedule, last_run_at: str | None) -> str | None:
     """Compute next run time from schedule config.
@@ -215,6 +279,20 @@ def _run_claude_job(prompt: str, timeout: int) -> str:
     return r.get('stdout') or r.get('stderr') or '(no output)'
 
 
+def _claim_job(job_name: str) -> bool:
+    """Claim a job name for execution. Returns False if already active."""
+    with _ACTIVE_JOBS_LOCK:
+        if job_name in _ACTIVE_JOBS:
+            return False
+        _ACTIVE_JOBS.add(job_name)
+        return True
+
+def _release_job(job_name: str):
+    """Release a previously claimed job name."""
+    with _ACTIVE_JOBS_LOCK:
+        _ACTIVE_JOBS.discard(job_name)
+
+
 def run_job(job: dict, timeout: int | None = None) -> dict:
     """Execute a single cron job and return ``{status, output, error}``.
 
@@ -225,61 +303,74 @@ def run_job(job: dict, timeout: int | None = None) -> dict:
     and output size is bounded. ``job['last_run_at']`` / ``job['last_error']``
     are updated in place.
 
+    An in-process claim guard (H-06) refuses to run the same job name
+    concurrently, so a manual trigger while the daemon is running the job (or a
+    re-entrant tick) can never double-execute.
+
     status: 'ok' | 'error' | 'timeout' | 'busy' | 'rejected'
     """
     job_name = job.get('name', job.get('id', 'unknown'))
     err = validate_job(job)
     if err:
         return {'status': 'rejected', 'output': '', 'error': err}
-    job_timeout = min(max(int(job.get('timeout', 120)), 1), MAX_JOB_TIMEOUT)
+    effective_timeout = timeout if timeout is not None else job.get('timeout', 120)
+    job_timeout = min(max(int(effective_timeout), 1), MAX_JOB_TIMEOUT)
     action = job.get('action', '')
     prompt = job.get('prompt', '')
     job_type = job.get('type', 'claude')
+
+    # Claim guard: never run the same job concurrently (H-06 idempotency).
+    if not _claim_job(job_name):
+        return {'status': 'busy', 'output': '', 'error': f'job already running: {job_name}'}
+
     result: dict = {'status': 'ok', 'output': '(no output)', 'error': None}
-    print(f"Running cron job: {job_name} [action={action}]")
-
-    if not _RUN_SEMAPHORE.acquire(blocking=False):
-        result = {'status': 'busy', 'output': '', 'error': 'too many concurrent cron jobs'}
-    else:
-        try:
-            if action and action in ACTIONS:
-                r = ACTIONS[action]()
-                output = json.dumps(r, ensure_ascii=False) if isinstance(r, dict) else str(r or '(no output)')
-            elif job_type == 'shell':
-                output = _run_shell_job(prompt, job_timeout)
-            elif prompt:
-                output = _run_claude_job(prompt, job_timeout)
-            else:
-                result = {'status': 'error', 'output': '', 'error': f'No action/prompt configured for job {job_name}'}
-                output = ''
-            if result['status'] == 'ok':
-                result['output'] = output
-        except subprocess.TimeoutExpired:
-            result = {'status': 'timeout', 'output': '', 'error': f'Timeout after {job_timeout}s'}
-        except Exception:
-            logger.exception("cron job %s failed", job_name)
-            result = {'status': 'error', 'output': '', 'error': 'execution error'}
-        finally:
-            _RUN_SEMAPHORE.release()
-
-    # Write output file (defense-in-depth: name whitelist + containment).
     try:
-        if not _JOB_NAME_RE.match(job_name):
-            raise ValueError(f'Invalid job name: {job_name!r}')
-        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-        out_dir = (OUTPUT_DIR / job_name).resolve()
-        if not out_dir.is_relative_to(OUTPUT_DIR.resolve()):
-            raise ValueError(f'Job name escapes output dir: {job_name!r}')
-        out_dir.mkdir(parents=True, exist_ok=True)
-        ts_str = datetime.now(tz=timezone.utc).strftime('%Y%m%d_%H%M%S')
-        out_text = _truncate_output(str(result.get('output') or ''))
-        (out_dir / f'{ts_str}.md').write_text(out_text)
-    except Exception as e:
-        logger.warning('cron: could not write job output for %s: %s', job_name, e)
+        print(f"Running cron job: {job_name} [action={action}]")
 
-    job['last_run_at'] = datetime.now(tz=timezone.utc).isoformat()
-    job['last_error'] = result.get('error')
-    return result
+        if not _RUN_SEMAPHORE.acquire(blocking=False):
+            result = {'status': 'busy', 'output': '', 'error': 'too many concurrent cron jobs'}
+        else:
+            try:
+                if action and action in ACTIONS:
+                    r = ACTIONS[action]()
+                    output = json.dumps(r, ensure_ascii=False) if isinstance(r, dict) else str(r or '(no output)')
+                elif job_type == 'shell':
+                    output = _run_shell_job(prompt, job_timeout)
+                elif prompt:
+                    output = _run_claude_job(prompt, job_timeout)
+                else:
+                    result = {'status': 'error', 'output': '', 'error': f'No action/prompt configured for job {job_name}'}
+                    output = ''
+                if result['status'] == 'ok':
+                    result['output'] = output
+            except subprocess.TimeoutExpired:
+                result = {'status': 'timeout', 'output': '', 'error': f'Timeout after {job_timeout}s'}
+            except Exception:
+                logger.exception("cron job %s failed", job_name)
+                result = {'status': 'error', 'output': '', 'error': 'execution error'}
+            finally:
+                _RUN_SEMAPHORE.release()
+
+        # Write output file (defense-in-depth: name whitelist + containment).
+        try:
+            if not _JOB_NAME_RE.match(job_name):
+                raise ValueError(f'Invalid job name: {job_name!r}')
+            OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+            out_dir = (OUTPUT_DIR / job_name).resolve()
+            if not out_dir.is_relative_to(OUTPUT_DIR.resolve()):
+                raise ValueError(f'Job name escapes output dir: {job_name!r}')
+            out_dir.mkdir(parents=True, exist_ok=True)
+            ts_str = datetime.now(tz=timezone.utc).strftime('%Y%m%d_%H%M%S')
+            out_text = _truncate_output(str(result.get('output') or ''))
+            (out_dir / f'{ts_str}.md').write_text(out_text)
+        except Exception as e:
+            logger.warning('cron: could not write job output for %s: %s', job_name, e)
+
+        job['last_run_at'] = datetime.now(tz=timezone.utc).isoformat()
+        job['last_error'] = result.get('error')
+        return result
+    finally:
+        _release_job(job_name)
 
 
 def tick():
@@ -295,12 +386,17 @@ def tick():
     try:
         jobs = load_jobs()
         now = time.time()
+        due: list[dict] = []
+        patched: list[dict] = []   # jobs whose schedule metadata changed, not running
         for job in jobs:
             if not job.get('enabled', True):
                 continue
             next_run = job.get('next_run_at')
             if not next_run:
-                job['next_run_at'] = compute_next_run(job.get('schedule', {}), job.get('last_run_at'))
+                new_nr = compute_next_run(job.get('schedule', {}), job.get('last_run_at'))
+                if new_nr != job.get('next_run_at'):
+                    job['next_run_at'] = new_nr
+                    patched.append(job)
                 continue
             try:
                 next_ts = datetime.fromisoformat(next_run.replace('Z', '+00:00')).timestamp()
@@ -313,36 +409,198 @@ def tick():
                 if validate_err:
                     logger.warning('cron: skipping invalid job: %s', validate_err)
                     job['last_error'] = validate_err
+                    new_nr = compute_next_run(job.get('schedule', {}), job.get('last_run_at'))
+                    if new_nr != job.get('next_run_at'):
+                        job['next_run_at'] = new_nr
+                    patched.append(job)
+                    continue
+                due.append(job)
+        if due:
+            # Claim before execution (H-06 idempotency): advance next_run_at and
+            # persist it atomically *before* running. If the process is killed
+            # mid-run (or restarts), the slot is already claimed, so the job can
+            # never re-run the same schedule slot.
+            for job in due:
+                nxt = compute_next_run(job.get('schedule', {}), job.get('last_run_at'))
+                if nxt:
+                    if nxt != job.get('next_run_at'):
+                        job['next_run_at'] = nxt
                 else:
-                    run_job(job)
-                job['next_run_at'] = compute_next_run(job.get('schedule', {}), job.get('last_run_at'))
-        save_jobs(jobs)
+                    # Unparseable schedule: surface and disable rather than spin.
+                    job['last_error'] = 'could not compute next run; job disabled'
+                    job['enabled'] = False
+            # Persist the claims, merged onto the latest store so concurrent
+            # Web/MCP CRUD during execution is preserved (C-01 single source).
+            _merge_job_updates(due, ('next_run_at', 'enabled', 'last_error'))
+            for job in due:
+                if job.get('enabled') is False and str(job.get('last_error', '')).startswith('could not compute'):
+                    continue
+                run_job(job)         # updates last_run_at / last_error in place
+            # Persist run results, again merged onto the latest store.
+            _merge_job_updates(due, ('last_run_at', 'last_error'))
+        elif patched:
+            _merge_job_updates(patched, ('next_run_at', 'last_error'))
     finally:
         fcntl.flock(lock_fd, fcntl.LOCK_UN)
         lock_fd.close()
 
+
 def run_daemon():
-    """Run the cron daemon as a foreground process."""
+    """Run the cron daemon as a foreground process.
+
+    On SIGTERM / SIGINT the daemon stops scheduling new work and lets any
+    in-flight job finish (grace period), then removes the pid file and exits —
+    so a restart never finds an un-claimed due job that was interrupted
+    mid-execution (H-06).
+    """
     CRON_DIR.mkdir(parents=True, exist_ok=True)
     PID_FILE.write_text(str(os.getpid()))
     print(f'Cron daemon started (PID {os.getpid()})')
 
+    stop = threading.Event()
+
     def handle_signal(signum, frame):
-        print(f'Received signal {signum}, shutting down')
-        PID_FILE.unlink(missing_ok=True)
-        sys.exit(0)
+        print(f'Received signal {signum}, shutting down gracefully')
+        stop.set()
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT, handle_signal)
 
     def handle_hup(signum, frame):
         print('Received SIGHUP, will reload jobs on next tick')
     signal.signal(signal.SIGHUP, handle_hup)
-    while True:
+
+    while not stop.is_set():
         tick()
-        time.sleep(60)
+        if stop.is_set():
+            break
+        # Interruptible sleep: a signal during the wait returns immediately.
+        stop.wait(timeout=60)
+
+    # Graceful exit: clean up the pid file.
+    try:
+        PID_FILE.unlink(missing_ok=True)
+    except OSError:
+        pass
+    print('Cron daemon stopped')
+
 if __name__ == '__main__':
     if len(sys.argv) > 1 and sys.argv[1] == 'start':
         run_daemon()
     else:
         tick()
         print('Single tick completed')
+
+
+# ── CRUD primitives (shared by the Web / MCP cron layers) ────────────────────
+#
+# These are the public mutation entry points for the cron store. The Web and MCP
+# servers call these instead of writing jobs.json (or evo.db) directly, so the
+# canonical store stays single-source (C-01) and every write is atomic+locked.
+
+def _merge_job_updates(updates: list[dict], fields: tuple[str, ...]) -> None:
+    """Merge per-job field updates onto the latest store and save.
+
+    Each ``updates`` entry is matched to the store by id (fallback: name) and
+    the listed ``fields`` are copied onto it. The save is atomic+locked and
+    happens once at the end, so concurrent Web/MCP CRUD performed while the
+    daemon is running a job is preserved instead of being clobbered by the
+    daemon's own save (C-01 single source of truth).
+    """
+    if not updates:
+        return
+    fresh = load_jobs()
+    for u in updates:
+        target = _resolve_job(fresh, u.get('id') or u.get('name') or '')
+        if target is None:
+            continue
+        for f in fields:
+            if f in u:
+                target[f] = u[f]
+    save_jobs(fresh)
+
+
+def _resolve_job(jobs: list[dict], job_id: str) -> dict | None:
+    """Find a job by id; fall back to name only when no job carries that id.
+
+    The id-first rule prevents a job whose *name* happens to equal another
+    job's *id* from being addressed ambiguously.
+    """
+    ids = {j.get('id') for j in jobs if j.get('id')}
+    for j in jobs:
+        if j.get('id') == job_id:
+            return j
+    if job_id not in ids:
+        for j in jobs:
+            if j.get('name') == job_id:
+                return j
+    return None
+
+
+def add_cron_job(job: dict) -> dict:
+    """Append a new cron job to the canonical store.
+
+    Assigns an ``id`` if missing, normalizes a plain-string ``schedule`` into
+    ``{'kind': 'cron', 'expr': ...}``, fills defaults, validates (``validate_job``)
+    and persists. Raises ``ValueError`` if the job is invalid (e.g. bad name,
+    bad type, no action/prompt). Returns the stored job dict.
+    """
+    import uuid
+    new = dict(job)
+    new.setdefault('id', uuid.uuid4().hex[:12])
+    if 'schedule' in new and isinstance(new['schedule'], str):
+        new['schedule'] = {'kind': 'cron', 'expr': new['schedule']}
+    new.setdefault('schedule', {'kind': 'cron', 'expr': '0 0 * * *'})
+    new.setdefault('prompt', new.get('action', ''))
+    new.setdefault('type', 'claude')
+    new.setdefault('enabled', True)
+    new.setdefault('last_run_at', None)
+    new.setdefault('next_run_at', None)
+    new.setdefault('last_error', None)
+    err = validate_job(new)
+    if err:
+        raise ValueError(err)
+    jobs = load_jobs()
+    jobs.append(new)
+    save_jobs(jobs)
+    return new
+
+
+def delete_cron_job(job_id: str) -> bool:
+    """Delete a cron job by id (fallback: name). Returns True if removed.
+
+    Shared by the Web ``DELETE /api/cron/jobs/{job_id}`` and MCP
+    ``cron_remove`` handlers.
+    """
+    jobs = load_jobs()
+    target = _resolve_job(jobs, job_id)
+    if target is None:
+        return False
+    kept = [j for j in jobs if j is not target]
+    save_jobs(kept)
+    return True
+
+
+def update_cron_job(job_id: str, **fields) -> dict | None:
+    """Update a cron job by id (fallback: name). Returns the updated job, or
+    None if not found.
+
+    Editable fields: ``name``, ``prompt``, ``action``, ``type``, ``enabled``,
+    ``timeout``, ``schedule``. When ``schedule`` is updated, ``next_run_at`` is
+    recomputed immediately from the new schedule (and the last run) so the
+    change takes effect without waiting for the daemon's next tick.
+    """
+    jobs = load_jobs()
+    target = _resolve_job(jobs, job_id)
+    if target is None:
+        return None
+    allowed = {'name', 'prompt', 'action', 'type', 'enabled', 'timeout', 'schedule'}
+    for k, v in fields.items():
+        if k not in allowed:
+            continue
+        if k == 'schedule' and isinstance(v, str):
+            v = {'kind': 'cron', 'expr': v}
+        target[k] = v
+    if 'schedule' in fields and fields.get('schedule') is not None:
+        target['next_run_at'] = compute_next_run(target.get('schedule', {}), target.get('last_run_at'))
+    save_jobs(jobs)
+    return dict(target)

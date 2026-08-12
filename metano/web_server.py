@@ -16,14 +16,18 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from .auth import authenticate_user, check_login_rate, record_login_attempt, set_auth_cookies, clear_auth_cookies, get_current_user_from_request, try_refresh_from_request, decode_token, change_password, AUTH_WHITELIST, ACCESS_TOKEN_EXPIRE_MINUTES, _audit, require_role, bump_token_version, create_ws_ticket, consume_ws_ticket, get_user_by_username, get_token_version, validate_access_token
 from .db import get_db, init_db, DB_PATH
 from .indexer import index_all
-from .paths import CRON_DIR, CRON_JOBS_FILE, CONFIG_PATH, EVO_LOG, AUDIT_LOG, EVO_DB_PATH, HONCHO_DB, KB_DB, MEMORY_DB, UPLOADS_DIR, home_dir
+from .paths import CONFIG_PATH, AUDIT_LOG, UPLOADS_DIR, home_dir
 from . import collab as collab
+from . import cron_daemon
 WEB_DIR = Path(__file__).parent.parent / 'web' / 'dist'
 SENSITIVE_KEYS = {'api_key', 'bot_token', 'app_secret', 'encryption_key', 'verification_token', 'token', 'secret', 'password', 'ha_token'}
 # gateway_config.yaml 中所有 SENSITIVE_KEYS 字段在 GET /api/config 返回时自动脱敏（***）
 # 文件受 METANO_HOME 目录文件系统权限保护
 app = FastAPI(title='metano')
-app.add_middleware(CORSMiddleware, allow_origins=['http://localhost:5173', 'http://localhost:9120'], allow_credentials=True, allow_methods=['*'], allow_headers=['*'])
+# SECURITY (M-11): drop the dev-port (localhost:5173) from CORS — it is a
+# development origin that must not be able to make credentialed cross-origin
+# requests against a live control plane.
+app.add_middleware(CORSMiddleware, allow_origins=['http://localhost:9120'], allow_credentials=True, allow_methods=['*'], allow_headers=['*'])
 
 class AuthMiddleware(BaseHTTPMiddleware):
 
@@ -31,19 +35,17 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
-        # CSRF protection: for mutating requests, verify Origin/Referer matches allowed origins
+        # CSRF protection: for mutating requests, verify Origin/Referer matches an
+        # allowed origin by EXACT host (M-02). A subdomain-suffix like
+        # ``http://localhost:9120.evil.com`` no longer bypasses: the parsed netloc
+        # must equal an allow-listed origin or the request's own Host header.
         if request.method in ('POST', 'PUT', 'DELETE', 'PATCH') and path.startswith('/api/'):
             origin = request.headers.get('origin', '')
             referer = request.headers.get('referer', '')
             source = origin or referer
             if source:
-                matched = any(allowed in source for allowed in self.ALLOWED_ORIGINS)
-                # Also allow same-host access (Origin matches request host)
-                if not matched:
-                    host = request.headers.get('host', '')
-                    if host and host in source:
-                        matched = True
-                if not matched:
+                host = request.headers.get('host', '')
+                if not _origin_allowed(source, host):
                     return JSONResponse(status_code=403, content={'detail': 'CSRF: Origin not allowed'})
             # If no origin/referer, rely on SameSite=Lax cookie + HttpOnly (browser sends on same-site)
         if path in AUTH_WHITELIST or path.startswith('/assets') or path == '/favicon.ico':
@@ -63,6 +65,28 @@ class AuthMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 from metano.log import logger
 app.add_middleware(AuthMiddleware)
+
+
+def _origin_allowed(source: str, host: str) -> bool:
+    """Exact-match CSRF Origin/Referer check (M-02).
+
+    Returns True only when ``source``'s parsed netloc exactly equals one of the
+    allow-listed origins (``AuthMiddleware.ALLOWED_ORIGINS``) or the request's
+    own Host header (same-host access). Substring / suffix tricks such as
+    ``http://localhost:9120.evil.com`` are rejected because the comparison is on
+    the full netloc, never a substring. The same check backs the WebSocket
+    handshake, keeping HTTP and WS Origin enforcement consistent.
+    """
+    if not source:
+        return False
+    try:
+        netloc = urlparse(source).netloc
+    except ValueError:
+        return False
+    if not netloc:
+        return False
+    allowed = {urlparse(o).netloc for o in AuthMiddleware.ALLOWED_ORIGINS}
+    return netloc in allowed or netloc == host
 
 @app.post('/api/auth/login')
 async def auth_login(request: Request, response: Response):
@@ -95,6 +119,10 @@ async def auth_refresh(request: Request, response: Response):
         raise HTTPException(status_code=401, detail='请重新登录')
     if payload.get('tv', 0) != get_token_version(payload['sub']):
         raise HTTPException(status_code=401, detail='登录已失效，请重新登录')
+    # SECURITY (M-01): bump token_version so the just-used refresh token is
+    # revoked immediately (anti-replay). set_auth_cookies reads the fresh
+    # version, so the newly issued pair stays valid under the new tv.
+    bump_token_version(user['username'])
     return set_auth_cookies(response, user['username'], user['role'])
 
 @app.post('/api/auth/logout')
@@ -231,42 +259,25 @@ def _normalize_cron_job(j: dict, idx: int) -> dict:
     return j
 
 def _load_cron_jobs() -> list[dict]:
+    """Load jobs from the canonical store (``cron/jobs.json``).
+
+    F-01: jobs.json is the single source of truth. The web panel reads through
+    ``cron_daemon.load_jobs()`` — the same loader the daemon tick uses — instead
+    of the evo.db ``cron_jobs`` table, so web CRUD affects the jobs the daemon
+    actually executes. A light normalization adds display defaults and stable
+    ids for jobs that lack them.
+    """
     try:
-        from .evo_models import get_cron_jobs, init_db as init_evo_db
-        init_evo_db()
-        return get_cron_jobs()
+        jobs = cron_daemon.load_jobs()
     except Exception:
-        CRON_DIR.mkdir(parents=True, exist_ok=True)
-        if CRON_JOBS_FILE.exists():
-            data = json.loads(CRON_JOBS_FILE.read_text())
-            if isinstance(data, dict):
-                data = data.get('jobs', [])
-            return [_normalize_cron_job(j, i) for i, j in enumerate(data)]
+        logger.exception('cron: failed to load jobs.json')
         return []
+    return [_normalize_cron_job(dict(j), i) for i, j in enumerate(jobs)]
+
 
 def _save_cron_jobs(jobs: list[dict]):
-    try:
-        from .evo_models import init_db as init_evo_db, _get_conn
-        init_evo_db()
-        conn = _get_conn()
-        conn.execute("DELETE FROM cron_jobs")
-        for j in jobs:
-            schedule = j.get('schedule', {})
-            kind = schedule.get('kind', 'cron') if isinstance(schedule, dict) else 'cron'
-            expr = schedule.get('expr', '0 0 * * *') if isinstance(schedule, dict) else str(schedule)
-            conn.execute(
-                "INSERT INTO cron_jobs (id, name, action, schedule_kind, schedule_expr, "
-                "enabled, prompt, last_run_at, next_run_at, last_error) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (j.get('id', ''), j.get('name', ''), j.get('action', ''), kind, expr,
-                 1 if j.get('enabled', True) else 0, j.get('prompt', ''),
-                 j.get('last_run_at'), j.get('next_run_at'), j.get('last_error'))
-            )
-        conn.commit()
-        conn.close()
-    except Exception:
-        CRON_DIR.mkdir(parents=True, exist_ok=True)
-        CRON_JOBS_FILE.write_text(json.dumps(jobs, ensure_ascii=False, indent=2))
+    """Persist jobs to the canonical store (``cron/jobs.json``) via cron_daemon."""
+    cron_daemon.save_jobs(jobs)
 
 @app.get('/health')
 def health_check():
@@ -708,11 +719,42 @@ async def api_proposals_apply_approved(_admin=Depends(require_role("admin"))):
 # ── Self-modification (self-bootstrap) ──────────────────────────────────
 
 @app.get('/api/self-modify/events')
-async def api_self_modify_events(limit: int = 50, _admin=Depends(require_role("admin"))):
-    """List recorded self-modification mutations (the mutation log)."""
+async def api_self_modify_events(status: str = None, limit: int = 50, _admin=Depends(require_role("admin"))):
+    """List recorded self-modification mutations (the mutation log).
+
+    ``status`` optionally filters to a single state (e.g. ``pending_approval``
+    powers the approval page). Pass ``status=pending_approval`` to list only
+    mutations awaiting human review.
+    """
     try:
         from .evo_models import get_self_modify_events
-        return {'items': get_self_modify_events(limit=limit)}
+        return {'items': get_self_modify_events(limit=limit, status=status)}
+    except Exception:
+        logger.exception()
+        return _error_response('Internal error')
+
+
+@app.post('/api/self-modify/approve/{event_id}')
+async def api_self_modify_approve(event_id: int, _admin=Depends(require_role("admin"))):
+    """Approve a pending self-modification candidate (applies it).
+
+    C2: the approval gate previously had no HTTP entry point — this exposes
+    ``self_modify.approve_mutation(event_id, approved=True)`` to the admin UI.
+    """
+    try:
+        from .self_modify import approve_mutation
+        return approve_mutation(event_id, approved=True)
+    except Exception:
+        logger.exception()
+        return _error_response('Internal error')
+
+
+@app.post('/api/self-modify/reject/{event_id}')
+async def api_self_modify_reject(event_id: int, _admin=Depends(require_role("admin"))):
+    """Reject a pending self-modification candidate (marks it rejected)."""
+    try:
+        from .self_modify import approve_mutation
+        return approve_mutation(event_id, approved=False)
     except Exception:
         logger.exception()
         return _error_response('Internal error')
@@ -1193,13 +1235,25 @@ async def api_evolution_run(body: dict, _admin=Depends(require_role("admin"))):
 
 @app.post('/api/cron/jobs/{job_id}/trigger')
 async def api_cron_trigger(job_id: str, _admin=Depends(require_role("admin"))):
+    """Manually run a cron job now, returning its real execution result.
+
+    F-01/C4: the old handler only touched ``last_run_at`` without executing.
+    ``cron_daemon.run_job`` is the single execution path shared with the daemon
+    tick, so a triggered job behaves exactly like a scheduled one (output file,
+    process-group timeout, concurrency cap). Registered action jobs are enabled
+    for the web process, which never runs the daemon tick.
+    """
     jobs = _load_cron_jobs()
-    for j in jobs:
-        if j['id'] == job_id:
-            j['last_run_at'] = time.strftime('%Y-%m-%dT%H:%M:%SZ')
-            j['last_error'] = None
-    _save_cron_jobs(jobs)
-    return {'triggered': job_id}
+    target = next((j for j in jobs if j['id'] == job_id), None)
+    if not target:
+        return _error_response('Job not found', status_code=404)
+    try:
+        cron_daemon._register_default_actions()
+    except Exception:
+        logger.exception('cron: failed to register default actions')
+    result = await asyncio.to_thread(cron_daemon.run_job, target)
+    _save_cron_jobs(jobs)  # run_job updated last_run_at/last_error in place
+    return {'triggered': job_id, 'result': result}
 
 @app.put('/api/models/{name}/default')
 async def api_model_set_default(name: str, _admin=Depends(require_role("admin"))):
@@ -1262,7 +1316,7 @@ async def api_browser_search(body: dict, _admin=Depends(require_role("admin"))):
         return _error_response('Internal error')
 
 @app.get('/api/voice/file')
-async def get_voice_file(path: str):
+async def get_voice_file(path: str, _user=Depends(require_role("user"))):
     import os
     from .voice.core import AUDIO_DIR
     voice_dir = os.environ.get('VOICE_OUTPUT_DIR', str(AUDIO_DIR))
@@ -1284,7 +1338,7 @@ async def api_voice_tts(body: dict, _admin=Depends(require_role("admin"))):
         return _error_response('Internal error')
 
 @app.get('/api/voice/voices')
-async def api_voice_voices(language: str=''):
+async def api_voice_voices(language: str='', _user=Depends(require_role("user"))):
     try:
         from .voice import voice_list_voices
         return voice_list_voices(language)
@@ -1409,7 +1463,10 @@ async def api_collab_execute_task(task_id: str, body: dict={}, _admin=Depends(re
     except (TypeError, ValueError):
         timeout = 120
     try:
-        result = collab.execute_task(task_id, timeout=timeout)
+        # F-18/M-06: the sync implementation blocks on a subprocess/HTTP call;
+        # running it via execute_task_async (asyncio.to_thread) keeps the Web
+        # event loop responsive for other page requests.
+        result = await collab.execute_task_async(task_id, timeout=timeout)
     except Exception:
         logger.exception()
         return _error_response('Internal error')
@@ -1436,11 +1493,13 @@ MAX_WS_FIRST_MSG_WAIT = 10  # seconds (M-06: handshake timeout)
 
 @app.websocket('/ws')
 async def ws_endpoint(ws: WebSocket):
-    # M-06: Origin check — reject cross-site WebSocket hijacking.
+    # M-06: Origin check — reject cross-site WebSocket hijacking. Uses the same
+    # exact-netloc check as the HTTP CSRF middleware (M-02) so a subdomain
+    # suffix like ``localhost:9120.evil.com`` can't pass either path.
     origin = ws.headers.get('origin', '')
     host = ws.headers.get('host', '')
     if origin:
-        if not (origin in AuthMiddleware.ALLOWED_ORIGINS or (host and host in origin)):
+        if not _origin_allowed(origin, host):
             try:
                 await ws.close(code=4403)
             except Exception:
@@ -2145,8 +2204,21 @@ if _a2a_ready:
 
 
 @app.get('/.well-known/agent-card.json')
-async def a2a_agent_card():
-    """A2A discovery card at the RFC 8615 well-known path (public, no login)."""
+async def a2a_agent_card(request: Request):
+    """A2A discovery card at the RFC 8615 well-known path.
+
+    SECURITY (C10): this web-root copy is admin-only — it exposes the A2A
+    security scheme (bearer JWT) and the capability surface, so it is no longer
+    served to unauthenticated callers. Real A2A clients that need public
+    discovery use the mounted A2A app's own ``/a2a/.well-known/agent-card.json``
+    (which stays public for the protocol); this duplicate is fetched on demand
+    by an authenticated operator.
+    """
+    user = get_current_user_from_request(request)
+    if not user:
+        return JSONResponse(status_code=401, content={'detail': '未登录'})
+    if user.get('role') != 'admin':
+        return JSONResponse(status_code=403, content={'detail': 'Forbidden'})
     return JSONResponse(content=_a2a_build_agent_card())
 
 
