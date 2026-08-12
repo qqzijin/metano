@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Markdown } from "@/components/Markdown";
 import { useKnowledge, useKnowledgeSearch, useKnowledgeSemanticSearch, useKnowledgeIngest, useKnowledgeDelete } from "@/api/hooks";
 import { fmtTime } from "@/api/client";
 import { toast } from "sonner";
@@ -15,7 +16,7 @@ export default function KnowledgePage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [ingestPath, setIngestPath] = useState("");
   const [showSearch, setShowSearch] = useState(false);
-  const [viewDoc, setViewDoc] = useState<{ title: string; content: string } | null>(null);
+  const [viewDoc, setViewDoc] = useState<{ title: string; content: string; doc_type?: string } | null>(null);
   const [viewLoading, setViewLoading] = useState(false);
   const { data, isLoading, isError } = useKnowledge();
   const searchMut = useKnowledgeSearch();
@@ -34,7 +35,7 @@ export default function KnowledgePage() {
       if (res.status === 401) { window.dispatchEvent(new Event("auth:unauthorized")); return; }
       const d = await res.json();
       if (d.error) { toast.error(d.error?.message || "加载失败"); return; }
-      setViewDoc({ title: d.title || title, content: d.content || "(无内容)" });
+      setViewDoc({ title: d.title || title, content: d.content || "(无内容)", doc_type: d.doc_type });
     } catch {
       toast.error("加载文档内容失败");
     } finally {
@@ -221,9 +222,15 @@ export default function KnowledgePage() {
               <Loader2 className="size-4 animate-spin" /> 加载文档内容…
             </div>
           ) : viewDoc ? (
-            <div className="overflow-y-auto text-sm whitespace-pre-wrap break-words">
-              {viewDoc.content}
-            </div>
+            viewDoc.doc_type === "markdown" ? (
+              <div className="overflow-y-auto text-sm">
+                <Markdown>{viewDoc.content}</Markdown>
+              </div>
+            ) : (
+              <div className="overflow-y-auto text-sm whitespace-pre-wrap break-words">
+                {viewDoc.content}
+              </div>
+            )
           ) : null}
         </DialogContent>
       </Dialog>

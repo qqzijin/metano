@@ -498,6 +498,32 @@ async def api_skill_detail(name: str):
         return _error_response('Not found', status_code=404)
     return {'name': rec.name, 'description': rec.description, 'trigger': rec.trigger, 'category': rec.category, 'content': rec.body, 'source': rec.source}
 
+@app.put('/api/skills/{name}')
+async def api_skill_update(name: str, body: dict, _admin=Depends(require_role("admin"))):
+    """Edit a skill's content (SkillManager.edit, which protects pinned/bundled)."""
+    try:
+        from .skills.manager import SkillManager
+        result = SkillManager().edit(name, body.get('content', ''))
+        if 'error' in result:
+            return _error_response(result['error'], status_code=400)
+        return result
+    except Exception as e:
+        logger.exception()
+        return _error_response('Internal error')
+
+@app.delete('/api/skills/{name}')
+async def api_skill_delete(name: str, _admin=Depends(require_role("admin"))):
+    """Delete a skill (protected skills are refused by the manager)."""
+    try:
+        from .skills.manager import SkillManager
+        result = SkillManager().delete(name)
+        if 'error' in result:
+            return _error_response(result['error'], status_code=400)
+        return result
+    except Exception as e:
+        logger.exception()
+        return _error_response('Internal error')
+
 @app.get('/api/knowledge')
 async def api_knowledge():
     try:

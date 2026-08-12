@@ -442,7 +442,7 @@ def knowledge_ingest(path: str, title: str = "", doc_type: str = "auto") -> dict
     if doc_type == "auto":
         ext = p.suffix.lower()
         type_map = {".md": "markdown", ".py": "code", ".js": "code", ".json": "json",
-                    ".yaml": "code", ".yml": "code", ".csv": "csv", ".txt": "text"}
+                    ".yaml": "code", ".yml": "code", ".csv": "csv", ".txt": "markdown"}
         doc_type = type_map.get(ext, "text")
 
     # Generate doc ID

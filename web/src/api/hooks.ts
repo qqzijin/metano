@@ -139,6 +139,29 @@ export function useSkillUsage(days = 30) {
   });
 }
 
+export function useSkillUpdate() {
+  const qc = useQueryClient();
+  return useMutation<{ status: string }, Error, { name: string; content: string }>({
+    mutationFn: ({ name, content }) =>
+      fetchAPI(`/skills/${encodeURIComponent(name)}`, { method: "PUT", body: JSON.stringify({ content }) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["skills"] });
+      qc.invalidateQueries({ queryKey: ["skill"] });
+    },
+  });
+}
+
+export function useSkillDelete() {
+  const qc = useQueryClient();
+  return useMutation<{ status: string }, Error, string>({
+    mutationFn: (name) => fetchAPI(`/skills/${encodeURIComponent(name)}`, { method: "DELETE" }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["skills"] });
+      qc.invalidateQueries({ queryKey: ["skill"] });
+    },
+  });
+}
+
 export function useKnowledge() {
   return useQuery<{ documents: KnowledgeDoc[] }>({
     queryKey: qk.knowledge,

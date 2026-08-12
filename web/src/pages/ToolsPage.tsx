@@ -1,15 +1,16 @@
 import { useState } from "react";
-import { Zap, Wrench, Search, Globe, Flame, Snowflake } from "lucide-react";
+import { Zap, Wrench, Search, Globe, Flame, Snowflake, Pencil, Trash2 } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { useSkills, useSkill, useSkillUsage, useMcpTools, useWebSearch } from "@/api/hooks";
+import { useSkills, useSkill, useSkillUsage, useSkillUpdate, useSkillDelete, useMcpTools, useWebSearch } from "@/api/hooks";
 import { toast } from "sonner";
 
 /**
@@ -35,9 +36,13 @@ export default function ToolsPage() {
 function SkillsView() {
   const [category, setCategory] = useState("");
   const [detailName, setDetailName] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [editContent, setEditContent] = useState("");
   const { data, isLoading, isError } = useSkills();
   const { data: detail } = useSkill(detailName ?? "");
   const { data: usage } = useSkillUsage(30);
+  const updateMut = useSkillUpdate();
+  const deleteMut = useSkillDelete();
 
   const skills = data?.skills ?? [];
   const categories = [...new Set(skills.map((s) => s.category).filter(Boolean))];
@@ -115,7 +120,7 @@ function SkillsView() {
         </div>
       )}
 
-      <Dialog open={!!detailName} onOpenChange={() => setDetailName(null)}>
+      <Dialog open={!!detailName} onOpenChange={() => { setDetailName(null); setEditing(false); }}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle>{detail?.name}</DialogTitle>
@@ -125,9 +130,50 @@ function SkillsView() {
               <div className="flex gap-2 flex-wrap">
                 <Badge variant="secondary">{detail.trigger}</Badge>
                 <Badge variant="outline">{detail.category}</Badge>
+                {detail.source && <Badge variant="outline">{detail.source}</Badge>}
               </div>
-              <p className="text-sm text-muted-foreground break-words">{detail.description}</p>
-              <pre className="text-xs bg-muted p-3 rounded-md overflow-auto max-h-72 whitespace-pre-wrap break-words">{detail.content}</pre>
+              {editing ? (
+                <>
+                  <Textarea
+                    value={editContent}
+                    onChange={(e) => setEditContent(e.target.value)}
+                    spellCheck={false}
+                    className="font-mono text-xs min-h-[220px] max-h-72 resize-y"
+                  />
+                  <div className="flex justify-end gap-2">
+                    <Button size="sm" variant="outline" onClick={() => setEditing(false)}>取消</Button>
+                    <Button size="sm" disabled={updateMut.isPending} onClick={async () => {
+                      try {
+                        await updateMut.mutateAsync({ name: detail.name, content: editContent });
+                        toast.success("技能已更新");
+                        setEditing(false);
+                      } catch { toast.error("更新失败（内置技能可能受保护）"); }
+                    }}>
+                      {updateMut.isPending ? "保存中..." : "保存"}
+                    </Button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <p className="text-sm text-muted-foreground break-words">{detail.description}</p>
+                  <pre className="text-xs bg-muted p-3 rounded-md overflow-auto max-h-60 whitespace-pre-wrap break-words">{detail.content}</pre>
+                  <div className="flex justify-end gap-2 pt-1">
+                    <Button size="sm" variant="outline" onClick={() => { setEditContent(detail.content); setEditing(true); }}>
+                      <Pencil className="size-3.5 mr-1" /> 编辑
+                    </Button>
+                    <Button size="sm" variant="destructive" disabled={deleteMut.isPending} onClick={async () => {
+                      if (!window.confirm(`确定删除技能「${detail.name}」？内置技能无法删除。`)) return;
+                      try {
+                        await deleteMut.mutateAsync(detail.name);
+                        toast.success("技能已删除");
+                        setDetailName(null);
+                      } catch { toast.error("删除失败（内置技能受保护）"); }
+                    }}>
+                      <Trash2 className="size-3.5 mr-1" /> 删除
+                    </Button>
+                  </div>
+                </>
+              )}
             </div>
           )}
         </DialogContent>
