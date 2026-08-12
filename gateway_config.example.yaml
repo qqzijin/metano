@@ -58,6 +58,10 @@ session:
   max_history_messages: 50
   max_idle_minutes: 30
 
+# 经验闭环（M8：默认关闭，开启后记录路由事件并让 bandit/experience 学习）
+experience:
+  enabled: true
+
 # 智能家居（可选）
 home_assistant:
   url: "http://homeassistant.local:8123"
