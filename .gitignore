@@ -50,3 +50,5 @@ agents/
 Thumbs.db
 *.pid
 web/dist.old*/
+# CocoIndex Code (ccc)
+/.cocoindex_code/
