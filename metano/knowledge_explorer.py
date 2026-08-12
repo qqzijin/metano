@@ -439,8 +439,9 @@ def sink_evolution_knowledge(user_id: str = 'default') -> dict:
         content = '# 进化系统学到的知识\n\n' + '\n\n'.join(sections) + '\n'
         # knowledge_ingest takes a file path (validated against allowed dirs);
         # write a temp artifact under EXPLORATION_DIR then ingest it.
-        import time as _t
-        out = EXPLORATION_DIR / f'evolution_sink_{int(_t.time())}.md'
+        # 固定文件名（非时间戳）→ doc_id 稳定 → 同 title 文档被 upsert 覆盖，
+        # 避免每次 sink 都生成一份新的"进化系统学习沉淀"累积重复。
+        out = EXPLORATION_DIR / 'evolution_sink.md'
         out.write_text(content, encoding='utf-8')
         result = knowledge_ingest(str(out), title='进化系统学习沉淀', doc_type='markdown')
         # 综合成功动作序列为可复用知识模式规则(knowledge_pattern)。此前
