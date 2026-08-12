@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 import yaml
 
 from .telegram import TelegramBot
@@ -144,6 +145,7 @@ async def run_gateway():
 
 
 def main():
+    os.umask(0o077)
     asyncio.run(run_gateway())
 
 

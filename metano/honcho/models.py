@@ -89,6 +89,7 @@ def _ensure_schema(conn: sqlite3.Connection):
 def get_honcho_db() -> sqlite3.Connection:
     HONCHO_DB.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(HONCHO_DB), check_same_thread=False)
+    conn.execute("PRAGMA busy_timeout=5000")
     conn.execute("PRAGMA journal_mode=WAL")
     conn.row_factory = sqlite3.Row
     # F-03: guarantee the schema exists on every open so first-run entry points

@@ -154,6 +154,7 @@ CREATE INDEX IF NOT EXISTS idx_skill_usage_time ON skill_usage(used_at);
 def _get_conn() -> sqlite3.Connection:
     EVO_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(EVO_DB_PATH))
+    conn.execute("PRAGMA busy_timeout=5000")
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     return conn

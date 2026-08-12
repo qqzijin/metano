@@ -14,6 +14,7 @@ DEFAULT_COLUMNS = ["backlog", "todo", "in-progress", "review", "done"]
 def _get_conn() -> sqlite3.Connection:
     KANBAN_DIR.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(KANBAN_DB))
+    conn.execute("PRAGMA busy_timeout=5000")
     conn.row_factory = sqlite3.Row
     conn.execute("""
         CREATE TABLE IF NOT EXISTS boards (

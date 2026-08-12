@@ -453,6 +453,7 @@ def run_daemon():
     so a restart never finds an un-claimed due job that was interrupted
     mid-execution (H-06).
     """
+    os.umask(0o077)
     CRON_DIR.mkdir(parents=True, exist_ok=True)
     PID_FILE.write_text(str(os.getpid()))
     print(f'Cron daemon started (PID {os.getpid()})')
