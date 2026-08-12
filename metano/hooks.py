@@ -34,7 +34,10 @@ def handle_user_prompt():
         data = json.loads(sys.stdin.read())
     except (json.JSONDecodeError, EOFError):
         return
-    message = data.get('message', '')
+    # F-5 root cause: Claude Code's UserPromptSubmit input uses the ``prompt``
+    # field (not ``message``), so reading only ``message`` always returned ''
+    # and intent memories were never written. Accept both for compatibility.
+    message = data.get('message') or data.get('prompt') or ''
     if not message or len(message) < 10:
         return
     from .memory import add_memory
