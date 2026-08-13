@@ -176,6 +176,13 @@ def compute_next_run(schedule, last_run_at: str | None) -> str | None:
     - {"kind": "cron", "expr": "0 */6 * * *"} (structured)
     - {"kind": "interval", "expr": "30"} (minutes)
     - "0 */6 * * *" (plain cron string)
+
+    Interval schedules align to wall-clock slot boundaries (e.g. :00/:30 for a
+    30-min interval) based on the current time, not ``last_run_at``. This keeps
+    the schedule from drifting and guarantees ``next_run_at`` is always in the
+    future — a job that finishes *after* its slot can never land the next run
+    back in the past and re-trigger the same slot (P0-3 double-trigger
+    regression).
     """
     if isinstance(schedule, str):
         schedule = {'kind': 'cron', 'expr': schedule}
@@ -183,11 +190,9 @@ def compute_next_run(schedule, last_run_at: str | None) -> str | None:
     expr = schedule.get('expr', '')
     if kind == 'interval':
         minutes = int(expr)
-        if last_run_at:
-            last = datetime.fromisoformat(last_run_at.replace('Z', '+00:00'))
-            next_time = last.timestamp() + minutes * 60
-        else:
-            next_time = time.time() + minutes * 60
+        interval = max(1, minutes) * 60
+        now = time.time()
+        next_time = (int(now) // interval) * interval + interval
         return datetime.fromtimestamp(next_time, tz=timezone.utc).isoformat()
     if kind == 'cron':
         try:

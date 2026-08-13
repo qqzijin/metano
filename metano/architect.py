@@ -202,7 +202,11 @@ def _apply_cron_change(description: str) -> dict:
         desc_lower = description.lower()
         if any((kw in job_id for kw in desc_lower.split())):
             job['enabled'] = 'disable' not in desc_lower
-            CRON_FILE.write_text(json.dumps(jobs, ensure_ascii=False, indent=2))
+            # Persist through the atomic, flock-serialized store writer instead
+            # of a raw write_text so a concurrent daemon/Web/MCP write can never
+            # tear jobs.json (P1-3).
+            from .cron_daemon import save_jobs
+            save_jobs(jobs)
             return {'status': 'toggled', 'job_id': job_id}
     return {'status': 'no_matching_job'}
 

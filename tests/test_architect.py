@@ -69,15 +69,21 @@ def test_propose_restructure_skips_low_severity():
 
 
 def test_apply_cron_change(tmp_path, monkeypatch):
-    monkeypatch.setattr("metano.architect.CRON_FILE", tmp_path / "jobs.json")
+    # Since the fix, persistence goes through cron_daemon.save_jobs (the atomic,
+    # flock-serialized store owner) — point both the read path (CRON_FILE) and
+    # the write path (cron_daemon.JOBS_FILE) at the same file (P1-3).
+    cron_file = tmp_path / "jobs.json"
+    monkeypatch.setattr("metano.architect.CRON_FILE", cron_file)
+    monkeypatch.setattr("metano.cron_daemon.CRON_DIR", tmp_path)
+    monkeypatch.setattr("metano.cron_daemon.JOBS_FILE", cron_file)
     jobs = [{"id": "test_job", "name": "test", "enabled": True}]
-    (tmp_path / "jobs.json").write_text(json.dumps(jobs))
+    cron_file.write_text(json.dumps(jobs))
 
     from metano.architect import _apply_cron_change
     r = _apply_cron_change("disable test_job because it's failing")
     assert r["status"] == "toggled"
 
-    reloaded = json.loads((tmp_path / "jobs.json").read_text())
+    reloaded = json.loads(cron_file.read_text())
     assert reloaded[0]["enabled"] is False
 
 

@@ -160,3 +160,38 @@ def test_purge_deletes_lone_old_session():
     ids = [r[0] for r in conn.execute('SELECT id FROM sessions').fetchall()]
     conn.close()
     assert ids == []
+
+
+# ── redact_sensitive (audit N2: message write path must not store secrets) ──
+
+def test_redact_sensitive_patterns():
+    r = metano_db.redact_sensitive
+    assert r('app_secret=[REDACTED]') == 'app_secret=[REDACTED]'
+    assert r('ANTHROPIC_API_KEY=sk-mWbiLOPVabcdef123456') == 'ANTHROPIC_API_KEY=[REDACTED]'
+    assert r('"api_key": "sk-abc123def456"') == '"api_key": "[REDACTED]"'
+    assert r("Client.builder().app_secret('3Y3fHqN7cFbwO4cP5dWfGdEeFbAaBbCc')") == \
+        "Client.builder().app_secret('[REDACTED]')"
+    assert '[REDACTED]' in r('Bearer eyJhbGciOiJIUzI1NiJ9.payload.signature')
+    assert '[REDACTED]' in r('eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.xYsV3A9qK0ZPxTk9xL8v')
+    # Numeric-only "token: 10" (LLM count) and ordinary prose stay untouched.
+    assert r('token: 10') == 'token: 10'
+    assert r('the token count is normal prose here') == 'the token count is normal prose here'
+    assert r('sk-artist hello world') == 'sk-artist hello world'
+    assert r(None) is None
+    assert r('') == ''
+
+
+def test_persist_exchange_redacts_secrets():
+    sid, persisted = metano_db.persist_exchange(
+        '', 'web:alice', 'web',
+        'please set app_secret=[REDACTED]',
+        'ok ANTHROPIC_API_KEY=sk-mWbiLOPVabcdef123456 now',
+        model='m1')
+    assert persisted is True
+    conn = metano_db.get_db()
+    rows = conn.execute(
+        'SELECT role, content FROM messages WHERE session_id=? ORDER BY timestamp', (sid,)).fetchall()
+    conn.close()
+    contents = {r['role']: r['content'] for r in rows}
+    assert contents['user'] == 'please set app_secret=[REDACTED]'
+    assert contents['assistant'] == 'ok ANTHROPIC_API_KEY=[REDACTED] now'

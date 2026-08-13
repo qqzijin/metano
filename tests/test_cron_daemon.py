@@ -9,10 +9,11 @@ def test_compute_next_run_interval():
     from metano.cron_daemon import compute_next_run
     r = compute_next_run({"kind": "interval", "expr": "30"}, None)
     assert r is not None
-    # Should be ~30 min from now
+    # Aligned to the next :00/:30 boundary: strictly in the future, within one
+    # interval of now (regardless of where in the slot we are).
     import datetime
     ts = datetime.datetime.fromisoformat(r).timestamp()
-    assert ts > time.time() + 20 * 60
+    assert time.time() < ts <= time.time() + 30 * 60
 
 
 def test_compute_next_run_interval_with_last():
@@ -22,7 +23,34 @@ def test_compute_next_run_interval_with_last():
     r = compute_next_run({"kind": "interval", "expr": "10"}, last)
     assert r is not None
     ts = datetime.fromisoformat(r).timestamp()
-    assert ts > time.time() + 5 * 60
+    assert time.time() < ts <= time.time() + 10 * 60
+
+
+def test_interval_ignores_last_run_at():
+    """Interval schedules align to wall-clock slots, so last_run_at (a stale
+    finish time) must not shift the next run — that shift is what caused the
+    P0-3 double-trigger (a late-finishing job kept next_run_at in the past)."""
+    from metano.cron_daemon import compute_next_run
+    from datetime import datetime, timezone
+    old_last = datetime(2020, 1, 1, tzinfo=timezone.utc).isoformat()
+    recent_last = datetime.now(timezone.utc).isoformat()
+    r1 = compute_next_run({"kind": "interval", "expr": "30"}, old_last)
+    r2 = compute_next_run({"kind": "interval", "expr": "30"}, recent_last)
+    assert r1 == r2
+
+
+def test_interval_next_run_always_future_after_late_finish():
+    """P0-3 regression: after a job finishes late, the next slot must still be
+    in the future so the daemon cannot re-run the same slot on the next tick."""
+    from metano.cron_daemon import compute_next_run
+    from datetime import datetime, timezone
+    # Previous run finished 35 min ago on a 30-min interval — under the old
+    # logic next_run = last_run + interval would be 5 min in the past.
+    late_last = datetime.fromtimestamp(
+        time.time() - 35 * 60, tz=timezone.utc).isoformat()
+    r = compute_next_run({"kind": "interval", "expr": "30"}, late_last)
+    ts = datetime.fromisoformat(r.replace('Z', '+00:00')).timestamp()
+    assert ts > time.time(), "next_run must be strictly in the future"
 
 
 def test_compute_next_run_cron():
@@ -94,6 +122,44 @@ def test_load_jobs_dict_format(tmp_path, monkeypatch):
     assert len(jobs) == 1
 
 
+def test_save_jobs_concurrent_no_torn_writes(tmp_path, monkeypatch):
+    """P1-3 acceptance: concurrent writers through save_jobs (the unified,
+    atomic store path) never leave a torn jobs.json — every read parses to a
+    complete, valid list."""
+    monkeypatch.setattr("metano.cron_daemon.CRON_DIR", tmp_path)
+    monkeypatch.setattr("metano.cron_daemon.JOBS_FILE", tmp_path / "jobs.json")
+    from metano.cron_daemon import save_jobs, load_jobs
+    import threading
+
+    payloads = [[{"id": f"j{i}", "name": f"job{i}", "enabled": True}] for i in range(20)]
+    errors = []
+
+    def writer(p):
+        for _ in range(40):
+            try:
+                save_jobs(p)
+            except Exception as e:  # noqa: BLE001
+                errors.append(e)
+
+    def reader():
+        for _ in range(200):
+            try:
+                got = load_jobs()
+                assert isinstance(got, list)
+            except Exception as e:  # noqa: BLE001
+                errors.append(e)
+
+    threads = [threading.Thread(target=writer, args=(p,)) for p in payloads]
+    threads.append(threading.Thread(target=reader))
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors
+    # Final file is exactly one complete payload, never a torn mix.
+    assert load_jobs() in payloads
+
+
 def test_save_then_load(tmp_path, monkeypatch):
     monkeypatch.setattr("metano.cron_daemon.CRON_DIR", tmp_path)
     monkeypatch.setattr("metano.cron_daemon.JOBS_FILE", tmp_path / "jobs.json")
@@ -104,6 +170,57 @@ def test_save_then_load(tmp_path, monkeypatch):
     loaded = load_jobs()
     assert len(loaded) == 1
     assert loaded[0]["name"] == "test"
+
+
+def test_tick_no_double_trigger_after_late_finish(tmp_path, monkeypatch):
+    """P0-3 regression: a 30-min interval job that runs for 3 minutes must
+    execute exactly once per wall-clock slot. Under the old logic (next_run =
+    last_run + interval) the late finish left next_run_at in the past, so the
+    very next tick re-ran the same slot — observed as the 2-3-min-apart pairs
+    in cron/output/harvest/."""
+    from datetime import datetime, timezone
+    from metano import cron_daemon
+
+    monkeypatch.setattr(cron_daemon, "CRON_DIR", tmp_path / "cron")
+    monkeypatch.setattr(cron_daemon, "JOBS_FILE", tmp_path / "cron" / "jobs.json")
+    monkeypatch.setattr(cron_daemon, "LOCK_FILE", tmp_path / "cron" / "tick.lock")
+    monkeypatch.setattr(cron_daemon, "OUTPUT_DIR", tmp_path / "cron" / "output")
+
+    clock = [datetime(2026, 8, 13, 17, 50, 0, tzinfo=timezone.utc).timestamp()]
+    monkeypatch.setattr("time.time", lambda: clock[0])
+
+    runs = []
+
+    def fake_run_job(job, timeout=None):
+        runs.append(datetime.fromtimestamp(clock[0], tz=timezone.utc).strftime("%H:%M"))
+        clock[0] += 180  # a 3-minute job finishes 180s after its slot start
+        job["last_run_at"] = datetime.fromtimestamp(clock[0], tz=timezone.utc).isoformat()
+        return {"status": "ok", "output": "ok", "error": None}
+
+    monkeypatch.setattr(cron_daemon, "run_job", fake_run_job)
+
+    job = {
+        "id": "h1", "name": "harvest",
+        "action": "evolution.harvest", "enabled": True,
+        "schedule": {"kind": "interval", "expr": "30"},
+        "next_run_at": datetime.fromtimestamp(clock[0], tz=timezone.utc).isoformat(),
+        "last_run_at": datetime(2026, 8, 13, 17, 20, 0, tzinfo=timezone.utc).isoformat(),
+    }
+    cron_daemon.save_jobs([job])
+
+    # Slot 17:50 due → runs once, claims next slot (18:00).
+    cron_daemon.tick()
+    assert runs == ["17:50"]
+    # Next tick right after the late finish: same slot must NOT re-run.
+    cron_daemon.tick()
+    assert runs == ["17:50"]
+    # Next slot 18:00 → runs again, exactly once.
+    clock[0] = datetime(2026, 8, 13, 18, 0, 0, tzinfo=timezone.utc).timestamp()
+    cron_daemon.tick()
+    assert runs == ["17:50", "18:00"]
+    # No immediate re-run of the 18:00 slot either.
+    cron_daemon.tick()
+    assert runs == ["17:50", "18:00"]
 
 
 def test_tick_no_lock_contention(tmp_path, monkeypatch):
