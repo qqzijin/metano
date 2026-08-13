@@ -28,7 +28,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from metano.log import logger
+from metano.log import get_logger, logger
 from .paths import CRON_DIR
 
 JOBS_FILE = CRON_DIR / 'jobs.json'
@@ -329,9 +329,9 @@ def run_job(job: dict, timeout: int | None = None) -> dict:
         return {'status': 'busy', 'output': '', 'error': f'job already running: {job_name}'}
 
     result: dict = {'status': 'ok', 'output': '(no output)', 'error': None}
+    _started = time.monotonic()
+    logger.info("Running cron job: %s [action=%s]", job_name, action)
     try:
-        print(f"Running cron job: {job_name} [action={action}]")
-
         if not _RUN_SEMAPHORE.acquire(blocking=False):
             result = {'status': 'busy', 'output': '', 'error': 'too many concurrent cron jobs'}
         else:
@@ -373,6 +373,10 @@ def run_job(job: dict, timeout: int | None = None) -> dict:
 
         job['last_run_at'] = datetime.now(tz=timezone.utc).isoformat()
         job['last_error'] = result.get('error')
+        logger.info(
+            "Cron job %s finished: status=%s elapsed=%.2fs",
+            job_name, result['status'], time.monotonic() - _started,
+        )
         return result
     finally:
         _release_job(job_name)
@@ -450,6 +454,18 @@ def tick():
         lock_fd.close()
 
 
+def _configure_runtime_logging() -> None:
+    """Make the daemon observable in real time (P2-6).
+
+    The module logger (``metano.log.logger``) already routes to stderr, which
+    journald captures line-buffered — stdout would be block-buffered when piped
+    and is what produced the same-second log bunches in the audit (the old
+    ``print`` lines only surfaced all at once, with fake timestamps). ``daemon.log``
+    is deprecated; the journal is the source of truth. Idempotent.
+    """
+    get_logger("metano")
+
+
 def run_daemon():
     """Run the cron daemon as a foreground process.
 
@@ -458,21 +474,22 @@ def run_daemon():
     so a restart never finds an un-claimed due job that was interrupted
     mid-execution (H-06).
     """
+    _configure_runtime_logging()
     os.umask(0o077)
     CRON_DIR.mkdir(parents=True, exist_ok=True)
     PID_FILE.write_text(str(os.getpid()))
-    print(f'Cron daemon started (PID {os.getpid()})')
+    logger.info('Cron daemon started (PID %s)', os.getpid())
 
     stop = threading.Event()
 
     def handle_signal(signum, frame):
-        print(f'Received signal {signum}, shutting down gracefully')
+        logger.info('Received signal %s, shutting down gracefully', signum)
         stop.set()
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT, handle_signal)
 
     def handle_hup(signum, frame):
-        print('Received SIGHUP, will reload jobs on next tick')
+        logger.info('Received SIGHUP, will reload jobs on next tick')
     signal.signal(signal.SIGHUP, handle_hup)
 
     while not stop.is_set():
@@ -487,14 +504,14 @@ def run_daemon():
         PID_FILE.unlink(missing_ok=True)
     except OSError:
         pass
-    print('Cron daemon stopped')
+    logger.info('Cron daemon stopped')
 
 if __name__ == '__main__':
     if len(sys.argv) > 1 and sys.argv[1] == 'start':
         run_daemon()
     else:
         tick()
-        print('Single tick completed')
+        logger.info('Single tick completed')
 
 
 # ── CRUD primitives (shared by the Web / MCP cron layers) ────────────────────

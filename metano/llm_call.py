@@ -55,12 +55,14 @@ def _estimate_cost(model: str, input_tokens: int, output_tokens: int,
 
 
 def _record_cost(model: str, protocol: str, input_tokens: int, output_tokens: int,
-                 cache_read_tokens: int, cost: float):
+                 cache_read_tokens: int, cost: float, session_id: str = ''):
     """Write one audit entry for an LLM API call (best-effort).
 
     M6: includes cache_read_tokens so the engine cost is not systematically
     under-reported (the /v1/messages response carries cache_read_input_tokens).
     M13: a failed audit write is logged, never silently swallowed.
+    N16: the audit row carries the caller's ``session_id`` so LLM cost can be
+    attributed to a session when one exists ('' when unattributable).
     """
     try:
         from .evo_models import add_audit
@@ -70,7 +72,7 @@ def _record_cost(model: str, protocol: str, input_tokens: int, output_tokens: in
             'input_tokens': input_tokens,
             'output_tokens': output_tokens,
             'cache_read_tokens': cache_read_tokens,
-        }, ensure_ascii=False), cost=cost, model=model)
+        }, ensure_ascii=False), cost=cost, model=model, session_id=session_id)
     except Exception:
         logger.exception('llm_call: failed to record audit cost entry')
 
@@ -151,13 +153,17 @@ def _call_openai(base_url: str, api_key: str, model: str, system_prompt: str,
 
 
 def call_llm(system_prompt: str, user_prompt: str, max_tokens: int = 3000,
-             timeout: int = 60) -> tuple[str, float]:
+             timeout: int = 60, session_id: str = '') -> tuple[str, float]:
     """Call the configured LLM and return (response_text, estimated_cost_usd).
 
     All evolution system LLM calls should go through this function so costs are
     consistently tracked. F-02: the request format/headers follow the provider's
     ``protocol`` — Anthropic ``/v1/messages`` for ``anthropic``, OpenAI
     ``/v1/chat/completions`` for ``openai`` (Ollama/DeepSeek/OpenRouter/…).
+
+    N16: ``session_id`` is written to the ``audit_log`` cost row so LLM spend
+    can be attributed to the calling session. Pass '' when the call has no
+    session context (the field is still populated on the audit row).
     """
     base_url, api_key, model, protocol = _resolve_provider()
     if not api_key:
@@ -183,7 +189,7 @@ def call_llm(system_prompt: str, user_prompt: str, max_tokens: int = 3000,
         output_tokens = usage.get('output_tokens', 0) or 0
         cache_read_tokens = usage.get('cache_read_tokens', 0) or 0
         cost = _estimate_cost(model, input_tokens, output_tokens, cache_read_tokens)
-        _record_cost(model, protocol, input_tokens, output_tokens, cache_read_tokens, cost)
+        _record_cost(model, protocol, input_tokens, output_tokens, cache_read_tokens, cost, session_id)
         return text, cost
     except Exception:
         logger.exception("llm_call: API request failed")

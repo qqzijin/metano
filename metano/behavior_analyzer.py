@@ -14,8 +14,8 @@ from metano.log import logger
 ANTHROPIC_API_KEY = os.environ.get('ANTHROPIC_API_KEY', '')
 ANTHROPIC_MODEL = os.environ.get('HONCHO_MODEL', 'claude-sonnet-4-6')
 
-def _call_llm(system_prompt: str, user_prompt: str) -> str:
-    text, _ = call_llm(system_prompt, user_prompt, max_tokens=2000, timeout=30)
+def _call_llm(system_prompt: str, user_prompt: str, session_id: str = '') -> str:
+    text, _ = call_llm(system_prompt, user_prompt, max_tokens=2000, timeout=30, session_id=session_id)
     return text
 
 def _cluster_corrections(corrections: list[dict]) -> dict[str, list[dict]]:
@@ -37,13 +37,17 @@ def _cluster_corrections(corrections: list[dict]) -> dict[str, list[dict]]:
             clusters.setdefault('other', []).append(c)
     return clusters
 
-def analyze_behavior_patterns(user_id: str='default', days: int=7) -> dict:
+def analyze_behavior_patterns(user_id: str='default', days: int=7, session_id: str='') -> dict:
     """Analyze correction and error observations to find recurring patterns.
 
     Returns a dict with:
     - patterns: list of detected behavior_pattern beliefs
     - corrections_analyzed: count of correction observations processed
     - tool_errors_analyzed: count of tool_error observations processed
+
+    N16: ``session_id`` (when known, e.g. from immediate_learn triggered by a
+    session_end hook) is threaded to the LLM call so its audit cost row is
+    attributed to the originating session.
     """
     conn = get_honcho_db()
     try:
@@ -67,7 +71,7 @@ def analyze_behavior_patterns(user_id: str='default', days: int=7) -> dict:
         if existing_behavior:
             user_prompt += f"\n\nExisting behavior rules (avoid duplicates):\n{json.dumps([{'content': b['content']} for b in existing_behavior], ensure_ascii=False)}"
         try:
-            response = _call_llm(system, user_prompt)
+            response = _call_llm(system, user_prompt, session_id=session_id)
             if '[' in response and ']' in response:
                 start = response.index('[')
                 end = response.rindex(']') + 1

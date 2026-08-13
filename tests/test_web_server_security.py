@@ -210,6 +210,51 @@ def test_csrf_allows_known_origin(client, auth_config):
     assert r.status_code == 200
 
 
+# ── CORS preflight pass-through (P1-7) ─────────────────────────────────────
+# AuthMiddleware sits OUTSIDE CORSMiddleware (Starlette add_middleware insert(0)
+# ⇒ MCPAuth → Auth → CORS), so an OPTIONS preflight to /api/* used to 401 at the
+# auth gate before CORSMiddleware could add access-control-* headers. The fix
+# lets a genuine preflight propagate down the chain to CORSMiddleware.
+
+def test_cors_preflight_gets_headers(client):
+    r = client.options(
+        '/api/knowledge',
+        headers={
+            'Origin': 'http://localhost:9120',
+            'Access-Control-Request-Method': 'GET',
+        },
+    )
+    assert r.status_code == 200
+    assert r.headers.get('access-control-allow-origin') == 'http://localhost:9120'
+    assert 'access-control-allow-methods' in r.headers
+
+
+def test_cors_preflight_requires_origin_header(client):
+    # An OPTIONS /api/* request WITHOUT a preflight Origin / ACRM header is not a
+    # browser preflight — it must keep hitting the normal auth gate (401), not be
+    # silently exempted (over-broadening guard).
+    r = client.options('/api/knowledge')
+    assert r.status_code == 401
+    assert 'access-control-allow-origin' not in r.headers
+
+
+def test_cors_preflight_not_opening_non_api_ws(client):
+    # Non-/api protected paths keep their auth behavior — only /api/* preflights
+    # are exempted. /ws is a websocket (TestClient upgrades), so exercise the
+    # guard via a path that is protected but not under /api/.
+    r = client.options(
+        '/api/knowledge',
+        headers={
+            'Origin': 'http://localhost:9120',
+            'Access-Control-Request-Method': 'GET',
+            'Access-Control-Request-Headers': 'authorization',
+        },
+    )
+    assert r.status_code == 200
+    assert r.headers.get('access-control-allow-origin') == 'http://localhost:9120'
+    assert r.headers.get('access-control-allow-headers') is not None
+
+
 def test_ws_ticket_endpoint_requires_auth(client):
     assert client.post('/api/auth/ws-ticket').status_code == 401
 

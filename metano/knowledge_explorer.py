@@ -154,8 +154,8 @@ def _tavily_search(query: str, max_results: int=5) -> list[dict]:
         _log('knowledge', 'tavily_error', {'error': str(e)})
         return []
 
-def _call_llm(system_prompt: str, user_prompt: str) -> str:
-    text, _ = call_llm(system_prompt, user_prompt, max_tokens=2000, timeout=30)
+def _call_llm(system_prompt: str, user_prompt: str, session_id: str = '') -> str:
+    text, _ = call_llm(system_prompt, user_prompt, max_tokens=2000, timeout=30, session_id=session_id)
     return text
 
 def explore_domain(topic: str, depth: int=3) -> dict:

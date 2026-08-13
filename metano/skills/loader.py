@@ -1,10 +1,12 @@
 """Skill loader: discovers, parses, and caches skills from filesystem."""
+import hashlib
 import re
 import time
 import yaml
 from pathlib import Path
 from dataclasses import dataclass, field
 from .validator import validate_frontmatter, validate_content
+from ._bundled_hashes import BUNDLED_SKILL_HASHES
 from metano.log import logger
 from ..paths import SKILLS_DIR
 
@@ -121,6 +123,12 @@ class SkillLoader:
             from metano.log import logger as _lg
             _lg.warning('[skills] 技能加载失败(跳过): %s — %s', path, warnings or 'frontmatter 无效')
             return None
+        # Trust enforcement (audit P2-2): a `trust: bundled` skill must match the
+        # shipped SHA-256 whitelist. Tampered or unknown bundled skills are dropped
+        # fail-closed with a HASH_MISMATCH warning; `user` / `verified` trust levels
+        # keep the previous permissive behaviour.
+        if (fm.get('trust') or '').lower() == 'bundled' and not self._verify_bundled_hash(path, raw):
+            return None
         body = self._extract_body(raw)
         rel = path.relative_to(path.parent.parent.parent)
         parts = rel.parts
@@ -129,6 +137,32 @@ class SkillLoader:
         trigger = fm.get('trigger', f'/{name}')
         metadata = fm.get('metadata', {})
         return SkillRecord(name=name, description=fm.get('description', ''), version=fm.get('version', '1.0.0'), author=fm.get('author', ''), trigger=trigger, category=category, source=source, path=path, frontmatter=fm, body=body, metadata=metadata, warnings=warnings)
+
+    @staticmethod
+    def _verify_bundled_hash(path: Path, raw: str) -> bool:
+        """Verify a ``trust: bundled`` skill against the SHA-256 whitelist.
+
+        Returns True when the on-disk content matches the pristine hash shipped
+        with the whitelist. Logs a ``HASH_MISMATCH`` warning and returns False
+        otherwise — bundled skills are fail-closed: any bundled skill that is
+        tampered with or absent from the whitelist is refused at load time.
+        """
+        try:
+            rel_key = path.relative_to(BUNDLED_SKILLS_DIR).as_posix()
+        except ValueError:
+            rel_key = None
+        if rel_key is None:
+            logger.warning('[skills] HASH_MISMATCH: bundled 技能在 skills_data 之外(拒绝加载): %s', path)
+            return False
+        expected = BUNDLED_SKILL_HASHES.get(rel_key)
+        if expected is None:
+            logger.warning('[skills] HASH_MISMATCH: bundled 技能不在白名单(拒绝加载): %s (rel=%s)', path, rel_key)
+            return False
+        digest = hashlib.sha256(raw.encode('utf-8')).hexdigest()
+        if digest != expected:
+            logger.warning('[skills] HASH_MISMATCH: bundled 技能哈希不符(拒绝加载): %s (rel=%s) — 内容可能被篡改', path, rel_key)
+            return False
+        return True
 
     def _extract_body(self, raw: str) -> str:
         first = raw.find('---')

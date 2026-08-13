@@ -223,6 +223,23 @@ def test_tick_no_double_trigger_after_late_finish(tmp_path, monkeypatch):
     assert runs == ["17:50", "18:00"]
 
 
+def test_no_bare_print_statements():
+    """P2-6: the daemon must log through ``logger`` (stderr, line-buffered) so
+    journald receives real timestamps.  A bare ``print`` to stdout is
+    block-buffered when piped and produced the same-second log bunches with fake
+    timestamps that the audit observed."""
+    import inspect
+    from metano import cron_daemon
+
+    src = inspect.getsource(cron_daemon)
+    for line in src.splitlines():
+        stripped = line.lstrip()
+        assert not stripped.startswith('print('), \
+            f'bare print() in cron_daemon: {stripped!r}'
+        assert not stripped.startswith('print '), \
+            f'bare print statement in cron_daemon: {stripped!r}'
+
+
 def test_tick_no_lock_contention(tmp_path, monkeypatch):
     """tick should gracefully handle lock contention."""
     monkeypatch.setattr("metano.cron_daemon.CRON_DIR", tmp_path)
@@ -240,3 +257,41 @@ def test_tick_no_lock_contention(tmp_path, monkeypatch):
 
     fcntl.flock(lock, fcntl.LOCK_UN)
     lock.close()
+
+
+def test_no_prints_in_cron_daemon_source():
+    """P2-6: cron_daemon must never use print().
+
+    stdout is block-buffered when piped to journald, which produced the
+    same-second log bunches (with fake timestamps) that made the daemon
+    unobservable. Every diagnostic must go through the module logger (stderr,
+    line-buffered under journald), which this grep-style assertion enforces.
+    """
+    src = Path(__file__).resolve().parents[1] / "metano" / "cron_daemon.py"
+    text = src.read_text(encoding="utf-8")
+    assert "print(" not in text
+
+
+def test_run_job_logs_start_and_finish(tmp_path, monkeypatch):
+    """P2-6: run_job emits a structured start + finish line (with timing)
+    through the module logger, so the daemon is observable per-job in the
+    journal."""
+    from metano import cron_daemon
+
+    monkeypatch.setattr(cron_daemon, "OUTPUT_DIR", tmp_path / "cron" / "output")
+    logged: list[str] = []
+    monkeypatch.setattr(
+        cron_daemon.logger, "info",
+        lambda msg, *args: logged.append(msg % args if args else str(msg)),
+    )
+    monkeypatch.setitem(cron_daemon.ACTIONS, "test.logged_action", lambda: {"ok": True})
+
+    job = {
+        "id": "j1", "name": "testjob", "action": "test.logged_action",
+        "type": "claude", "enabled": True, "timeout": 30,
+        "schedule": {"kind": "interval", "expr": "60"},
+    }
+    res = cron_daemon.run_job(job)
+    assert res["status"] == "ok"
+    assert any("Running cron job: testjob" in m for m in logged), logged
+    assert any("Cron job testjob finished: status=ok" in m for m in logged), logged

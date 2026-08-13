@@ -71,6 +71,11 @@ DANGEROUS_SHELL_PATTERNS = [
     r':\(\)\s*\{',
     r'\bcurl\s+.*\|\s*(ba)?sh',
     r'\bwget\s+.*\|\s*(ba)?sh',
+    # Two-step script-download-and-run install on a single line, e.g.
+    #   curl -fsSL https://… -o /tmp/x-install.sh && bash /tmp/x-install.sh
+    # The multi-line / separately-delimited form is handled by
+    # _looks_like_two_step_install().
+    r'\bcurl\s+.*?\s*-o\s+[^\s;&|]+\.sh\b.*?\b(?<!\.)(?:ba)?sh\s+\S+\.sh\b',
     r'\bchmod\s+777',
     r'\bchown\s+root',
     r'\biptables\b',
@@ -528,11 +533,36 @@ def _truncate_output(text: str) -> str:
         return text[:MAX_OUTPUT_BYTES] + f'\n... (truncated, total {len(text)} bytes)'
     return text
 
+def _looks_like_two_step_install(cmd: str) -> bool:
+    """Detect two-step script download-and-run installs.
+
+    The single-line ``curl … | bash`` patterns cannot see a script that is
+    first downloaded to a ``.sh`` file by one command and executed by a later,
+    separate ``bash``/``sh`` command, e.g.::
+
+        curl -fsSL https://… -o /tmp/himalaya-install.sh
+        bash /tmp/himalaya-install.sh
+
+    A plain download with no subsequent execution
+    (``curl -o file.sh <url>``) must NOT be flagged, so both halves have to
+    be present anywhere in the command block.
+    """
+    flags = re.IGNORECASE
+    downloaded = re.search(
+        r'\b(?:curl|wget)\s+.*?\s*-o\s+[^\s;&|`]+\.sh\b', cmd, flags)
+    if not downloaded:
+        return False
+    executed = re.search(r'\b(?<!\.)(?:ba)?sh\s+\S+\.sh\b', cmd, flags)
+    return executed is not None
+
+
 def _check_shell_dangerous(code: str) -> Optional[str]:
     for pattern in DANGEROUS_SHELL_PATTERNS:
         m = re.search(pattern, code, re.IGNORECASE)
         if m:
             return f"Blocked dangerous command: {m.group(0)}"
+    if _looks_like_two_step_install(code):
+        return "Blocked dangerous command: two-step shell script download-and-execute"
     return None
 
 

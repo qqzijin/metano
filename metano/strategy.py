@@ -186,7 +186,7 @@ def _llm_detect_patterns(actions: list[dict]) -> list[dict]:
     for a in actions[:50]:
         summary.append({'action_type': a.get('action_type', ''), 'detail': a.get('action_detail', '')[:100], 'rules': a.get('rule_ids_applied', ''), 'outcome': a.get('outcome', '')})
     try:
-        response, _ = call_llm(system, json.dumps(summary, ensure_ascii=False), max_tokens=2000, timeout=30)
+        response, _ = call_llm(system, json.dumps(summary, ensure_ascii=False), max_tokens=2000, timeout=30, session_id='')
         if '[' in response and ']' in response:
             start = response.index('[')
             end = response.rindex(']') + 1

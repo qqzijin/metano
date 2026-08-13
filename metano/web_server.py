@@ -50,6 +50,20 @@ class AuthMiddleware(BaseHTTPMiddleware):
             # If no origin/referer, rely on SameSite=Lax cookie + HttpOnly (browser sends on same-site)
         if path in AUTH_WHITELIST or path.startswith('/assets') or path == '/favicon.ico':
             return await call_next(request)
+        # CORS preflight (P1-7): AuthMiddleware sits OUTSIDE CORSMiddleware in the
+        # Starlette stack (add_middleware insert(0) ⇒ MCPAuth → Auth → CORS), so an
+        # OPTIONS preflight to /api/* would hit the auth gate below and 401 before
+        # CORSMiddleware can answer — the browser's cross-origin preflight fails with
+        # no access-control-* headers. Exempt only a genuine preflight (OPTIONS + an
+        # Origin or Access-Control-Request-Method header) and keep propagating it
+        # down the chain with `await call_next` so the inner CORSMiddleware adds the
+        # headers. Never short-circuit with a bare Response here — that would skip
+        # CORSMiddleware and leave the preflight without CORS headers. Real OPTIONS
+        # verbs without preflight headers, /ws, and all other non-/api paths keep the
+        # existing auth behavior.
+        if (request.method == 'OPTIONS' and path.startswith('/api/')
+                and (request.headers.get('origin') or request.headers.get('access-control-request-method'))):
+            return await call_next(request)
         if path.startswith('/api/'):
             user = get_current_user_from_request(request)
             if user:
@@ -1772,7 +1786,7 @@ async def api_memory_timeline(days: int=7, limit: int=20, _admin=Depends(require
         ).fetchall()
         results = []
         for r in rows:
-            ts = datetime.fromtimestamp(r['timestamp'], tz=timezone.utc).strftime('%m-%d %H:%M')
+            ts = datetime.fromtimestamp(r['timestamp'], tz=timezone.utc).astimezone().strftime('%m-%d %H:%M')
             results.append(f"[{ts}] [{r['category']}] {r['content'][:100]}")
         return {'observations': len(results), 'formatted': '\n'.join(results)}
     except Exception as e:

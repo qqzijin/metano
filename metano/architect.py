@@ -44,8 +44,8 @@ def _llm_provider_available() -> bool:
     return bool(os.environ.get('ANTHROPIC_API_KEY', ''))
 
 
-def _call_llm(system_prompt: str, user_prompt: str) -> str:
-    text, _ = call_llm(system_prompt, user_prompt)
+def _call_llm(system_prompt: str, user_prompt: str, session_id: str = '') -> str:
+    text, _ = call_llm(system_prompt, user_prompt, session_id=session_id)
     return text
 
 def build_architecture_model() -> dict:

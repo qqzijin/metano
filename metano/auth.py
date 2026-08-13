@@ -3,6 +3,7 @@
 import json
 import os
 import secrets
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -174,9 +175,16 @@ def get_user_by_username(username: str) -> Optional[dict]:
 
 
 def get_token_version(username: str) -> int:
-    """Current token_version for a user (0 when unset)."""
+    """Current token_version for a user; ``-1`` when the user no longer exists.
+
+    A ``-1`` can never equal any real token's ``tv`` claim (real tv values are
+    always ``>= 0``), so a token minted while the user still existed (e.g.
+    ``tv=0``) fails verification after the user is deleted — closing the
+    stale-token hole (audit P1-9).  Minting callers must only ever pass an
+    existing user, so a fresh token never carries ``-1``.
+    """
     rec = _current_user_record(username)
-    return rec['token_version'] if rec else 0
+    return rec['token_version'] if rec else -1
 
 
 def create_access_token(username: str, role: str, token_version: int = 0) -> str:
@@ -327,7 +335,14 @@ def rotate_refresh_tokens(response: Response, username: str, role: str, secure: 
 # ticket from POST /api/auth/ws-ticket (using its normal cookie auth) and sends
 # it as the first WS message. The ticket's jti is consumed once server-side.
 _WS_TICKET_TTL = 30
-_used_ws_tickets: set[str] = set()
+# Consumed ticket jti -> unix timestamp of consumption. Entries live at most as
+# long as the ticket's own 30s validity window, so they are pruned lazily on
+# access — never wholesale-cleared (a wholesale clear would let in-TTL replays
+# through, audit P1-10).
+_used_ws_tickets: dict[str, float] = {}
+# Serialises the check + mark below so concurrent consumers of the same jti
+# cannot both be admitted (audit P1-10).
+_WS_TICKET_LOCK = threading.Lock()
 
 
 def create_ws_ticket(username: str, role: str) -> str:
@@ -352,13 +367,20 @@ def consume_ws_ticket(token: str) -> Optional[dict]:
     if not payload or payload.get("type") != "ws_ticket":
         return None
     jti = payload.get("jti")
-    if jti and jti in _used_ws_tickets:
-        return None
-    if jti:
-        _used_ws_tickets.add(jti)
-        # Opportunistic prune so the set never grows unboundedly.
-        if len(_used_ws_tickets) > 1000:
-            _used_ws_tickets.clear()
+    if not jti:
+        return {"username": payload["sub"], "role": payload.get("role", "user")}
+    # Check + mark must be atomic so a jti is admitted exactly once even under
+    # concurrent consumers (audit P1-10).
+    now = time.time()
+    with _WS_TICKET_LOCK:
+        # Lazily prune entries older than the ticket TTL. Bounded by the 30s
+        # validity window, so the dict stays small — no wholesale clear.
+        expired = [k for k, ts in _used_ws_tickets.items() if now - ts >= _WS_TICKET_TTL]
+        for k in expired:
+            _used_ws_tickets.pop(k, None)
+        if jti in _used_ws_tickets:
+            return None
+        _used_ws_tickets[jti] = now
     return {"username": payload["sub"], "role": payload.get("role", "user")}
 
 

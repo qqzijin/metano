@@ -66,6 +66,8 @@ log "[4/5] 清理过旧文件"
 find "$BRIDGE_DIR" -maxdepth 1 -name "dist.old*" -mtime +7 -type d -exec rm -rf {} + 2>/dev/null
 # 清理 30 天前的备份（backup.sh 自带 7 天保留，这里兜底）
 find "$BRIDGE_DIR/backups" -name "*.bak.*" -mtime +30 -delete 2>/dev/null
+# 清理 30 天前的 audit-* 审计备份目录（backup.sh 的 YYYY-MM-DD 匹配不覆盖 audit-*，这里兜底）
+find "$BRIDGE_DIR/backups" -maxdepth 1 -type d -name 'audit-*' -mtime +30 -exec rm -rf {} + 2>/dev/null
 # 清理 7 天前的 .pyc 缓存
 find "$BRIDGE_DIR" -name "__pycache__" -type d -mtime +7 -exec rm -rf {} + 2>/dev/null
 log "  清理完成"

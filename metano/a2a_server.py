@@ -288,7 +288,15 @@ def verify_a2a_token(token: str) -> Optional[dict]:
     if payload.get('type') != 'a2a':
         return None
     sub = payload.get('sub') or ''
-    if payload.get('tv', 0) != get_token_version(sub):
+    tv = get_token_version(sub)
+    # SECURITY (P1-9): a deleted (or never-configured) user reports tv == -1.
+    # Explicitly reject before the != comparison — a token minted while the
+    # user still existed carried tv=0, and without this check a deleted user
+    # (whose get_token_version used to return 0) would pass 0 == 0 forever.
+    # The explicit check also defends against a minted tv ever being -1.
+    if tv == -1:
+        return None
+    if payload.get('tv', 0) != tv:
         return None
     return payload
 

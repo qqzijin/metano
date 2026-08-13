@@ -116,6 +116,17 @@ cleanup_old() {
             log "WARN 删除失败 $d"
         fi
     done <<< "$old_dirs"
+
+    # 清理 30 天前的 audit-* 审计备份目录（audit 产物，不匹配 YYYY-MM-DD，需单独覆盖）。
+    # 只删超期目录，保留最新 30 天内，避免误删仍需要的审计备份。
+    while IFS= read -r d; do
+        [ -z "$d" ] && continue
+        if rm -rf "$d" 2>>"$LOG_FILE"; then
+            log "CLEAN 删除过期 audit 备份 $d"
+        else
+            log "WARN 删除失败 $d"
+        fi
+    done <<< "$(find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -name 'audit-*' -mtime +30 2>/dev/null || true)"
 }
 
 # ---- 主流程 ---------------------------------------------------------------

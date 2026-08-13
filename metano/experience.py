@@ -127,7 +127,7 @@ def _llm_reflection(task_type: str, error_class: str, response: str) -> tuple[st
             '{"do": "what to do next time", "avoid": "what to avoid", "detail": "root cause"}'
         )
         user = f"task_type={task_type}\nerror_class={error_class}\nresponse={str(response)[:1000]}"
-        text, _ = call_llm(system, user, max_tokens=300, timeout=15)
+        text, _ = call_llm(system, user, max_tokens=300, timeout=15, session_id='')
         start, end = text.find('{'), text.rfind('}')
         if start != -1 and end != -1 and end > start:
             data = json.loads(text[start:end + 1])
