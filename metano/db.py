@@ -29,6 +29,10 @@ _FUNC_CALL_RE = re.compile(
     rf'(?i)\b({_SENSITIVE_KEY})\s*\(\s*(["\'])([A-Za-z0-9_\-./]{{4,}})\2\s*\)'
 )
 _BARE_SK_RE = re.compile(r'\bsk-[A-Za-z0-9_\-]{8,}\b')
+# GitHub personal access tokens (ghp_/gho_/ghu_/ghs_/ghr_) — pasted tokens
+# must not persist in message content.  No leading ``\b``: a token can sit
+# right after a literal ``\n`` (word char) in command/response text.
+_BARE_GH_TOKEN_RE = re.compile(r'gh[opusr]_[A-Za-z0-9]{10,}\b')
 # ``eyJ`` is base64 of `{"` — the header of every JWT.  Require at least two
 # base64url segments (header[.payload[.signature]]) with a realistic header
 # length (>=8 chars; the smallest real header — {"alg":"none"} — is 18) so a
@@ -69,6 +73,7 @@ def redact_sensitive(content: Optional[str]) -> Optional[str]:
     text = _SENSITIVE_KEY_RE.sub(_redact_key_value, content)
     text = _FUNC_CALL_RE.sub(_redact_func_call, text)
     text = _BARE_SK_RE.sub('[REDACTED]', text)
+    text = _BARE_GH_TOKEN_RE.sub('[REDACTED]', text)
     text = _BARE_JWT_RE.sub('[REDACTED]', text)
     text = _BEARER_RE.sub('[REDACTED]', text)
     return text
