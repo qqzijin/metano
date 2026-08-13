@@ -2,6 +2,23 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [v3.3.2] - 2026-08-13
+
+Round 4 审计遗留修复 + 公开仓库隐私清理，全量测试 346 通过。
+
+### 安全加固
+
+- **shell 任务失败不再静默成功**：非零退出码（如 127）置 last_error + status=error（此前 exit 127 被记为 ok，audit F4/B5）
+- **LLM 成本按来源归因**：architect/knowledge-sink/reflector/behavior-analyzer/strategy/experience/self-modify/dialectic 调用点传 session_id，audit_log 成本行可追溯（audit N16，此前 0/416）
+- **建库权限双保险**：install.sh 建库段 umask 077；db.py init_db 显式 chmod 600（全新安装不再产出 0644 bridge.db）
+- **存量敏感文件回填**：evolution_log.jsonl / web.log / maintain-daily.log / daemon.log / healthcheck.log 回填 0600；bridge.db 明文残留清零（app_secret / sk- / JWT 截断前缀全库 0 残留，已备份）
+- **测试用例移除真实密钥**：tests/test_db.py 脱敏测试改用伪值（真实 app_secret 曾误入公开仓库历史，已用 git filter-repo 重写全部历史清除并 force push）
+- **测试日志捕获修复**：conftest 恢复 metano logger propagate（caplog 兼容），修复 3 个失败测试
+
+### 调查结论
+
+- **route_events 数据清除者查明**：08-13 14:39 用户会话在调整 provider 配置时手动执行 DELETE FROM route_events（有意的运维清理，未留 audit 痕迹——建议数据清理走代码路径并记录 audit）
+
 ## [v3.3.1] - 2026-08-13
 
 第三轮全量审计（8 路独立复核，172 条结论）P0–P2 修复 + 遗留项，全量测试 346 通过。
