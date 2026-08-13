@@ -2,11 +2,13 @@
 import json
 import os
 import shutil
+import signal
 import subprocess
 from dataclasses import dataclass
 from typing import Optional
 from metano.log import logger
 from metano.paths import CONFIG_PATH
+from .code_exec import scrub_subprocess_env
 
 # Built-in pricing fallback (USD per million tokens): (input, output, cache_read)
 BUILTIN_PRICES = {
@@ -26,6 +28,22 @@ _PLACEHOLDER_MODELS = {
     '', '<synthetic>', 'synthetic', 'unknown', 'test', 'fake-model',
     'null', 'none', 'undefined', 'placeholder', 'n/a',
 }
+
+
+def _kill_process_group(proc) -> None:
+    """SIGKILL the whole process group of ``proc`` (claude -p + descendants).
+
+    The claude sub-process is spawned with ``start_new_session=True`` (own
+    process group) so a timeout can kill every descendant, not just the direct
+    child (audit P1-1).
+    """
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except ProcessLookupError:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
 
 
 @dataclass
@@ -232,7 +250,10 @@ class ModelRouter:
         cmd = [claude_bin, '-p', prompt]
         if session_id:
             cmd = [claude_bin, '--resume', session_id, '-p', prompt]
-        env = os.environ.copy()
+        # SECURITY (audit P1-1): scrub to a whitelist so the claude -p child
+        # cannot read metano's operational secrets (JWT secret, feishu/lark
+        # credentials, A2A/MCP tokens, DB paths) out of the environment.
+        env = scrub_subprocess_env()
         if provider.base_url:
             env['ANTHROPIC_BASE_URL'] = provider.base_url
         if provider.api_key:
@@ -253,10 +274,31 @@ class ModelRouter:
             env['HTTPS_PROXY'] = proxy
             env['HTTP_PROXY'] = proxy
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
-            response = result.stdout.strip()
-            if not response and result.stderr:
-                response = f'Error: {result.stderr[:200]}'
+            # start_new_session=True -> claude leads its own process group so a
+            # timeout can SIGKILL the whole tree (claude -p + any tool
+            # grandchild), not just the direct child (audit P1-1).
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+                start_new_session=True,
+            )
+            try:
+                stdout_text, stderr_text = proc.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                # Kill the whole process group so no grandchild survives.
+                _kill_process_group(proc)
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    _kill_process_group(proc)
+                    proc.wait()
+                return 'Response timed out.'
+            response = (stdout_text or '').strip()
+            if not response and stderr_text:
+                response = f'Error: {stderr_text[:200]}'
             return response or '(no response)'
         except subprocess.TimeoutExpired:
             return 'Response timed out.'

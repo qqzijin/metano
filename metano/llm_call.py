@@ -39,34 +39,19 @@ def _resolve_provider() -> tuple[str, str, str, str]:
         logger.exception("llm_call: provider resolution failed, using env")
     return ANTHROPIC_BASE_URL, ANTHROPIC_API_KEY, ANTHROPIC_MODEL, 'anthropic'
 
-# Cost per million tokens (USD) — update as pricing changes
-_COST_PER_MILLION = {
-    'claude-sonnet-4-6': (3.0, 15.0),    # (input, output)
-    'claude-haiku-4-5-20251001': (0.80, 4.0),
-    'claude-opus-4-8': (15.0, 75.0),
-    'claude-opus-4-7': (15.0, 75.0),
-    'claude-opus-4-6': (15.0, 75.0),
-    # DeepSeek V4 Flash off-peak rates (peak weekday hours are ~2x; cache-hit
-    # input is cheaper). Announced a significant price hike effective soon —
-    # revisit these when the new rates land.
-    'deepseek-v4-flash': (0.14, 0.28),
-}
-
-# Fallback pricing for unknown models
-_DEFAULT_COST = (3.0, 15.0)
-
-
 def _estimate_cost(model: str, input_tokens: int, output_tokens: int,
                    cache_read_tokens: int = 0) -> float:
-    """Estimate USD cost from token counts (config price table preferred)."""
-    try:
-        from .model_router import model_router
-        return model_router.estimate_cost(model, input_tokens, output_tokens,
-                                          cache_read_tokens)
-    except Exception:
-        logger.exception('llm_call.py:57 exception')
-    input_price, output_price = _COST_PER_MILLION.get(model, _DEFAULT_COST)
-    return (input_tokens * input_price + output_tokens * output_price) / 1_000_000
+    """Estimate USD cost from token counts.
+
+    The single pricing authority is ``model_router.estimate_cost`` (config →
+    builtin → default fallback; placeholder models like ``<synthetic>`` price
+    at 0.0, disabled providers price at their configured rates). The old local
+    price table was removed (audit P1-5): it had drifted from the router and
+    mis-priced placeholder / disabled providers.
+    """
+    from .model_router import model_router
+    return model_router.estimate_cost(model, input_tokens, output_tokens,
+                                      cache_read_tokens)
 
 
 def _record_cost(model: str, protocol: str, input_tokens: int, output_tokens: int,

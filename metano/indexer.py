@@ -6,10 +6,9 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
-from .db import DB_PATH, init_db
+from .db import DB_PATH, init_db, redact_sensitive
 from metano.log import logger
 SESSIONS_DIR = Path.home() / '.claude' / 'projects'
-MODEL_PRICING = {'claude-sonnet-4-6': {'input': 3.0, 'output': 15.0, 'cache_read': 0.3}, 'claude-opus-4-7': {'input': 15.0, 'output': 75.0, 'cache_read': 1.5}, 'claude-haiku-4-5-20251001': {'input': 0.8, 'output': 4.0, 'cache_read': 0.08}}
 
 def parse_timestamp(ts) -> float:
     """Parse ISO 8601 string or numeric timestamp to epoch float."""
@@ -28,16 +27,16 @@ def parse_timestamp(ts) -> float:
 def estimate_cost(model: str, input_tokens: int, output_tokens: int, cache_read: int=0) -> float:
     """Estimate USD cost for a model's token usage.
 
-    Prefers the configurable price table (model_router.estimate_cost), which
-    covers deepseek-v4-flash (0.14/0.28) etc.; falls back to MODEL_PRICING.
+    Delegates to the single pricing authority ``model_router.estimate_cost``
+    (config → builtin → default fallback; placeholder models price at 0.0).
+    The old local price table was removed (audit P1-5).
     """
     try:
         from .model_router import model_router
         return model_router.estimate_cost(model, input_tokens, output_tokens, cache_read)
     except Exception:
-        pass
-    pricing = MODEL_PRICING.get(model, MODEL_PRICING['claude-sonnet-4-6'])
-    return input_tokens / 1000000 * pricing['input'] + output_tokens / 1000000 * pricing['output'] + cache_read / 1000000 * pricing['cache_read']
+        logger.exception('indexer: estimate_cost failed')
+        return (input_tokens * 3.0 + output_tokens * 15.0 + cache_read * 0.3) / 1_000_000
 
 def extract_text(content) -> str:
     """Extract readable text from Claude message content."""
@@ -127,14 +126,19 @@ def process_records(conn: sqlite3.Connection, session_id: str, project: str, rec
             if cache_r > session_data['cache_read_tokens']:
                 session_data['cache_read_tokens'] = cache_r
             content = msg.get('content', '')
-            text = extract_text(content)
+            # Audit N2: scrub credential material from persisted text — tool
+            # inputs can carry live app_secret / sk- keys / bearer tokens. The
+            # tool_calls JSON stores only key names today, but redact anyway so a
+            # future change that adds values stays safe.
+            text = redact_sensitive(extract_text(content))
             tool_name, tool_calls = extract_tool_info(content)
+            tool_calls = redact_sensitive(tool_calls)
             if tool_name:
                 session_data['tool_call_count'] += 1
             messages.append({'session_id': session_id, 'role': 'assistant', 'content': text, 'tool_name': tool_name, 'tool_calls': tool_calls, 'timestamp': ts or time.time(), 'input_tokens': inp, 'output_tokens': out, 'duration_ms': None})
         elif rtype == 'user':
             content = msg.get('content', '')
-            text = extract_text(content)
+            text = redact_sensitive(extract_text(content))
             messages.append({'session_id': session_id, 'role': 'user', 'content': text, 'tool_name': None, 'tool_calls': '[]', 'timestamp': ts or time.time(), 'input_tokens': 0, 'output_tokens': 0, 'duration_ms': None})
         elif rtype == 'ai-title':
             session_data['title'] = rec.get('aiTitle', '')
