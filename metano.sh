@@ -82,6 +82,43 @@ EOF
     return 0
 }
 
+# ── systemd user timer：每小时健康检查在 bwrap 外执行 ──
+# 同样因 bwrap(--tmpfs $HOME) 屏蔽真实 METANO_HOME，cron 版 healthcheck 每小时的
+# 产物都是 "bash: .../healthcheck.sh: No such file or directory"。改由本 timer 直接
+# 运行 healthcheck.sh（不经 bwrap）。失败自动补跑（Persistent=true）。
+_ensure_healthcheck_timer() {
+    command -v systemctl >/dev/null 2>&1 || return 1
+    local unit="$HOME/.config/systemd/user/metano-healthcheck.service"
+    local timer="$HOME/.config/systemd/user/metano-healthcheck.timer"
+    mkdir -p "$HOME/.config/systemd/user"
+    cat > "$unit" <<EOF
+[Unit]
+Description=metano hourly healthcheck (web/gateway/cron/cocoindex) — runs outside bwrap
+
+[Service]
+Type=oneshot
+WorkingDirectory=$BRIDGE_DIR
+Environment=METANO_HOME=$BRIDGE_DIR
+ExecStart=/bin/bash $BRIDGE_DIR/healthcheck.sh
+EOF
+    cat > "$timer" <<EOF
+[Unit]
+Description=Hourly trigger for metano-healthcheck (every hour on the hour)
+
+[Timer]
+OnCalendar=*-*-* *:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+    systemctl --user daemon-reload
+    systemctl --user enable "metano-healthcheck.timer" 2>/dev/null || true
+    systemctl --user start "metano-healthcheck.timer" 2>/dev/null || true
+    echo "healthcheck timer ready (metano-healthcheck.timer → 每小时整点, 在 bwrap 外运行)"
+    return 0
+}
+
 # ── 无 systemd 时的传统后台方式（pid 文件）──
 _start_bg() {
     local svc="$1"
@@ -162,6 +199,7 @@ case "${1:-start}" in
         _op cron start
         _op gateway start
         _ensure_maintain_timer
+        _ensure_healthcheck_timer
         start_ccc_daemon
         echo ""
         echo "Dashboard:  http://0.0.0.0:9120"
@@ -218,5 +256,9 @@ case "${1:-start}" in
         _ensure_maintain_timer
         systemctl --user list-timers metano-maintain.timer 2>/dev/null || true
         ;;
-    *) echo "Usage: $0 {start|stop|restart|status|setup|maintain-timer} [web|cron|gateway|cocoindex]" ;;
+    healthcheck-timer)
+        _ensure_healthcheck_timer
+        systemctl --user list-timers metano-healthcheck.timer 2>/dev/null || true
+        ;;
+    *) echo "Usage: $0 {start|stop|restart|status|setup|maintain-timer|healthcheck-timer} [web|cron|gateway|cocoindex]" ;;
 esac
