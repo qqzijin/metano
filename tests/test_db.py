@@ -177,6 +177,13 @@ def test_redact_sensitive_patterns():
     assert r('token: 10') == 'token: 10'
     assert r('the token count is normal prose here') == 'the token count is normal prose here'
     assert r('sk-artist hello world') == 'sk-artist hello world'
+    # GitHub personal access tokens (ghp_/gho_/ghu_/ghs_/ghr_), including when
+    # a literal "\n" (backslash + n) precedes them in command/response text.
+    pat = 'ghp_' + 'A' * 36
+    assert r(pat) == '[REDACTED]'
+    assert r('key=' + 'gho_' + 'B' * 36) == 'key=[REDACTED]'
+    assert r('PLACEHOLDER' + chr(92) + 'n' + 'ghu_' + 'C' * 36) == \
+        'PLACEHOLDER' + chr(92) + 'n[REDACTED]'
     assert r(None) is None
     assert r('') == ''
 
