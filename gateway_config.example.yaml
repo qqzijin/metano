@@ -20,6 +20,13 @@ auth:
       password: "CHANGE_ME_BCRYPT_HASH"   # bcrypt 哈希，用 bcrypt.hashpw 生成
       role: admin
 
+# 跨设备协作（collab A2A 派发；与 METANO_COLLAB_* 环境变量等价，env 优先级更高）
+collab:
+  scheme: https        # http/https，默认 https；或设 METANO_COLLAB_SCHEME
+  verify_ssl: true     # https 下校验远端 TLS 证书，默认 true；或设 METANO_COLLAB_VERIFY_SSL
+  tokens:              # 按主机的 A2A Bearer token（key 为远端 host；低于 METANO_A2A_TOKEN_<HOST> 环境变量）
+    peer.example.com: "<your-token>"   # 例：peer.example.com → env 写 METANO_A2A_TOKEN_PEER_EXAMPLE_COM
+
 # 多平台消息网关（按需启用）
 discord:
   enabled: false

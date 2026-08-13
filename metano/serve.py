@@ -1,7 +1,60 @@
 """CLI entry point for metano web server."""
 
 import os
+from datetime import datetime, timezone
+
 import uvicorn
+
+# audit 7-1: uvicorn's default access format carries NO timestamp at all
+# (journald adds one externally), which left web.log as M/D/YY or bare lines.
+# Emit an ISO-8601 + local-offset timestamp inline, e.g.
+#   2026-08-13T07:12:13+08:00 INFO:     127.0.0.1:54042 - "GET /health HTTP/1.1" 200 OK
+ACCESS_LOG_FORMAT = '%(asctime)s %(levelprefix)s %(client_addr)s - "%(request_line)s" %(status_code)s'
+
+
+class IsoAccessFormatter(uvicorn.logging.AccessFormatter):
+    """uvicorn access formatter with an ISO-8601 + explicit offset timestamp."""
+
+    def formatTime(self, record, datefmt=None):
+        return datetime.fromtimestamp(record.created, tz=timezone.utc).astimezone().isoformat(timespec='seconds')
+
+
+# uvicorn's default LOGGING_CONFIG with the access formatter swapped for
+# IsoAccessFormatter.  disable_existing_loggers=False keeps metano.log.logger
+# (already created by config_watcher etc.) alive across dictConfig.
+_ACCESS_LOG_CONFIG = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "default": {
+            "()": "uvicorn.logging.DefaultFormatter",
+            "fmt": "%(levelprefix)s %(message)s",
+            "use_colors": None,
+        },
+        "access": {
+            "()": "metano.serve.IsoAccessFormatter",
+            "fmt": ACCESS_LOG_FORMAT,
+            "use_colors": None,
+        },
+    },
+    "handlers": {
+        "default": {
+            "formatter": "default",
+            "class": "logging.StreamHandler",
+            "stream": "ext://sys.stderr",
+        },
+        "access": {
+            "formatter": "access",
+            "class": "logging.StreamHandler",
+            "stream": "ext://sys.stderr",
+        },
+    },
+    "loggers": {
+        "uvicorn": {"handlers": ["default"], "level": "INFO", "propagate": False},
+        "uvicorn.error": {"level": "INFO"},
+        "uvicorn.access": {"handlers": ["access"], "level": "INFO", "propagate": False},
+    },
+}
 
 def _reload_config(config: dict):
     """Hot-reload callback for gateway_config.yaml changes.
@@ -52,6 +105,7 @@ def main():
         host=host,
         port=port,
         log_level="info",
+        log_config=_ACCESS_LOG_CONFIG,
     )
 
 if __name__ == "__main__":

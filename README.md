@@ -222,6 +222,10 @@ bash healthcheck.sh              # 健康检查（web/gateway/cron/cocoindex）�
 | `INJECT_TAGS` | SessionStart 注入记忆的场景 tag（逗号分隔，per-tag 上限 4 条） |
 | `BACKUP_RETENTION_DAYS` | 数据库备份保留天数（默认 7 天） |
 | `METANO_EXPERIENCE_ENABLED` | 开启经验记忆+路由反馈闭环（`1` 开启，默认关） |
+| `METANO_COLLAB_SCHEME` | 跨设备协作 A2A 派发传输协议（http/https，默认 https；或 gateway_config.yaml `collab.scheme`） |
+| `METANO_COLLAB_VERIFY_SSL` | https 派发是否校验远端 TLS 证书（默认 true；或 `collab.verify_ssl`） |
+| `METANO_A2A_TOKEN_<HOST>` | 远端 A2A Bearer token（按主机，host 大写、点转下划线，如 `METANO_A2A_TOKEN_PEER_EXAMPLE_COM`；或 `collab.tokens[host]`） |
+| `METANO_A2A_TOKEN` | 远端 A2A Bearer token 全局回退（未按主机配置时使用） |
 
 ## 🔌 Claude Code 集成（自我进化引擎的关键）
 

@@ -78,7 +78,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 return response
             return JSONResponse(status_code=401, content={'detail': '未登录'})
         return await call_next(request)
-from metano.log import logger
+from metano.log import logger, ensure_iso_root_handler
+ensure_iso_root_handler()  # audit 7-1: seed root logger BEFORE the FastMCP import below, so fastmcp's M/D/YY RichHandler is never installed
 app.add_middleware(AuthMiddleware)
 
 

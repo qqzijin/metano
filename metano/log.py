@@ -3,15 +3,49 @@
 import logging
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
 
+# audit 7-1: timestamps are ISO-8601 with an explicit local offset everywhere
+# (e.g. ``2026-08-13T17:16:54+08:00``) — never M/D/YY, never bare.
 LOG_FORMAT = "%(asctime)s %(levelname)-5s %(name)s: %(message)s"
+# Kept for backward compatibility; IsoFormatter ignores datefmt so every
+# ``%(asctime)s`` carries a zone offset.
 LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 # M12: rotation + retention — bounded 20MB live file, 5 numbered backups.
 _MAX_BYTES = 20 * 1024 * 1024
 _BACKUP_COUNT = 5
+
+
+class IsoFormatter(logging.Formatter):
+    """Formatter whose ``%(asctime)s`` is ISO-8601 with an explicit zone offset.
+
+    ``record.created`` is a UTC epoch float; ``.astimezone()`` renders it in the
+    process's local zone, so the ``+08:00`` suffix is always present and correct.
+    """
+
+    def formatTime(self, record, datefmt=None):
+        return datetime.fromtimestamp(record.created, tz=timezone.utc).astimezone().isoformat(timespec='seconds')
+
+
+def ensure_iso_root_handler() -> None:
+    """Give the root logger an ISO-8601 StreamHandler (idempotent).
+
+    The fastmcp library calls ``logging.basicConfig`` with a rich ``RichHandler``
+    (M/D/YY timestamps — audit 7-1) the moment a FastMCP app is created.
+    ``basicConfig`` is a no-op once the root logger already has handlers, so
+    seeding the root logger *before* the mcp import prevents that M/D/YY handler
+    from ever being installed.  Third-party loggers (mcp, asyncio, ...) that
+    propagate to the root logger then render with an explicit ISO timestamp too.
+    """
+    root = logging.getLogger()
+    if not root.handlers:
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setFormatter(IsoFormatter(LOG_FORMAT))
+        root.addHandler(handler)
+        root.setLevel(logging.INFO)
 
 
 def _default_log_file() -> str:
@@ -26,7 +60,7 @@ def get_logger(name: str = "metano") -> logging.Logger:
     logger = logging.getLogger(name)
     if not logger.handlers:
         handler = logging.StreamHandler(sys.stderr)
-        handler.setFormatter(logging.Formatter(LOG_FORMAT, LOG_DATE_FORMAT))
+        handler.setFormatter(IsoFormatter(LOG_FORMAT))
         logger.addHandler(handler)
         logger.setLevel(logging.INFO)
         # M12: also mirror to a rotating on-disk log (0600 — the audit showed
@@ -43,10 +77,14 @@ def get_logger(name: str = "metano") -> logging.Logger:
                     os.chmod(str(p), 0o600)
                 fh = RotatingFileHandler(log_file, maxBytes=_MAX_BYTES,
                                          backupCount=_BACKUP_COUNT, encoding='utf-8')
-                fh.setFormatter(logging.Formatter(LOG_FORMAT, LOG_DATE_FORMAT))
+                fh.setFormatter(IsoFormatter(LOG_FORMAT))
                 logger.addHandler(fh)
             except Exception:
                 pass
+    # audit 7-1: never let records bubble up to the root logger.  fastmcp installs
+    # a rich (M/D/YY) RichHandler on the root logger; without this the same record
+    # would be rendered twice — once here (ISO) and once by the root handler.
+    logger.propagate = False
     return logger
 
 
