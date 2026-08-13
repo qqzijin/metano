@@ -28,19 +28,22 @@ def isolated(tmp_path, monkeypatch):
     return tmp_path
 
 
-def _router(fake_response):
+def _router(fake_response, monkeypatch):
     from metano.gateway.router import MessageRouter
 
     async def fake_call_claude(self, prompt, session, skill_prefix='', allowed_tools=None,
                                skip_permissions=True, on_event=None, provider_name=''):
         return fake_response, 100, 50, 0
 
-    MessageRouter._call_claude = fake_call_claude
+    # monkeypatch.setattr restores the original on teardown; a bare attribute
+    # assignment here leaked the fake into every later test (e.g.
+    # test_router_subprocess_security's create_subprocess_exec capture).
+    monkeypatch.setattr(MessageRouter, '_call_claude', fake_call_claude)
     return MessageRouter()
 
 
-def test_route_message_records_success(isolated):
-    r = _router('正常回答内容')
+def test_route_message_records_success(isolated, monkeypatch):
+    r = _router('正常回答内容', monkeypatch)
     resp = asyncio.run(r.route_message('test', 'u1', '什么是机器学习？'))
     assert resp == '正常回答内容'
     stats = route_events.get_route_stats()
@@ -48,8 +51,8 @@ def test_route_message_records_success(isolated):
     assert stats['by_outcome'].get('success') == 1
 
 
-def test_route_message_failure_records_and_reflects(isolated):
-    r = _router('Error: something failed')
+def test_route_message_failure_records_and_reflects(isolated, monkeypatch):
+    r = _router('Error: something failed', monkeypatch)
     asyncio.run(r.route_message('test', 'u2', '帮我写个python函数'))
     stats = route_events.get_route_stats()
     assert stats['total_events'] == 1
@@ -58,11 +61,11 @@ def test_route_message_failure_records_and_reflects(isolated):
     assert exp['total'] >= 2  # DO + AVOID lesson stored for the failure
 
 
-def test_route_message_disabled_is_noop(isolated):
+def test_route_message_disabled_is_noop(isolated, monkeypatch):
     from metano.gateway.router import MessageRouter
     route_events.set_enabled(False)
     try:
-        r = _router('hello')
+        r = _router('hello', monkeypatch)
         asyncio.run(r.route_message('test', 'u3', '你好'))
         assert route_events.get_route_stats()['total_events'] == 0
     finally:
