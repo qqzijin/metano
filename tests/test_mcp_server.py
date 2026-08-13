@@ -185,3 +185,32 @@ def test_session_search_scoped():
     rows = json.loads(out)
     assert len(rows) == 1
     assert rows[0]['session_id'] == 'sb'
+
+
+# ── cron tools auth (F2: cron_* previously had no auth gate) ──────────────
+
+def test_cron_tools_refuse_user_token():
+    """User-level remote tokens are refused by every cron_* tool (403-analog),
+    since cron jobs are instance-wide and cron_trigger spawns claude -p."""
+    mcp_server._save_cron_jobs([{'id': 'j1', 'name': 'test', 'enabled': True}])
+
+    tok = _mcp_auth_ctx.set(('alice', []))  # user-level token
+    try:
+        assert 'error' in json.loads(mcp_server.cron_list())
+        assert 'error' in json.loads(mcp_server.cron_add('n1', 'p', '0 0 * * *'))
+        assert 'error' in json.loads(mcp_server.cron_remove('j1'))
+        assert 'error' in json.loads(mcp_server.cron_pause('j1'))
+        assert 'error' in json.loads(mcp_server.cron_resume('j1'))
+        assert 'error' in json.loads(mcp_server.cron_trigger('j1'))
+    finally:
+        _mcp_auth_ctx.reset(tok)
+
+
+def test_cron_tools_admin_allowed():
+    """Local stdio (no subject) and admin-read scoped tokens pass the gate."""
+    for subject, scopes in ((None, []), ('admin', ['mcp:admin:read'])):
+        tok = _mcp_auth_ctx.set((subject, scopes))
+        try:
+            assert 'error' not in json.loads(mcp_server.cron_list())
+        finally:
+            _mcp_auth_ctx.reset(tok)

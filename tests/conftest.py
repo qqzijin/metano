@@ -20,18 +20,36 @@ import os
 import pytest
 
 _METANO_HOME = os.environ.get("METANO_HOME", "").strip()
-if not _METANO_HOME:
+
+
+def _refuse(reason: str):
     # Hard-exit so the refusal propagates a non-zero status even from the
     # conftest-import phase (where pytest would otherwise swallow pytest.exit
     # and report a generic "no tests" / collection error).
     import sys
 
-    sys.stderr.write(
+    sys.stderr.write(reason)
+    sys.stderr.flush()
+    os._exit(2)
+
+
+if not _METANO_HOME:
+    _refuse(
         "ERROR: tests require METANO_HOME isolation — set METANO_HOME to a "
         "temp dir, e.g.  METANO_HOME=/tmp/metano-test-home python3 -m pytest -q\n"
     )
-    sys.stderr.flush()
-    os._exit(2)
+
+# The guard must do more than check "non-empty": pointing METANO_HOME at the
+# production runtime dir would run the suite against live data.  Refuse the
+# default production path explicitly (audit N5 — guard previously only checked
+# non-emptiness).
+if os.path.abspath(os.path.expanduser(_METANO_HOME)) == os.path.abspath(
+    os.path.expanduser("~/.claude/metano")
+):
+    _refuse(
+        "ERROR: METANO_HOME points at the production runtime dir "
+        f"({_METANO_HOME}) — refusing to run tests against live data\n"
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -49,6 +67,17 @@ def isolated_env(tmp_path, monkeypatch):
     monkeypatch.setattr("metano.evo_models.EVO_DB_PATH", evo_db)
     monkeypatch.setattr("metano.route_events.EVO_DB_PATH", evo_db)
     monkeypatch.setattr("metano.experience.EVO_DB_PATH", evo_db)
+    # Frozen-alias / lazy-import paths (audit N5): experience and route_events
+    # copy ``DB_PATH = EVO_DB_PATH`` at import time, and knowledge_explorer
+    # imports from ``metano.paths`` lazily at call time — patching only
+    # ``EVO_DB_PATH`` leaves those aliases pointing at the original METANO_HOME
+    # value, so a test could write live data.  Patch the aliases and the
+    # canonical ``paths`` constants too.
+    monkeypatch.setattr("metano.experience.DB_PATH", evo_db)
+    monkeypatch.setattr("metano.route_events.DB_PATH", evo_db)
+    monkeypatch.setattr("metano.paths.DB_PATH", bridge_db)
+    monkeypatch.setattr("metano.paths.EVO_DB_PATH", evo_db)
+    monkeypatch.setattr("metano.paths.MEMORY_DB", tmp_path / "memory.db")
 
     # ---- bridge.db consumers (chat sessions + messages) ----
     monkeypatch.setattr("metano.db.DB_PATH", bridge_db)

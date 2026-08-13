@@ -1,6 +1,7 @@
 """SQLite database schema, FTS5, and data access layer for metano."""
 
 import json
+import re
 import sqlite3
 import time
 import uuid
@@ -10,6 +11,67 @@ from pathlib import Path
 
 from .log import logger
 from .paths import DB_DIR, DB_PATH, GATEWAY_LOG
+
+# Sensitive-material redaction for free-form message text (audit N2): the
+# message write path previously stored user/assistant content verbatim, so live
+# credentials (app_secret, sk- keys, JWTs, bearer tokens) landed in bridge.db
+# in plaintext.  These patterns scrub such material before persistence.
+_SENSITIVE_KEY = (
+    r'app_secret|api[_-]?key|apikey|access[_-]?token|bot[_-]?token|'
+    r'refresh[_-]?token|auth[_-]?token|encryption[_-]?key|verification[_-]?token|'
+    r'secret|password|passwd|ha[_-]?token'
+)
+_SENSITIVE_KEY_RE = re.compile(
+    rf'(?i)\b({_SENSITIVE_KEY})(\s*(?:=\s*|:\s*))(["\']?)([^\s"\'`,;]{{4,}})\3'
+)
+# Function-call form, e.g. .app_secret('value') / setPassword("value").
+_FUNC_CALL_RE = re.compile(
+    rf'(?i)\b({_SENSITIVE_KEY})\s*\(\s*(["\'])([A-Za-z0-9_\-./]{{4,}})\2\s*\)'
+)
+_BARE_SK_RE = re.compile(r'\bsk-[A-Za-z0-9_\-]{8,}\b')
+# ``eyJ`` is base64 of `{"` — the header of every JWT.  Require at least two
+# base64url segments (header[.payload[.signature]]) with a realistic header
+# length (>=8 chars; the smallest real header — {"alg":"none"} — is 18) so a
+# bare JWT is caught without mangling prose like "eyJelly.bean".
+_BARE_JWT_RE = re.compile(
+    r'\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{4,}(?:\.[A-Za-z0-9_\-]{4,})?\b'
+)
+_BEARER_RE = re.compile(r'\bBearer\s+[A-Za-z0-9_\-\.]{20,}\b')
+
+
+def _redact_key_value(m: re.Match) -> str:
+    """Replace a ``key=value`` / ``key: value`` pair's value with [REDACTED],
+    preserving the key and surrounding quote.  Numeric-only values (e.g. a
+    ``token: 10`` LLM count) are left untouched to avoid mangling prose."""
+    key, sep, quote, value = m.group(1), m.group(2), m.group(3), m.group(4)
+    if value.isdigit():
+        return m.group(0)
+    return f'{key}{sep}{quote}[REDACTED]{quote}'
+
+
+def _redact_func_call(m: re.Match) -> str:
+    """Replace a ``key('value')`` function-call argument with [REDACTED]."""
+    key, quote, value = m.group(1), m.group(2), m.group(3)
+    if value.isdigit():
+        return m.group(0)
+    return f'{key}({quote}[REDACTED]{quote})'
+
+
+def redact_sensitive(content: Optional[str]) -> Optional[str]:
+    """Redact secret material from free-form text before persistence.
+
+    Returns ``content`` with credential-bearing patterns (``app_secret=`` /
+    ``api_key: `` / function-call forms, ``sk-`` keys, JWTs, bearer tokens)
+    replaced by ``[REDACTED]``.
+    """
+    if not content:
+        return content
+    text = _SENSITIVE_KEY_RE.sub(_redact_key_value, content)
+    text = _FUNC_CALL_RE.sub(_redact_func_call, text)
+    text = _BARE_SK_RE.sub('[REDACTED]', text)
+    text = _BARE_JWT_RE.sub('[REDACTED]', text)
+    text = _BEARER_RE.sub('[REDACTED]', text)
+    return text
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -108,23 +170,27 @@ def persist_exchange(session_id: str, user_key: str, platform: str, msg: str, re
         in_tok = usage.get('input_tokens', 0) or 0
         out_tok = usage.get('output_tokens', 0) or 0
         cache_tok = usage.get('cache_read_tokens', 0) or 0
+        # Redact credential material before it reaches the store (audit N2);
+        # the title is a snippet of msg, so derive it from the redacted form.
+        msg_red = redact_sensitive(msg or '')
+        resp_red = redact_sensitive(response)
         if not session_id:
             session_id = uuid.uuid4().hex[:12]
             conn.execute(
                 'INSERT INTO sessions (id, project, title, model, started_at, last_active, message_count, tool_call_count, input_tokens, output_tokens, cache_read_tokens, estimated_cost_usd, user_key) '
                 'VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, 0, 0, 0, ?)',
-                (session_id, platform, (msg or '')[:30], model, now, now, user_key)
+                (session_id, platform, msg_red[:30], model, now, now, user_key)
             )
         ts = now
         conn.execute(
             'INSERT INTO messages (session_id, role, content, tool_name, tool_calls, timestamp, input_tokens, output_tokens, duration_ms) '
             'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            (session_id, 'user', msg, None, None, ts, in_tok, 0, None)
+            (session_id, 'user', msg_red, None, None, ts, in_tok, 0, None)
         )
         conn.execute(
             'INSERT INTO messages (session_id, role, content, tool_name, tool_calls, timestamp, input_tokens, output_tokens, duration_ms) '
             'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            (session_id, 'assistant', response, None, None, ts + 0.0001, 0, out_tok, None)
+            (session_id, 'assistant', resp_red, None, None, ts + 0.0001, 0, out_tok, None)
         )
         try:
             from .model_router import model_router

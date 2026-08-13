@@ -53,7 +53,7 @@ from .home_assistant import home_control as _ha_control, home_status as _ha_stat
 from .memory import add_memory, search_memories, get_memory_stats, compress_memories
 from .mcp_bridge import tavily_search
 from metano.log import logger
-from .paths import CRON_DIR, CRON_JOBS_FILE, PERSONALITIES_DIR, EVO_LOG
+from .paths import PERSONALITIES_DIR, EVO_LOG
 _skill_loader = SkillLoader()
 _skill_manager = SkillManager()
 _bundle_loader = BundleLoader()
@@ -119,6 +119,16 @@ def _memory_denied() -> bool:
     """True when the caller must NOT see instance-wide memory data.
 
     Alias of :func:`_instance_data_denied` (memory tables are instance-wide).
+    """
+    return _instance_data_denied()
+
+
+def _cron_denied() -> bool:
+    """True when the caller must NOT read or manage cron jobs.
+
+    Cron jobs are instance-wide configuration and ``cron_trigger`` spawns a
+    ``claude -p`` subprocess (cost + prompt-injection surface), so user-level
+    remote tokens are refused — admin scope required (audit F2).
     """
     return _instance_data_denied()
 
@@ -258,18 +268,20 @@ def analytics_daily(days: int=30) -> str:
     return json.dumps([dict(r) for r in rows], ensure_ascii=False, indent=2)
 
 def _load_cron_jobs() -> list[dict]:
-    CRON_DIR.mkdir(parents=True, exist_ok=True)
-    if CRON_JOBS_FILE.exists():
-        return json.loads(CRON_JOBS_FILE.read_text())
-    return []
+    from .cron_daemon import load_jobs
+    return load_jobs()
 
 def _save_cron_jobs(jobs: list[dict]):
-    CRON_DIR.mkdir(parents=True, exist_ok=True)
-    CRON_JOBS_FILE.write_text(json.dumps(jobs, ensure_ascii=False, indent=2))
+    from .cron_daemon import save_jobs
+    save_jobs(jobs)
 
 @mcp.tool()
 def cron_list() -> str:
-    """List persistent cron jobs."""
+    """List persistent cron jobs.
+
+    Instance-wide — user-level remote tokens are refused (admin scope required)."""
+    if _cron_denied():
+        return json.dumps({'error': 'cron management requires admin scope'}, ensure_ascii=False)
     return json.dumps(_load_cron_jobs(), ensure_ascii=False, indent=2)
 
 _JOB_NAME_RE = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
@@ -281,7 +293,11 @@ def cron_add(name: str, prompt: str, schedule_expr: str, schedule_kind: str='cro
     Job name must match ``^[A-Za-z0-9_-]{1,64}$`` (M-03 — prevents output-dir
     traversal via the job name).  Only 'claude'-type jobs are created here:
     arbitrary ``type=shell`` jobs are refused.
+
+    Instance-wide — user-level remote tokens are refused (admin scope required).
     """
+    if _cron_denied():
+        return json.dumps({'error': 'cron management requires admin scope'}, ensure_ascii=False)
     import uuid
     if not name or not _JOB_NAME_RE.match(name):
         return json.dumps({'error': f"Invalid job name {name!r}: must match ^[A-Za-z0-9_-]{{1,64}}$"})
@@ -310,37 +326,53 @@ def cron_add(name: str, prompt: str, schedule_expr: str, schedule_kind: str='cro
 
 @mcp.tool()
 def cron_remove(job_id: str) -> str:
-    """Delete a cron job by ID."""
+    """Delete a cron job by ID.
+
+    Instance-wide — user-level remote tokens are refused (admin scope required)."""
+    if _cron_denied():
+        return json.dumps({'error': 'cron management requires admin scope'}, ensure_ascii=False)
     jobs = _load_cron_jobs()
-    jobs = [j for j in jobs if j['id'] != job_id]
+    jobs = [j for j in jobs if j.get('id', '') != job_id]
     _save_cron_jobs(jobs)
     return json.dumps({'removed': job_id})
 
 @mcp.tool()
 def cron_pause(job_id: str) -> str:
-    """Pause a cron job."""
+    """Pause a cron job.
+
+    Instance-wide — user-level remote tokens are refused (admin scope required)."""
+    if _cron_denied():
+        return json.dumps({'error': 'cron management requires admin scope'}, ensure_ascii=False)
     jobs = _load_cron_jobs()
     for j in jobs:
-        if j['id'] == job_id:
+        if j.get('id', '') == job_id:
             j['enabled'] = False
     _save_cron_jobs(jobs)
     return json.dumps({'paused': job_id})
 
 @mcp.tool()
 def cron_resume(job_id: str) -> str:
-    """Resume a paused cron job."""
+    """Resume a paused cron job.
+
+    Instance-wide — user-level remote tokens are refused (admin scope required)."""
+    if _cron_denied():
+        return json.dumps({'error': 'cron management requires admin scope'}, ensure_ascii=False)
     jobs = _load_cron_jobs()
     for j in jobs:
-        if j['id'] == job_id:
+        if j.get('id', '') == job_id:
             j['enabled'] = True
     _save_cron_jobs(jobs)
     return json.dumps({'resumed': job_id})
 
 @mcp.tool()
 def cron_trigger(job_id: str) -> str:
-    """Immediately trigger a cron job."""
+    """Immediately trigger a cron job.
+
+    Instance-wide — user-level remote tokens are refused (admin scope required)."""
+    if _cron_denied():
+        return json.dumps({'error': 'cron management requires admin scope'}, ensure_ascii=False)
     jobs = _load_cron_jobs()
-    job = next((j for j in jobs if j['id'] == job_id), None)
+    job = next((j for j in jobs if j.get('id', '') == job_id), None)
     if not job:
         return json.dumps({'error': f'Job {job_id} not found'})
     try:
