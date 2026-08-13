@@ -1,7 +1,7 @@
 # metano
 
 <p align="center">
-  <img alt="版本" src="https://img.shields.io/badge/版本-v3.3.0-6a4ff3" />
+  <img alt="版本" src="https://img.shields.io/badge/版本-v3.3.1-6a4ff3" />
   <img alt="平台" src="https://img.shields.io/badge/平台-Linux%20%7C%20macOS-28a745" />
   <img alt="Python" src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white" />
   <img alt="Node" src="https://img.shields.io/badge/Node.js-18%2B-339933?logo=nodedotjs&logoColor=white" />
@@ -9,7 +9,7 @@
   <img alt="PRs Welcome" src="https://img.shields.io/badge/PRs-Welcome-brightgreen" />
 </p>
 
-> **版本：v3.3.0** · AI 网关桥接层 · 自我进化引擎 · 多平台消息接入 · RAG 知识库 + 知识图谱 · 记忆技能库
+> **版本：v3.3.1** · AI 网关桥接层 · 自我进化引擎 · 多平台消息接入 · RAG 知识库 + 知识图谱 · 记忆技能库
 
 > 📜 更新记录见 [CHANGELOG.md](CHANGELOG.md)
 

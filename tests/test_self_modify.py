@@ -27,8 +27,8 @@ def no_llm(monkeypatch):
         # line, or generate_candidate reports "old block not found" and returns
         # None (stale fixture after a version bump).
         return json.dumps({
-            'old': '__version__ = "3.3.0"',
-            'new': '__version__ = "3.3.0"\n# self-modify test marker',
+            'old': '__version__ = "3.3.1"',
+            'new': '__version__ = "3.3.1"\n# self-modify test marker',
         }), 0.0
     monkeypatch.setattr('metano.llm_call.call_llm', fake_call_llm)
 
