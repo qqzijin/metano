@@ -204,7 +204,7 @@ def generate_candidate(issue: dict, max_tokens: int = 1500) -> dict | None:
         f"line={issue.get('line')} — {issue.get('detail', '')}\n\n"
         f"Relevant source (line numbers shown):\n```\n{context}\n```"
     )
-    text, cost = call_llm(_GEN_SYSTEM, prompt, max_tokens=1200, timeout=45)
+    text, cost = call_llm(_GEN_SYSTEM, prompt, max_tokens=1200, timeout=45, session_id='')
     data = _parse_llm_json(text)
     if not isinstance(data, dict):
         logger.warning('self_modify: LLM output not JSON: %r', (text or '')[:150])

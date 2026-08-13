@@ -593,8 +593,12 @@ def session_end(session_id: str='') -> dict:
             try:
                 import subprocess
                 proj_root = Path(__file__).resolve().parent.parent
+                # N16: pass this session's id into the spawned immediate_learn so
+                # its LLM audit cost row is attributed to the session. json.dumps
+                # yields a safely-quoted Python string literal for the -c snippet.
                 subprocess.Popen(
-                    ['python3', '-c', 'from metano.evolution import immediate_learn; immediate_learn()'],
+                    ['python3', '-c', 'from metano.evolution import immediate_learn; '
+                                      f'immediate_learn(session_id={json.dumps(session_id)})'],
                     cwd=str(proj_root),
                     env=os.environ.copy(),
                     stdout=subprocess.DEVNULL,
@@ -646,7 +650,8 @@ def cron_evaluate():
         return {'status': 'error'}
 
 
-def immediate_learn(user_id: str = 'default', cooldown_hours: float = 2.0) -> dict:
+def immediate_learn(user_id: str = 'default', cooldown_hours: float = 2.0,
+                    session_id: str = '') -> dict:
     """Be-ACTIVE immediate learning: right after a correction-heavy session,
     turn the corrections into behavior-rule and skill-improvement proposals
     instead of waiting for the next daily cron.
@@ -655,6 +660,10 @@ def immediate_learn(user_id: str = 'default', cooldown_hours: float = 2.0) -> di
     corrections are a first-class signal, so they are acted on at the moment
     they happen. Bounded by a cooldown (default 2h) to cap LLM spend — each
     pass is one behavior-analysis call plus skill matching.
+
+    N16: ``session_id`` (the session_end hook that spawned this pass) is
+    threaded into the LLM behavior-analysis call so its audit cost row is
+    attributed to the originating session.
     """
     if _is_paused():
         return {'status': 'paused'}
@@ -673,7 +682,7 @@ def immediate_learn(user_id: str = 'default', cooldown_hours: float = 2.0) -> di
     # 1. Behavior rules from recent corrections (LLM, deduped against existing).
     try:
         from .behavior_analyzer import analyze_behavior_patterns
-        rules = analyze_behavior_patterns(user_id, days=3)
+        rules = analyze_behavior_patterns(user_id, days=3, session_id=session_id)
         result['rules'] = {'corrections': rules.get('corrections_analyzed', 0), 'added': len(rules.get('patterns', []))}
         _log('learn', 'immediate_rules', result['rules'])
     except Exception:

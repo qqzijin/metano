@@ -104,6 +104,36 @@ def test_memory_allowed_for_local_operator():
         _mcp_auth_ctx.reset(tok)
 
 
+def test_memory_add_denied_for_user_level_token():
+    tok = _mcp_auth_ctx.set(('alice', []))
+    try:
+        out = json.loads(mcp_server.memory_add('audit p2-7 denied probe', category='general'))
+    finally:
+        _mcp_auth_ctx.reset(tok)
+    assert out.get('status') == 'denied'
+    assert 'reason' in out
+
+
+def test_memory_add_allowed_for_admin_read():
+    tok = _mcp_auth_ctx.set(('alice', ['mcp:admin:read']))
+    try:
+        out = json.loads(mcp_server.memory_add('audit p2-7 admin write probe', category='general'))
+    finally:
+        _mcp_auth_ctx.reset(tok)
+    assert out.get('status') in ('added', 'duplicate')
+    assert 'id' in out
+
+
+def test_memory_add_allowed_for_local_operator():
+    tok = _mcp_auth_ctx.set((None, []))
+    try:
+        out = json.loads(mcp_server.memory_add('audit p2-7 stdio write probe', category='general'))
+    finally:
+        _mcp_auth_ctx.reset(tok)
+    assert out.get('status') in ('added', 'duplicate')
+    assert 'id' in out
+
+
 # ── _clip bounds helper ────────────────────────────────────────────────────
 
 def test_clip_bounds():

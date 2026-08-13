@@ -968,7 +968,12 @@ def home_status(entity_id: str='') -> str:
 @track_action('memory_add')
 def memory_add(content: str, category: str='general', importance: float=0.5, tags: str='') -> str:
     """Add a memory observation. Categories: preference, knowledge, habit, goal, general. Importance: 0.0-1.0.
-    tags: optional scenario keywords (comma or space separated, e.g. 'backend,frontend,sync') that gate when this memory is relevant."""
+    tags: optional scenario keywords (comma or space separated, e.g. 'backend,frontend,sync') that gate when this memory is relevant.
+    The memory store is instance-wide; user-level remote tokens are refused here (admin-read required)."""
+    if _memory_denied():
+        return json.dumps({'status': 'denied',
+                           'reason': 'instance-wide memory requires admin-read scope'},
+                          ensure_ascii=False, indent=2)
     result = add_memory(content, category=category, importance=importance, tags=tags or None)
     return json.dumps(result, ensure_ascii=False, indent=2)
 
@@ -1039,7 +1044,7 @@ def memory_timeline(days: int=7, limit: int=20) -> str:
     ).fetchall()
     results = []
     for r in rows:
-        ts = datetime.fromtimestamp(r['timestamp'], tz=timezone.utc).strftime('%m-%d %H:%M')
+        ts = datetime.fromtimestamp(r['timestamp'], tz=timezone.utc).astimezone().strftime('%m-%d %H:%M')
         results.append(f"[{ts}] [{r['category']}] {r['content'][:100]}")
     return json.dumps({'observations': len(results), 'formatted': '\n'.join(results)}, ensure_ascii=False, indent=2)
 

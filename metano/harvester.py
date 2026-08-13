@@ -143,12 +143,14 @@ def _detect_tool_errors(assistant_msgs: list[dict]) -> list[dict]:
         content = msg["content"]
         if TOOL_CALL_PATTERN.search(content):
             # Check if the content or nearby messages indicate failure
-            has_error = any(indicator in content.lower() for indicator in TOOL_ERROR_INDICATORS)
-            if has_error:
+            lower = content.lower()
+            matched_indicators = [i for i in TOOL_ERROR_INDICATORS if i in lower]
+            if matched_indicators:
                 tool_name = TOOL_CALL_PATTERN.search(content).group(1)
                 errors.append({
                     "type": "tool_error",
                     "tool": tool_name,
+                    "error_type": matched_indicators[0],
                     "content": content[:200],
                     "timestamp": msg["timestamp"],
                 })
@@ -228,9 +230,17 @@ def harvest_session(conn: sqlite3.Connection, session_id: str, user_id: str | No
             "strength": c.get("strength", "moderate"),
         })
 
-    # C. Detect tool call failures → count only, don't store full content
+    # C. Detect tool call failures → store a compact tool_error observation so
+    # behavior_analyzer can learn from recurring tool failures. The message
+    # content is truncated; only tool name, error type, and a summary are kept.
     tool_errors = _detect_tool_errors(assistant_msgs) if (time.time() - _start) < max_seconds else []
     for e in tool_errors:
+        obs_content = f"[tool_error] tool={e['tool']} type={e.get('error_type', 'error')} {e['content'][:100]}"
+        # A tool error is an objective signal (error/failed/exception markers
+        # next to a tool call), so it carries high confidence.
+        add_observation(honcho_conn, user_id, obs_content, "tool_error", session_id,
+                        confidence=1.0)
+        total_obs += 1
         results.append({
             "observation": f"tool_error:{e['tool']}",
             "action": "tool_error_detected",

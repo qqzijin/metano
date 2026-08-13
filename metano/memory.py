@@ -9,7 +9,7 @@ import os
 import re
 import sqlite3
 import hashlib
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from pathlib import Path
 from metano.log import logger
@@ -272,7 +272,7 @@ def get_memory_stats() -> dict:
 def compress_memories() -> dict:
     """Compress old, low-importance memories by merging similar ones."""
     with _get_conn() as conn:
-        cutoff = (datetime.now() - timedelta(days=30)).isoformat()
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
         old = conn.execute('SELECT id, content, category, importance, tags FROM memories WHERE created_at < ? AND importance < 0.3 AND compressed_from IS NULL', (cutoff,)).fetchall()
         if not old:
             return {'status': 'nothing_to_compress', 'compressed': 0}
@@ -308,7 +308,7 @@ def export_memories(format: str='json') -> dict:
     with _get_conn() as conn:
         rows = conn.execute('SELECT id, content, category, importance, created_at, last_accessed, access_count, tags FROM memories ORDER BY importance DESC').fetchall()
         memories = [dict(r) for r in rows]
-        return {'format': format, 'count': len(memories), 'memories': memories, 'exported_at': datetime.now().isoformat()}
+        return {'format': format, 'count': len(memories), 'memories': memories, 'exported_at': datetime.now(timezone.utc).isoformat()}
 
 
 def import_memories(data: dict, merge: bool=True) -> dict:

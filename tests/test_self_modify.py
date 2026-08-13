@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 @pytest.fixture()
 def no_llm(monkeypatch):
     """Block real LLM calls; return a fixed {old,new} edit for LLM fallback."""
-    def fake_call_llm(system, user, max_tokens=1500, timeout=45):
+    def fake_call_llm(system, user, max_tokens=1500, timeout=45, session_id=''):
         # Return a JSON {old, new} edit targeting metano/__init__.py.
         # Keep the old block in sync with the real metano/__init__.py version
         # line, or generate_candidate reports "old block not found" and returns
