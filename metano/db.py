@@ -1,6 +1,7 @@
 """SQLite database schema, FTS5, and data access layer for metano."""
 
 import json
+import os
 import re
 import sqlite3
 import time
@@ -138,7 +139,14 @@ def get_db(db_path: Optional[Path] = None) -> sqlite3.Connection:
 
 def init_db(db_path: Optional[Path] = None) -> sqlite3.Connection:
     """Initialize the database with schema."""
+    target = db_path or DB_PATH
     conn = get_db(db_path)
+    # audit: the DB must be owner-only regardless of the process umask
+    # (install.sh creates it via this path and previously produced 0644).
+    try:
+        os.chmod(str(target), 0o600)
+    except OSError:
+        pass
     conn.executescript(SCHEMA_SQL)
     try:
         conn.execute("ALTER TABLE sessions ADD COLUMN user_key TEXT")

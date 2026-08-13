@@ -239,27 +239,34 @@ def _truncate_output(text: str) -> str:
     return text
 
 
-def _run_shell_job(prompt: str, timeout: int) -> str:
+def _run_shell_job(prompt: str, timeout: int) -> dict:
     """Run a shell job through the bwrap-isolated executor (M-03).
 
     Arbitrary ``bash -c`` on the host is removed: shell jobs go through
     ``code_exec.code_run`` which runs inside a bubblewrap sandbox and FAILS
     CLOSED when no sandbox is available.
+
+    Returns {ok, output, error}: a non-zero exit code (e.g. 127 from a
+    missing script) is surfaced as error so the caller records last_error
+    instead of a silent success (audit F4/B5 — exit 127 used to be stored
+    as status=ok, last_error=null).
     """
     from .code_exec import code_run
     if len(prompt) > 2000:
-        return 'Shell command too long (max 2000 chars)'
+        return {'ok': False, 'output': '', 'error': 'Shell command too long (max 2000 chars)'}
     if '\x00' in prompt:
-        return 'Shell command contains null bytes'
+        return {'ok': False, 'output': '', 'error': 'Shell command contains null bytes'}
     # No working_dir: the sandbox starts the snippet at its tmpfs HOME, so a
     # host path is never needed (and a METANO_HOME path would be hidden by the
     # tmpfs HOME / /tmp mounts).
     r = code_run(prompt, language='shell', timeout=timeout)
     if r.get('error'):
-        return f'shell job failed: {r["error"]}'
-    return r.get('stdout') or r.get('stderr') or '(no output)'
-
-
+        return {'ok': False, 'output': '', 'error': f'shell job failed: {r["error"]}'}
+    exit_code = r.get('exit_code', 0)
+    if exit_code != 0:
+        detail = (r.get('stderr') or r.get('stdout') or '(no output)')[:300]
+        return {'ok': False, 'output': '', 'error': f'shell job failed (exit {exit_code}): {detail}'}
+    return {'ok': True, 'output': r.get('stdout') or r.get('stderr') or '(no output)', 'error': None}
 def _run_claude_job(prompt: str, timeout: int) -> str:
     """Run a ``claude -p`` prompt job in its own process group.
 
@@ -340,7 +347,12 @@ def run_job(job: dict, timeout: int | None = None) -> dict:
                     r = ACTIONS[action]()
                     output = json.dumps(r, ensure_ascii=False) if isinstance(r, dict) else str(r or '(no output)')
                 elif job_type == 'shell':
-                    output = _run_shell_job(prompt, job_timeout)
+                    res = _run_shell_job(prompt, job_timeout)
+                    if res['ok']:
+                        output = res['output']
+                    else:
+                        result = {'status': 'error', 'output': '', 'error': res['error']}
+                        output = ''
                 elif prompt:
                     output = _run_claude_job(prompt, job_timeout)
                 else:

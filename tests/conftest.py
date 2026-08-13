@@ -15,6 +15,7 @@ why this conftest patches each module's own resolved attribute
 ``paths`` module — the attribute each module actually consults at call time.
 """
 
+import logging
 import os
 
 import pytest
@@ -50,6 +51,21 @@ if os.path.abspath(os.path.expanduser(_METANO_HOME)) == os.path.abspath(
         "ERROR: METANO_HOME points at the production runtime dir "
         f"({_METANO_HOME}) — refusing to run tests against live data\n"
     )
+
+
+@pytest.fixture(autouse=True)
+def _metano_logger_propagate():
+    """caplog compatibility (audit R4-4): metano.log.get_logger sets
+    propagate=False so records never reach the root logger where pytest's
+    caplog listens.  Re-enable propagation for the duration of each test so
+    caplog-based assertions work; the project handler still writes stderr."""
+    import metano.log as mlog
+    prev = mlog.logger.propagate
+    mlog.logger.propagate = True
+    try:
+        yield
+    finally:
+        mlog.logger.propagate = prev
 
 
 @pytest.fixture(autouse=True)

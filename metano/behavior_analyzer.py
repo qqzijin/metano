@@ -14,7 +14,7 @@ from metano.log import logger
 ANTHROPIC_API_KEY = os.environ.get('ANTHROPIC_API_KEY', '')
 ANTHROPIC_MODEL = os.environ.get('HONCHO_MODEL', 'claude-sonnet-4-6')
 
-def _call_llm(system_prompt: str, user_prompt: str, session_id: str = '') -> str:
+def _call_llm(system_prompt: str, user_prompt: str, session_id: str = 'behavior-analyzer') -> str:
     text, _ = call_llm(system_prompt, user_prompt, max_tokens=2000, timeout=30, session_id=session_id)
     return text
 

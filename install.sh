@@ -176,6 +176,8 @@ fi
 info "[5/8] 初始化数据库 (bridge.db / evo.db / memory.db)"
 (
   cd "$SCRIPT_DIR"
+  # audit: DBs created here must be 0600 — never rely on the shell umask.
+  umask 077
   "$PYTHON_BIN" -c "from metano.db import init_db; init_db(); from metano.evo_models import init_db as _i; _i(); from metano.memory import _get_conn;
 with _get_conn():
     pass" || fail "数据库初始化失败"

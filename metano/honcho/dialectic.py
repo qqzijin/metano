@@ -55,7 +55,7 @@ def _call_llm(system_prompt: str, user_prompt: str) -> str:
     """Call Claude API for dialectic reasoning (with cost tracking)."""
     if not _llm_provider_available():
         return _rule_based_reasoning(system_prompt, user_prompt)
-    text, _ = call_llm(system_prompt, user_prompt, max_tokens=2000, timeout=30)
+    text, _ = call_llm(system_prompt, user_prompt, max_tokens=2000, timeout=30, session_id='dialectic')
     if not text or text == '[]':
         return _rule_based_reasoning(system_prompt, user_prompt)
     return text

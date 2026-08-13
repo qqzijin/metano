@@ -24,7 +24,7 @@ def _llm_provider_available() -> bool:
         logger.exception("reflector: provider resolution failed")
     return bool(os.environ.get('ANTHROPIC_API_KEY', ''))
 
-def _call_llm(system_prompt: str, user_prompt: str, session_id: str = '') -> str:
+def _call_llm(system_prompt: str, user_prompt: str, session_id: str = 'reflector') -> str:
     """Call Claude API for reflection reasoning (with cost tracking)."""
     text, _ = call_llm(system_prompt, user_prompt, session_id=session_id)
     return text
