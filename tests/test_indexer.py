@@ -19,7 +19,7 @@ pytestmark = pytest.mark.usefixtures("isolated_env")
 
 # Test fixture values only — deliberately NOT a live secret (matches the
 # established convention in tests/test_db.py test_redact_sensitive_patterns).
-_FAKE_SK = "sk-mWbiLOPVabcdef123456"
+_FAKE_SK = "sk-TESTKEYabcdef123456"
 
 
 def _records():

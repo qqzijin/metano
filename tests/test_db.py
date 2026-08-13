@@ -166,8 +166,8 @@ def test_purge_deletes_lone_old_session():
 
 def test_redact_sensitive_patterns():
     r = metano_db.redact_sensitive
-    assert r('app_secret=[REDACTED]') == 'app_secret=[REDACTED]'
-    assert r('ANTHROPIC_API_KEY=sk-mWbiLOPVabcdef123456') == 'ANTHROPIC_API_KEY=[REDACTED]'
+    assert r('app_secret=sk-testAppSecret0123456789abcdef') == 'app_secret=[REDACTED]'
+    assert r('ANTHROPIC_API_KEY=sk-TESTKEYabcdef123456') == 'ANTHROPIC_API_KEY=[REDACTED]'
     assert r('"api_key": "sk-abc123def456"') == '"api_key": "[REDACTED]"'
     assert r("Client.builder().app_secret('3Y3fHqN7cFbwO4cP5dWfGdEeFbAaBbCc')") == \
         "Client.builder().app_secret('[REDACTED]')"
@@ -191,8 +191,8 @@ def test_redact_sensitive_patterns():
 def test_persist_exchange_redacts_secrets():
     sid, persisted = metano_db.persist_exchange(
         '', 'web:alice', 'web',
-        'please set app_secret=[REDACTED]',
-        'ok ANTHROPIC_API_KEY=sk-mWbiLOPVabcdef123456 now',
+        'please set app_secret=sk-testAppSecret0123456789abcdef',
+        'ok ANTHROPIC_API_KEY=sk-TESTKEYabcdef123456 now',
         model='m1')
     assert persisted is True
     conn = metano_db.get_db()
