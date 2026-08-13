@@ -2,11 +2,13 @@
 import asyncio
 import json
 import os
+import signal
 import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Optional
 from metano.log import logger
+from ..code_exec import scrub_subprocess_env
 from ..paths import CONFIG_PATH as GATEWAY_CONFIG, GATEWAY_SESSIONS_DIR as SESSIONS_DIR, GATEWAY_LOG, HOME
 
 # Per-user authorization state (mode free/safe, granted/revoked tools).
@@ -22,6 +24,22 @@ def _log_gateway_event(**fields) -> None:
             f.write(json.dumps(entry, ensure_ascii=False) + '\n')
     except Exception:
         logger.exception('gateway log write failed')
+
+
+def _kill_process_group(proc) -> None:
+    """SIGKILL the whole process group of ``proc`` (claude -p + descendants).
+
+    claude -p is spawned with ``start_new_session=True`` so it leads its own
+    process group.  Killing the group — not just the direct child — prevents any
+    tool/grandchild process from surviving a timeout (audit P1-1).
+    """
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except ProcessLookupError:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
 
 @dataclass
 class GatewaySession:
@@ -841,7 +859,12 @@ class MessageRouter:
             '--verbose',
             '--include-partial-messages',
         ]
-        env = os.environ.copy()
+        # SECURITY (audit P1-1): scrub to a whitelist so the claude -p child
+        # cannot read metano's operational secrets (JWT secret, feishu/lark
+        # credentials, A2A/MCP tokens, DB paths) out of the environment.  The
+        # allowlist keeps PATH/HOME/CLAUDE_BIN + Anthropic/proxy vars that the
+        # child needs; the provider's base_url/api_key/model are injected below.
+        env = scrub_subprocess_env()
         try:
             from ..model_router import model_router
             provider = model_router.get_provider(provider_name)
@@ -869,13 +892,18 @@ class MessageRouter:
         except Exception:
             logger.exception("router: provider env injection failed")
         try:
-            proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env)
+            # start_new_session=True -> claude leads its own process group so a
+            # timeout can SIGKILL the whole tree (audit P1-1), not just the
+            # direct child.
+            proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env, start_new_session=True)
             if on_event:
                 return await self._call_claude_stream_events(proc, on_event)
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=600)
             return self._parse_stream_json(stdout, stderr)
         except asyncio.TimeoutError:
-            proc.kill()
+            # Kill the whole process group so claude -p and any descendant die
+            # together (audit P1-1).
+            _kill_process_group(proc)
             await proc.wait()
             return 'Error: 响应超时，请稍后重试', 0, 0, 0
         except Exception:
@@ -942,7 +970,9 @@ class MessageRouter:
                 if u:
                     usage = u
         except asyncio.TimeoutError:
-            proc.kill()
+            # Kill the whole process group so claude -p and any descendant die
+            # together (audit P1-1).
+            _kill_process_group(proc)
             await proc.wait()
             return 'Error: 响应超时，请稍后重试', 0, 0, 0
         try:
